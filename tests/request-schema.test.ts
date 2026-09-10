@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fieldLimits, getFieldErrors, readRequestFormData, requestSchema } from "../src/lib/request-schema";
+import { fieldLimits, getFieldErrors, getRequestValues, readRequestFormData, requestSchema } from "../src/lib/request-schema";
 import { resolveService } from "../src/lib/services";
 import { isDemoSubmissionAllowed } from "../src/lib/submission-policy";
+import { getContactEmail } from "../src/lib/contact-email";
 
 const valid = {
   name: "Örnek Talep", email: "qa@example.test", service: "unsure", system: "Kuruluşumuza ait hazırlık uygulaması",
@@ -79,4 +80,37 @@ test("production never silently accepts a demo submission", () => {
   assert.equal(isDemoSubmissionAllowed({ NODE_ENV: "production", ALLOW_DEMO_SUBMISSIONS: "true" }), true);
   assert.equal(isDemoSubmissionAllowed({ NODE_ENV: "production", ALLOW_DEMO_SUBMISSIONS: "false" }), false);
   assert.equal(isDemoSubmissionAllowed({ NODE_ENV: "development", REQUEST_SUBMISSION_MODE: "unconfigured" }), false);
+});
+
+test("multipart CRLF and browser LF use the same multiline limits", () => {
+  for (const field of ["system", "objective", "notes"] as const) {
+    const value = "ğ".repeat(fieldLimits[field] - 2) + "\r\nb";
+    const parsed = requestSchema.parse({ ...valid, [field]: value });
+    assert.equal(parsed[field].length, fieldLimits[field]);
+    assert.equal(parsed[field].includes("\r"), false);
+    assert.equal(requestSchema.safeParse({ ...valid, [field]: value + "x" }).success, false);
+  }
+});
+
+test("failed native submissions restore only bounded known scalar values", () => {
+  const values = getRequestValues({ name: "a".repeat(500), system: "a\r\nb", email: ["a", "b"], company: new File(["x"], "x"), unrelated: "discard" });
+  assert.deepEqual(values, { name: "a".repeat(101), system: "a\nb" });
+});
+
+test("ordinary Unicode and punctuation are preserved while outside whitespace is trimmed", () => {
+  const value = `Çağrı O'Neil "Deneme" & <ölçüm> 日本語 🧪`;
+  const parsed = requestSchema.parse({ ...valid, name: `  ${value}  `, system: `\n${value}\nikinci satır\n`, email: " qa@example.test " });
+  assert.equal(parsed.name, value);
+  assert.equal(parsed.system, `${value}\nikinci satır`);
+  assert.equal(parsed.email, "qa@example.test");
+  for (const email of ["a", "a@", "@example.test", "a b@example.test", "a@@example.test", "a@example", "a@example..test"]) {
+    assert.equal(requestSchema.safeParse({ ...valid, email }).success, false, email);
+  }
+});
+
+test("contact configuration accepts a mailbox but never a mailto URL or display address", () => {
+  assert.equal(getContactEmail(" qa+inquiries@example.test "), "qa+inquiries@example.test");
+  for (const value of [undefined, "", " ", "mailto:qa@example.test", "<qa@example.test>", "QA <qa@example.test>", "qa@example.test?subject=Hello", "qa@example.test#fragment", "qa@example..test"]) {
+    assert.equal(getContactEmail(value), null, String(value));
+  }
 });

@@ -17,6 +17,20 @@ export function Header({ name }: { name: string }) {
   const headerRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
+    const header = headerRef.current;
+    if (!header) return;
+    // Enlarged text may make the header taller than its nominal breakpoint height.
+    const observer = new ResizeObserver(() => {
+      document.documentElement.style.setProperty("--header-offset", `${header.getBoundingClientRect().height}px`);
+    });
+    observer.observe(header);
+    return () => {
+      observer.disconnect();
+      document.documentElement.style.removeProperty("--header-offset");
+    };
+  }, []);
+
+  useEffect(() => {
     if (!open) return;
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
@@ -46,7 +60,7 @@ export function Header({ name }: { name: string }) {
       <Container className="header-inner">
         <Link className="brand" href="/" onClick={() => setOpen(false)} aria-label={`${name} — Ana sayfa`}>{name}</Link>
         <button ref={toggleRef} className="menu-toggle" type="button" aria-expanded={open} aria-controls="main-navigation" onClick={() => setOpen(!open)}>
-          {open ? "Menüyü kapat" : "Menü"}<span aria-hidden="true">{open ? "−" : "+"}</span>
+          <span className="menu-label">{open ? "Menüyü kapat" : "Menü"}</span><span className="menu-symbol" aria-hidden="true">{open ? "−" : "+"}</span>
         </button>
         <nav id="main-navigation" className={`main-navigation ${open ? "is-open" : ""}`} aria-label="Ana gezinme">
           {links.map((link) => <Link key={link.href} href={link.href} onClick={() => setOpen(false)}>{link.label}</Link>)}

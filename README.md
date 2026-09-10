@@ -85,7 +85,34 @@ npm.cmd run test:e2e
 
 The test runner starts an isolated production preview on port 3100 with demo opt-in enabled. It does not connect to or test customer systems. Use synthetic data only. Browser binaries and reports are ignored by Git. Automated accessibility checks supplement manual keyboard, responsive and visual review; they are not an accessibility certification.
 
-Verified for the refinement pass: lint and strict type checking passed, all 10 schema/policy tests and all 21 Chromium end-to-end tests passed, and the production build succeeded. The browser checks include server validation without JavaScript, internal links, 320/375/768/1024/1280/1440 px viewports, enlarged text and reduced motion. Axe reported no violations for the configured WCAG A/AA rules across the five primary pages and the expanded optional form. Targeted regressions cover neutral process rules, keyboard disclosure toggling, submissions with optional fields hidden or populated, and the absence of unconfigured contact links, copy and empty spacing wrappers. Run this suite against a build with `CONTACT_EMAIL` unset to verify the unconfigured state.
+The deep QA findings, regression coverage, actual check results and remaining browser limitations are recorded in [QA_REPORT.md](QA_REPORT.md). Run the normal journey suite against a build with `CONTACT_EMAIL` unset. It now includes transport failure/retry, native submissions without JavaScript, server-returned validation state, multiline boundaries, malformed POSTs, routing/history, expanded layouts from 320 to 1920 px and runtime diagnostics. Screenshots are written to ignored `test-results/` output; resource timings are supplied as test-report attachments.
+
+Optional cross-browser run (browser binaries remain local to this repository):
+
+```powershell
+$env:PLAYWRIGHT_BROWSERS_PATH = "$PWD/.playwright"
+npx.cmd playwright install chromium firefox webkit
+$env:QA_CROSS_BROWSER = 'true'
+npm.cmd run test:e2e
+Remove-Item Env:QA_CROSS_BROWSER
+```
+
+The Windows WebKit harness skips links on Tab even on plain HTML. Its original keyboard assertions remain enabled; see the QA report before interpreting those failures. No global keyboard preferences are changed.
+
+To check development-mode form behavior, set `QA_DEV=true` and run `npm.cmd run test:e2e -- release-form release-torture --project=chromium`, then remove `QA_DEV`. This uses the repository's development server on port 3000, reusing it if already running. The default suite always starts an isolated production server on port 3100.
+
+Contact configuration and the production demo guard have a separate suite. For example, using a **synthetic test-only** mailbox:
+
+```powershell
+$env:CONTACT_EMAIL = 'qa-contact@example.test'
+$env:QA_CONTACT_EXPECTED = 'qa-contact@example.test'
+npm.cmd run build
+npm.cmd run test:e2e -- --config=playwright.configuration.config.ts
+Remove-Item Env:CONTACT_EMAIL, Env:QA_CONTACT_EXPECTED
+npm.cmd run build
+```
+
+Omit `QA_CONTACT_EXPECTED` for unset, empty or malformed contact settings. Rebuild for each setting because the contact pages are static. This suite disables production demo acceptance and checks that failed requests preserve values with and without JavaScript. Never configure the synthetic test mailbox for a public deployment.
 
 ## Conventional Node deployment
 

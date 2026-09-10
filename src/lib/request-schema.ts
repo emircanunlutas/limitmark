@@ -12,24 +12,42 @@ const text = (max: number, required = false) => {
   return required ? schema.min(1, "Lütfen bu alanı doldurun.") : schema;
 };
 
+const multiline = (max: number, required = false) => z.string({ error: "Lütfen geçerli bir metin girin." })
+  // Multipart form encoding uses CRLF; textarea maxlength counts each newline once.
+  .transform((value) => value.replace(/\r\n?/g, "\n"))
+  .pipe(text(max, required));
+
 export const requestSchema = z.object({
   name: text(fieldLimits.name, true),
   email: text(fieldLimits.email, true).pipe(z.email({ error: "Geçerli bir e-posta adresi girin." })),
   company: text(fieldLimits.company).default(""),
   service: z.enum(["web", "network", "protection", "unsure"], { error: "Lütfen bir hizmet seçin." }),
-  system: text(fieldLimits.system, true),
-  objective: text(fieldLimits.objective, true),
+  system: multiline(fieldLimits.system, true),
+  objective: multiline(fieldLimits.objective, true),
   environment: z.enum(["production", "staging", "multiple", "unknown"], { error: "Lütfen test edilecek ortamı seçin." }),
   authority: z.enum(["owner", "authorized", "uncertain"], { error: "Lütfen yetki durumunuzu belirtin." }),
   protection: z.enum(["unknown", "none", "using"], { error: "Lütfen geçerli bir koruma seçeneği seçin." }).default("unknown"),
   provider: text(fieldLimits.provider).default(""),
-  notes: text(fieldLimits.notes).default(""),
+  notes: multiline(fieldLimits.notes).default(""),
 }).transform((data) => ({ ...data, provider: data.protection === "using" ? data.provider : "" }));
 
 export type TestRequest = z.output<typeof requestSchema>;
 export type RequestField = keyof typeof fieldLabels;
 export type FieldErrors = Partial<Record<RequestField, string>>;
-export type RequestState = { errors: FieldErrors; message?: string };
+export type RequestState = { errors: FieldErrors; message?: string; values?: Partial<Record<RequestField, string>> };
+
+// Re-render bounded, known text values after a non-JavaScript POST fails.
+// Never reflect files, duplicate entries, or unrelated fields back into the form.
+export function getRequestValues(data: Record<string, unknown>): NonNullable<RequestState["values"]> {
+  const values: NonNullable<RequestState["values"]> = {};
+  for (const field of Object.keys(fieldLabels) as RequestField[]) {
+    const value = data[field];
+    if (typeof value !== "string") continue;
+    const limit = field in fieldLimits ? fieldLimits[field as keyof typeof fieldLimits] : 32;
+    values[field] = value.replace(/\r\n?/g, "\n").slice(0, limit + 1);
+  }
+  return values;
+}
 
 // Whitelist known fields. Never forward arbitrary FormData entries to an adapter.
 // Repeated values remain arrays so the schema rejects ambiguous submissions.

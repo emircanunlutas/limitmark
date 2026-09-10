@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useEffect, useRef, useState } from "react";
+import { useActionState, useEffect, useRef, useState, useTransition } from "react";
+import { unstable_rethrow } from "next/navigation";
 import { submitTestRequest } from "@/app/test-talep-et/actions";
 import { fieldLabels, fieldLimits, getFieldErrors, readRequestFormData, requestSchema, type FieldErrors, type RequestField, type RequestState } from "@/lib/request-schema";
 import { serviceOptions } from "@/lib/services";
@@ -16,8 +17,14 @@ const authorityOptions = [
 const initialState: RequestState = { errors: {} };
 
 export function RequestForm({ initialService }: { initialService: string }) {
-  const [values, setValues] = useState({ name: "", email: "", company: "", service: initialService, system: "", objective: "", environment: "", authority: "", protection: "unknown", provider: "", notes: "" });
-  const [state, formAction, pending] = useActionState(submitTestRequest, initialState);
+  // Retain the native Server Action for submissions before hydration/without JS.
+  const [serverState, formAction, serverPending] = useActionState(submitTestRequest, initialState);
+  const [clientState, setClientState] = useState<RequestState | null>(null);
+  const state = clientState ?? serverState;
+  const [values, setValues] = useState(() => ({ name: "", email: "", company: "", service: initialService, system: "", objective: "", environment: "", authority: "", protection: "unknown", provider: "", notes: "", ...serverState.values }));
+  const [clientPending, startTransition] = useTransition();
+  const pending = clientPending || serverPending;
+  const submittingRef = useRef(false);
   const [clientErrors, setClientErrors] = useState<FieldErrors | null>(null);
   const [validationAttempt, setValidationAttempt] = useState(0);
   const summaryRef = useRef<HTMLDivElement>(null);
@@ -43,13 +50,30 @@ export function RequestForm({ initialService }: { initialService: string }) {
 
   return (
     <form ref={formRef} className="request-form" action={formAction} noValidate onSubmit={(event) => {
-      if (pending) { event.preventDefault(); return; }
-      const result = requestSchema.safeParse(readRequestFormData(new FormData(event.currentTarget)));
+      // Handle hydrated submissions explicitly: React's automatic form reset also
+      // runs for returned validation errors, and transport errors must stay inline.
+      event.preventDefault();
+      if (pending || submittingRef.current) return;
+      const data = new FormData(event.currentTarget);
+      const result = requestSchema.safeParse(readRequestFormData(data));
       if (!result.success) {
-        event.preventDefault();
         setClientErrors(getFieldErrors(result.error));
         setValidationAttempt((attempt) => attempt + 1);
-      } else setClientErrors(null);
+        return;
+      }
+      setClientErrors(null);
+      submittingRef.current = true;
+      startTransition(async () => {
+        try {
+          setClientState(await submitTestRequest(initialState, data));
+        } catch (error) {
+          // Preserve Next.js redirect/not-found control flow; handle transport failures.
+          unstable_rethrow(error);
+          setClientState({ errors: {}, message: "Talebiniz iletilemedi. Bilgileriniz bu sayfada duruyor; lütfen tekrar deneyin." });
+        } finally {
+          submittingRef.current = false;
+        }
+      });
     }}>
       {(hasErrors || state.message) && <div className="error-summary" tabIndex={-1} ref={summaryRef} role="alert">
         <h2>{hasErrors ? "Lütfen işaretli alanları kontrol edin." : "Talep gönderilemedi."}</h2>
@@ -88,7 +112,7 @@ export function RequestForm({ initialService }: { initialService: string }) {
             <option value="unknown">Bilmiyorum</option>
           </select>
         </FormField>
-        <fieldset className="form-field field-full" id="authority" aria-describedby={`authority-help${errors.authority ? " authority-error" : ""}`}>
+        <fieldset className="form-field field-full" id="authority" role="radiogroup" aria-invalid={errors.authority ? true : undefined} aria-describedby={`authority-help${errors.authority ? " authority-error" : ""}`}>
           <legend>{fieldLabels.authority}</legend>
           <div className="radio-options">{authorityOptions.map((option) => <label className="radio-option" key={option.value}>
             <input type="radio" name="authority" value={option.value} required checked={values.authority === option.value} onChange={(event) => update("authority", event.target.value)} aria-describedby={errors.authority ? "authority-error" : undefined} />
