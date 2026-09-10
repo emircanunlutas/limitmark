@@ -89,7 +89,7 @@ export default function HomePage() {
         <Container>
           <div className="section-intro"><h2 id="process-title">Birlikte planlanır.<br />Kontrollü yürütülür.</h2></div>
           <ol className="process-list">{steps.map(([title, copy], index) => (
-            <li key={title} className={index === 2 ? "authorization-step" : ""}>
+            <li key={title}>
               <span className="process-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
               <div><h3>{title}</h3><p>{copy}</p></div>
             </li>
@@ -130,7 +130,7 @@ export default function HomePage() {
               <h2 id="closing-title">Altyapınızla ilgili hangi soruya cevap arıyorsunuz?</h2>
               <p>Sisteminizi ve öğrenmek istediğiniz konuyu paylaşın. Uygun test kapsamını birlikte netleştirelim.</p>
               <ButtonLink href="/test-talep-et">Test Talep Et</ButtonLink>
-              <div className="closing-contact"><ContactLink /></div>
+              <ContactLink className="closing-contact" />
             </div>
           </div>
         </Container>

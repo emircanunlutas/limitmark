@@ -59,6 +59,15 @@ test("provider is kept only when protection is in use", () => {
   assert.equal(requestSchema.parse({ ...valid, protection: "none", provider: "Stale value" }).provider, "");
 });
 
+test("populated optional disclosure fields survive FormData extraction and validation", () => {
+  const form = new FormData();
+  for (const [field, value] of Object.entries({ ...valid, protection: "using", provider: "Örnek sağlayıcı", notes: "Tercih ettiğimiz dönem henüz kesin değil." })) form.set(field, value);
+  const parsed = requestSchema.parse(readRequestFormData(form));
+  assert.equal(parsed.protection, "using");
+  assert.equal(parsed.provider, "Örnek sağlayıcı");
+  assert.equal(parsed.notes, "Tercih ettiğimiz dönem henüz kesin değil.");
+});
+
 test("service query state accepts known IDs and safely defaults otherwise", () => {
   for (const service of ["web", "network", "protection", "unsure"]) assert.equal(resolveService(service), service);
   for (const value of [undefined, "<script>", ["web", "network"]]) assert.equal(resolveService(value), "unsure");

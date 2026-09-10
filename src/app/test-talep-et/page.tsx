@@ -14,7 +14,7 @@ export default async function RequestPage({ searchParams }: { searchParams: Prom
       <p>Sisteminizi ve öğrenmek istediğiniz konuyu kısaca anlatın. Talebinizi manuel inceleyip uygun test kapsamını birlikte belirlemek için sizinle iletişime geçelim.</p>
       <p>Teknik ayrıntıları bilmeniz gerekmez. Emin olmadığınız noktaları birlikte netleştirebiliriz.</p>
       <p className="request-notice">Bu formu göndermek test başlatmaz.</p>
-      <p className="helper">İsteğe bağlı olarak belirtilen alanları boş bırakabilirsiniz.</p>
+      <p className="helper">İsteğe bağlı alanları boş bırakabilirsiniz.</p>
     </div>
     <RequestForm key={service} initialService={service} />
   </Container></div>;

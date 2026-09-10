@@ -60,7 +60,7 @@ There is deliberately no target-fetching, probing, task queue or test executor i
 
 ## Branding, contact and fonts
 
-Set the real mailbox through `CONTACT_EMAIL` in the server environment; see `.env.example`. Without it, contact text is visibly unavailable with a short Turkish explanation, not a fake `mailto:` or broken link. Replace `siteConfig.name` and metadata when branding is approved. There are no invented corporate details.
+Set the real mailbox through `CONTACT_EMAIL` in the server environment; see `.env.example`. Without a valid address, contact links, contextual copy and their spacing are omitted entirely. Rebuild after changing this setting so statically generated pages reflect it. Replace `siteConfig.name` and metadata when branding is approved. There are no invented corporate details.
 
 Inter is requested from Google Fonts at browser runtime with `display=swap`; Arial/sans-serif is the fallback. No self-hosted assets or font downloads are required to build or run the site. Google Fonts is the only external browser resource; the preliminary privacy page describes it. Review the font provider/privacy approach before launch.
 
@@ -85,7 +85,7 @@ npm.cmd run test:e2e
 
 The test runner starts an isolated production preview on port 3100 with demo opt-in enabled. It does not connect to or test customer systems. Use synthetic data only. Browser binaries and reports are ignored by Git. Automated accessibility checks supplement manual keyboard, responsive and visual review; they are not an accessibility certification.
 
-Verified for this initial implementation: lint and strict type checking passed, all 9 schema/policy tests and all 14 Chromium end-to-end tests passed, and the production build succeeded. The browser checks include server validation without JavaScript, internal links, 320/375/768/1024/1280/1440 px viewports, enlarged text and reduced motion. Axe reported no violations for the configured WCAG A/AA rules across the five primary pages. Desktop, tablet and mobile layouts were also visually inspected. The production dependency audit reported no known vulnerabilities at verification time.
+Verified for the refinement pass: lint and strict type checking passed, all 10 schema/policy tests and all 21 Chromium end-to-end tests passed, and the production build succeeded. The browser checks include server validation without JavaScript, internal links, 320/375/768/1024/1280/1440 px viewports, enlarged text and reduced motion. Axe reported no violations for the configured WCAG A/AA rules across the five primary pages and the expanded optional form. Targeted regressions cover neutral process rules, keyboard disclosure toggling, submissions with optional fields hidden or populated, and the absence of unconfigured contact links, copy and empty spacing wrappers. Run this suite against a build with `CONTACT_EMAIL` unset to verify the unconfigured state.
 
 ## Conventional Node deployment
 

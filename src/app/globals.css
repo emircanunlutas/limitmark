@@ -75,8 +75,6 @@ button { cursor: pointer; }
 .text-link { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); font-size: 0.9375rem; font-weight: 500; line-height: 1.46667; text-decoration: underline; text-underline-offset: 4px; }
 a.text-link:hover { color: var(--accent-hover); }
 a.text-link:active { color: var(--accent-active); }
-.contact-unavailable { display: flex; flex-direction: column; align-items: flex-start; }
-.contact-unavailable .text-link { color: var(--text-secondary); text-decoration: none; }
 
 .site-header { position: sticky; top: 0; z-index: 30; background: var(--background); border-bottom: 1px solid var(--border-subtle); }
 .header-inner { min-height: var(--header-height); display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); }
@@ -120,7 +118,6 @@ a.text-link:active { color: var(--accent-active); }
 .limitation + .text-link { margin-top: var(--space-6); }
 .process-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--grid-gap); }
 .process-list li { border-top: 1px solid var(--border-subtle); padding-top: var(--space-6); }
-.process-list li.authorization-step { border-color: var(--accent); }
 .process-number { display: block; color: var(--text-secondary); font-size: 0.875rem; line-height: 1.57143; font-variant-numeric: tabular-nums; margin-bottom: var(--space-6); }
 .process-list h3 { margin-bottom: var(--space-3); }
 .process-list p { font-size: 0.875rem; line-height: 1.57143; }
@@ -140,6 +137,7 @@ a.text-link:active { color: var(--accent-active); }
 .disclosure[open] .disclosure-open-label { display: inline; }
 .disclosure[open] .disclosure-closed-label { display: none; }
 .disclosure-content { padding-block: var(--space-6); }
+.disclosure:not([open]) > .disclosure-content { display: none; }
 .technical-copy { max-width: 760px; display: grid; gap: var(--space-6); }
 .technical-copy h3 { margin-bottom: var(--space-3); }
 .faq-list { max-width: 840px; }
@@ -187,7 +185,7 @@ fieldset.form-field { padding: 0; margin: 0; border: 0; }
 .radio-option input { width: 20px; height: 20px; flex: 0 0 20px; margin: 3px 0 0; accent-color: var(--accent); }
 .context-note { margin-top: var(--space-4); padding-left: var(--space-4); border-left: 2px solid var(--border-control); }
 .form-extras { margin-top: var(--space-8); }
-.form-extras .disclosure-content { display: grid; gap: var(--space-6); }
+.form-extras[open] .disclosure-content { display: grid; gap: var(--space-6); }
 .form-privacy { margin-block: var(--space-8) var(--space-6); max-width: 680px; }
 .form-privacy p + p { margin-top: var(--space-4); }
 .form-privacy a { color: var(--accent); }

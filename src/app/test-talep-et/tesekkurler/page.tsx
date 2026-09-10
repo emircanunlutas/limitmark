@@ -18,6 +18,6 @@ export default function ConfirmationPage() {
     <div className="confirmation-authorization"><p>Bu başvuru bir test başlatmadı veya test zamanı ayırmadı. Formdaki yetki beyanı, test yürütme izni değildir.</p></div>
     <p>Şu anda başka bir bilgi göndermeniz gerekmiyor. Parola, API anahtarı, özel anahtar, erişim belirteci veya yönetici erişim bilgisi paylaşmayın.</p>
     <ButtonLink href="/">Ana Sayfaya Dön</ButtonLink>
-    <div className="confirmation-contact"><span>Bir düzeltme veya ek bilgi için: </span><ContactLink /></div>
+    <ContactLink className="confirmation-contact" prefix="Bir düzeltme veya ek bilgi için:" />
   </div></Container></div>;
 }
