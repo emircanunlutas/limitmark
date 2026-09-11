@@ -43,6 +43,7 @@ Open **http://127.0.0.1:3000**. On PowerShell, use `npm.cmd` if local policy pre
 | `/test-talep-et/tesekkurler` | Confirmation copy; excluded from indexing |
 | `/gizlilik` | Preliminary privacy information |
 | `/test-yetkilendirmesi` | Operational scope and authorization principles |
+| `/admin` | Authenticated internal skeleton only; no inquiry-management functionality |
 
 An unknown or repeated service query defaults to `unsure`. A custom Turkish 404 and recoverable error page are included.
 
@@ -132,6 +133,38 @@ The HTTPS request is bounded to ten seconds. Abort timeouts become retryable `ti
 The official Node SDK was evaluated before implementation. Its current client has no request-timeout option and logs parsed API error objects outside production, which conflicts with this project's timeout and error-privacy requirements. Phase 2B therefore uses one small typed `fetch` client against Resend's official HTTPS API rather than adding the SDK dependency.
 
 No real e-mail is sent merely by building or starting the application. A verified Resend account/domain/API key must be configured and an operator must explicitly invoke a future deployment-specific batch entry point. Public persistent form submissions remain separately protected by the existing `REQUEST_SUBMISSION_MODE=postgres` and `ENABLE_PERSISTENT_SUBMISSIONS=true` go-live gates, which must stay closed until later abuse-control and production-readiness work is complete.
+
+### Phase 3 Cloudflare Access admin authentication
+
+Phase 3 adds only an internal `/admin` authentication and authorization foundation. It does not add an inquiry list, inquiry detail, notes, status changes, analytics, role management, customer accounts, or a customer portal. Primary authentication and MFA remain the responsibility of Cloudflare Access and the configured external identity provider; the application stores no users, passwords, MFA secrets, sessions, or Access tokens.
+
+The trust chain is Cloudflare Access policy, then application-side cryptographic JWT verification, then an independent exact-email allowlist. The server accepts the application token only from Cloudflare's documented `Cf-Access-Jwt-Assertion` origin header. It ignores the `CF_Authorization` cookie, query parameters, `X-User-Email`, `X-Forwarded-Email`, and other forwarded identity headers. The header takes deterministic precedence because it is the only accepted source.
+
+Every `/admin` server render calls the reusable `requireAdmin()` boundary. Future admin Server Actions and Route Handlers must call the same boundary independently; middleware or Cloudflare policy must never become the sole authorization check. The page is force-dynamic and shows only `Limitmark Admin` plus a neutral authenticated-state message. It does not expose the identity, token claims, allowlist, customer information, counts, notification state, or other operational data.
+
+Configure all three server-only values at runtime:
+
+- `CLOUDFLARE_ACCESS_TEAM_DOMAIN`: exact HTTPS team origin, such as the documented `https://<team-name>.cloudflareaccess.com` shape, with no path, query, credentials, or port.
+- `CLOUDFLARE_ACCESS_AUD`: non-empty Application Audience (AUD) tag copied from the Access application.
+- `ADMIN_ALLOWED_EMAILS`: comma-separated, explicit individual mailboxes. Values are trimmed and lowercased. Invalid or duplicate entries invalidate the entire configuration; an empty list authorizes nobody. Domain suffixes and wildcard/domain-only authorization are not supported.
+
+The server uses `jose` to require an RS256 signature selected by `kid`, the exact configured issuer and audience, expiration, `nbf` when present, an `iat` no more than 60 seconds in the future, an Access application-token type, and structurally valid email and subject claims. The same explicit 60-second clock tolerance applies to registered time-claim verification. The verified email is then matched exactly against the normalized allowlist. Missing or malformed configuration, a missing/malformed/unsigned token, the wrong key/issuer/audience, expired or future-invalid claims, a non-user/service token, an unavailable JWKS endpoint, or a non-allowlisted user all fail closed through the stable generic not-found route outcome. Tokens and broad claims are neither logged, persisted, nor returned to the browser.
+
+Operational references: Cloudflare's current documentation for [validating Access JWTs](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/), [application-token claims](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/), and [publishing a self-hosted application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/).
+
+Signing keys are obtained over HTTPS from `<team-domain>/cdn-cgi/access/certs`; no signing key or Cloudflare API credential is stored in the app. The library keeps an in-process JWKS cache for ten minutes, bounds retrieval to five seconds, observes a 30-second refresh cooldown, selects rotating keys by `kid`, and re-fetches when appropriate. A matching cached public key still performs a fresh cryptographic signature and claims verification on every request. If a required fetch or refresh fails and no usable verified key is available, access is denied. Instance restarts and newly scaled instances begin with an empty cache, so temporary Cloudflare/network failure can temporarily deny admin access by design.
+
+There is deliberately no environment-controlled development bypass. A local browser cannot open `/admin` unless its request carries a valid token from the configured Access application and the identity is explicitly allowlisted. Unit tests use locally generated asymmetric keys and an injected in-memory JWKS resolver; they never contact a real Cloudflare account or endpoint.
+
+Cloudflare control-plane work remains manual and must be completed before launch:
+
+1. Create a Cloudflare Access self-hosted application for the intended admin hostname/path.
+2. Add an explicit Allow policy for only the intended individual identity or identities, require MFA through the chosen IdP or Access policy, and deny everyone else.
+3. Choose a bounded application/policy session duration.
+4. Copy the application's Audience (AUD) tag and configure the three server environment values above.
+5. Verify proxy/Tunnel and origin routing before launch. Ensure the origin cannot expose another hostname, direct route, or unprotected `/admin` path that bypasses Access.
+
+Even when the origin is reachable only through Cloudflare, application-side JWT verification remains required. Conversely, JWT verification does not replace protecting and restricting the origin. No Cloudflare API keys or Access service-token credentials are needed or should be added for normal verification.
 
 ### Migrations and database roles
 
