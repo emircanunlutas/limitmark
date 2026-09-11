@@ -1,9 +1,11 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { requestSchema, readRequestFormData, getFieldErrors, getRequestValues, type RequestState } from "@/lib/request-schema";
 import { submitToAdapter } from "@/lib/submission-adapter";
 import { readSubmissionToken } from "@/lib/submission-token";
+import { readTurnstileToken } from "@/lib/turnstile";
 
 export async function submitTestRequest(_previous: RequestState, formData: FormData): Promise<RequestState> {
   // This is a public inquiry, not authentication or execution authorization.
@@ -18,7 +20,10 @@ export async function submitTestRequest(_previous: RequestState, formData: FormD
   }
 
   try {
-    const submission = await submitToAdapter(result.data, submissionToken);
+    const submission = await submitToAdapter(result.data, submissionToken, {
+      headers: await headers(),
+      turnstileToken: readTurnstileToken(formData),
+    });
     if (submission.status === "unavailable") {
       return { errors: {}, values, submissionToken, message: "Talep gönderimi şu anda kullanılamıyor. Bilgileriniz iletilmedi. Lütfen daha sonra tekrar deneyin." };
     }

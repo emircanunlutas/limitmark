@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Script from "next/script";
 import { useActionState, useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { unstable_rethrow } from "next/navigation";
 import { submitTestRequest } from "@/app/test-talep-et/actions";
@@ -17,7 +18,11 @@ const authorityOptions = [
 ];
 const initialState: RequestState = { errors: {} };
 
-export function RequestForm({ initialService, submissionToken }: { initialService: string; submissionToken: string }) {
+export function RequestForm({ initialService, submissionToken, turnstile }: {
+  initialService: string;
+  submissionToken: string;
+  turnstile: null | { siteKey: string; action: string };
+}) {
   // Retain the native Server Action for submissions before hydration/without JS.
   const [serverState, formAction, serverPending] = useActionState(submitTestRequest, initialState);
   const [clientState, setClientState] = useState<RequestState | null>(null);
@@ -43,6 +48,11 @@ export function RequestForm({ initialService, submissionToken }: { initialServic
     if (hasErrors || state.message) summaryRef.current?.focus();
   }, [state, validationAttempt, hasErrors]);
 
+  useEffect(() => {
+    if (!state.message || !turnstile) return;
+    (window as Window & { turnstile?: { reset(): void } }).turnstile?.reset();
+  }, [state.message, turnstile]);
+
   const update = (field: RequestField, value: string) => setValues((previous) => ({ ...previous, [field]: value }));
   function inputProps(field: RequestField, hasHelper = false) {
     const descriptions = [hasHelper ? `${field}-help` : "", errors[field] ? `${field}-error` : ""].filter(Boolean).join(" ");
@@ -55,7 +65,8 @@ export function RequestForm({ initialService, submissionToken }: { initialServic
     else element?.focus();
   }
 
-  return (
+  return (<>
+    {turnstile && <Script src="https://challenges.cloudflare.com/turnstile/v0/api.js" strategy="afterInteractive" async defer />}
     <form ref={hydrateForm} className="request-form" action={formAction} noValidate onSubmit={(event) => {
       // Handle hydrated submissions explicitly: React's automatic form reset also
       // runs for returned validation errors, and transport errors must stay inline.
@@ -159,8 +170,13 @@ export function RequestForm({ initialService, submissionToken }: { initialServic
         <p className="helper">Paylaştığınız bilgiler, talebinizi değerlendirmek ve sizinle iletişime geçmek için kullanılır. Ayrıntılar için <Link href="/gizlilik">Gizlilik sayfasını</Link> inceleyin.</p>
         <p className="helper">Talep göndermek test başlatmaz ve test yürütme yetkisi vermez. Nihai hedefler, kapsam, kapsam dışı alanlar, takvim, sınırlar, durdurma koşulları ve açık yetkilendirme testten önce manuel olarak belgelenir. <Link href="/test-yetkilendirmesi">Test Yetkilendirmesi ve Koşulları</Link>.</p>
       </div>
+      {turnstile && <>
+        <div className="cf-turnstile" data-sitekey={turnstile.siteKey} data-action={turnstile.action} data-appearance="interaction-only" />
+        <noscript><p className="helper">Güvenlik doğrulaması için JavaScript gereklidir. JavaScript&apos;i etkinleştirip sayfayı yenileyin.</p></noscript>
+      </>}
       <button className="button button-primary" type="submit" disabled={pending}>{pending ? "Gönderiliyor…" : "Talebi Gönder"}</button>
       <span className="sr-only" role="status">{pending ? "Talebiniz işleniyor. Lütfen bekleyin." : ""}</span>
     </form>
+  </>
   );
 }

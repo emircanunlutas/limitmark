@@ -56,7 +56,7 @@ In development, valid requests pass through a non-persistent demo adapter and re
 
 In production, the demo adapter is **disabled by default**. A valid submission returns a clear unavailable message and retains the entered values. To preview the complete demo using a production build, explicitly set `ALLOW_DEMO_SUBMISSIONS=true` in the process environment or an ignored `.env.local`. This opt-in is for isolated preview only. Unknown `REQUEST_SUBMISSION_MODE` values always fail closed.
 
-Phase 1 adds an explicitly gated PostgreSQL mode. It is selected only when all of the following are valid:
+Phase 1 adds an explicitly gated PostgreSQL foundation. Database access is configured only when all of the following are valid:
 
 - `REQUEST_SUBMISSION_MODE=postgres`
 - `ENABLE_PERSISTENT_SUBMISSIONS=true`
@@ -65,7 +65,31 @@ Phase 1 adds an explicitly gated PostgreSQL mode. It is selected only when all o
 
 Missing or malformed configuration never falls back to demo success. Database connection/query failures also produce the existing safe failure path, without exposing database details or submitted values. The runtime keeps one bounded Postgres.js pool per application process and disables prepared statements for compatibility with managed transaction poolers; it does not create a pool per request. This process-level bound does not replace provider-side pooling across multiple serverless instances. Use the selected managed provider's pooled/serverless-safe PostgreSQL endpoint where applicable. Provider-specific TLS/query parameters belong in the server-only URL.
 
-**REAL NON-DEMO PUBLIC SUBMISSIONS MUST NOT BE ENABLED UNTIL LATER ABUSE-CONTROL AND SECURITY/PRODUCTION-READINESS PHASES ARE COMPLETE.** Phase 1 is a persistence foundation, not public launch authorization.
+Those database settings are no longer sufficient to enable public persistence. The public adapter now has a separate abuse-control gate described below.
+
+### Public inquiry abuse-control boundary
+
+The public persistence path validates and normalizes the allowlisted form fields with the authoritative Zod schema and validates the opaque submission token before it reads request identity or calls any rate-limit, Turnstile or database provider. Next.js also rejects Server Action bodies above the configured 32 KB raw-body limit. Malformed, duplicate-field, file-valued and oversized field submissions therefore cannot reach provider or persistence work.
+
+After validation, an enabled production path must pass two rolling-window limits in one atomic shared-store operation: five attempts per privacy-preserving client key in ten minutes and a broader 100-attempt global burst limit per minute. Public responses intentionally collapse a limit, missing identity, provider outage, Turnstile rejection/timeout and incomplete configuration into the existing neutral unavailable response. They do not expose thresholds, keys, providers or configuration. The adapter contract requires atomic shared, durable behavior; a deterministic sliding-window memory adapter exists only under `tests/support`. It is not a Vercel production implementation.
+
+No production rate-limit provider is registered in this phase. Consequently, even a correctly configured database, `ENABLE_PERSISTENT_SUBMISSIONS=true`, and plausible abuse environment values cannot enable public persistence. A later reviewed provider adapter must be added to the explicit production registry before the gate can open. A backend timeout/outage must return `unavailable`; it must never degrade to an allow decision or per-instance memory.
+
+Client identity has one implemented trust boundary: Vercel must be the immediate ingress (`VERCEL=1` and `VERCEL_ENV=production` supplied by the platform, with `SUBMISSION_CLIENT_IP_SOURCE=vercel` explicitly selected). Preview, development and missing Vercel environment values fail closed. Only Vercel's platform copy, `x-vercel-forwarded-for`, is accepted, and only as one syntactically valid IPv4 or IPv6 address. `x-forwarded-for`, `x-real-ip`, `cf-connecting-ip`, comma-separated chains and malformed values are ignored. The address is immediately converted to an HMAC-SHA-256 key using a server-only 32-byte secret; the raw address is not stored in inquiry records, sent to Turnstile, returned or logged. Changing ingress or enabling Vercel Trusted Proxy requires a new documented trust-policy review rather than a header fallback.
+
+Turnstile materially improves resistance to distributed low-rate automation that per-client and global windows alone cannot distinguish. The integration boundary is therefore implemented and mandatory for future public persistence, but disabled today. Go-live requires `TURNSTILE_MODE=enabled`, real site and secret keys, and an exact expected hostname; every Cloudflare-documented testing sitekey and secret key is explicitly denied by the production gate. The server calls Siteverify with a five-second timeout, checks `success`, hostname and the fixed `public-inquiry` action, and sends no `remoteip`. A deterministic UUID derived from both the opaque submission token and the particular Turnstile response is used only as Siteverify's retry idempotency key, so the same response retries consistently while a newly issued response has an independent scope. Siteverify failure, timeout or malformed response fails closed before persistence.
+
+Use a Cloudflare **Managed** widget restricted to the production hostname with `appearance=interaction-only`: most visitors see no challenge, while Cloudflare can display an accessible interaction when needed. The widget and Cloudflare script render only after the complete production gate is valid, so the current JS and no-JS demo journeys remain unchanged and make no Cloudflare request. When enabled, JavaScript is deliberately required for anti-bot verification; a `<noscript>` explanation is present, native validation errors occur before token redemption, and hydrated provider/persistence failures reset the widget for a legitimate retry. Cloudflare tokens remain server-verified, single-use and time-limited.
+
+The public go-live gate requires all of the following, in addition to the database settings above:
+
+- a reviewed shared/atomic production rate-limit adapter registered in code and its exact `RATE_LIMIT_PROVIDER` selected;
+- deployment on the explicitly trusted immediate Vercel production boundary (`VERCEL=1`, `VERCEL_ENV=production`);
+- `SUBMISSION_CLIENT_IP_SOURCE=vercel` and a server-only 32-byte base64url `SUBMISSION_CLIENT_KEY_SECRET`;
+- `TURNSTILE_MODE=enabled`, real environment-specific keys, an exact production hostname, and a Managed hostname-restricted widget;
+- operational monitoring and provider-side limits that do not record request bodies, tokens, raw addresses or submitted customer data.
+
+Current official references: Vercel documents its [request IP headers and proxy overwrite semantics](https://vercel.com/docs/headers/request-headers) and [`VERCEL`/`VERCEL_ENV` system variables](https://vercel.com/docs/environment-variables/system-environment-variables). Cloudflare documents [mandatory Siteverify validation, five-minute/single-use tokens and retry idempotency](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/), [Managed widget interaction-only appearance](https://developers.cloudflare.com/turnstile/get-started/client-side-rendering/widget-configurations/), and the [exact testing credentials that must never be used in production](https://developers.cloudflare.com/turnstile/troubleshooting/testing/).
 
 ### Persistence transaction and idempotency
 
@@ -203,7 +227,7 @@ Remove-Item Env:TEST_DATABASE_URL
 
 The database command runs both the Phase 1 persistence suite and Phase 2A outbox suite serially against the disposable database. Phase 2A coverage includes atomic claims, overlapping workers/processors, leases and expiry, retries and exhaustion, terminal states, batch bounds, attempts, thrown adapters, stale-worker outcome rejection, and inquiry immutability.
 
-Before a future public launch, retain the Server Action validation and 32 KB body limit, add approved shared abuse controls at the trusted ingress, define retention/access/backup policy, and review infrastructure logging. Never trust arbitrary forwarded IP headers or log request contents.
+Before a future public launch, retain the Server Action validation and 32 KB body limit, implement and register the selected shared rate-limit provider, configure the documented Vercel/Turnstile gates, define retention/access/backup policy, update the final privacy notice with the selected processors, and review platform/provider logging. Never trust arbitrary forwarded IP headers or log request contents.
 
 Keep execution entirely separate: **a form submission never starts, schedules or authorizes a test**. Final targets, exclusions, limits, conditions, schedule, stop procedure and explicit authority must be documented manually before any testing.
 
