@@ -2,12 +2,16 @@ import type { Metadata } from "next";
 import { Container } from "@/components/container";
 import { RequestForm } from "@/components/request-form";
 import { resolveService } from "@/lib/services";
+import { generateSubmissionToken } from "@/lib/submission-token.server";
+import { connection } from "next/server";
 
 export const metadata: Metadata = { title: "Test Talep Et", description: "Sisteminizi ve öğrenmek istediğiniz konuyu paylaşın. Test kapsamını ve yetkilendirmeyi manuel olarak birlikte belirleyelim." };
 
 export default async function RequestPage({ searchParams }: { searchParams: Promise<{ hizmet?: string | string[] }> }) {
+  await connection();
   const { hizmet } = await searchParams;
   const service = resolveService(hizmet);
+  const submissionToken = generateSubmissionToken();
   return <div className="page-shell"><Container>
     <div className="page-heading">
       <h1>Test Talep Et</h1>
@@ -16,6 +20,6 @@ export default async function RequestPage({ searchParams }: { searchParams: Prom
       <p className="request-notice">Bu formu göndermek test başlatmaz.</p>
       <p className="helper">İsteğe bağlı alanları boş bırakabilirsiniz.</p>
     </div>
-    <RequestForm key={service} initialService={service} />
+    <RequestForm key={service} initialService={service} submissionToken={submissionToken} />
   </Container></div>;
 }

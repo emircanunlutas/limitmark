@@ -34,7 +34,12 @@ export const requestSchema = z.object({
 export type TestRequest = z.output<typeof requestSchema>;
 export type RequestField = keyof typeof fieldLabels;
 export type FieldErrors = Partial<Record<RequestField, string>>;
-export type RequestState = { errors: FieldErrors; message?: string; values?: Partial<Record<RequestField, string>> };
+export type RequestState = {
+  errors: FieldErrors;
+  message?: string;
+  values?: Partial<Record<RequestField, string>>;
+  submissionToken?: string;
+};
 
 // Re-render bounded, known text values after a non-JavaScript POST fails.
 // Never reflect files, duplicate entries, or unrelated fields back into the form.

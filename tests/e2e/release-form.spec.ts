@@ -10,6 +10,19 @@ async function fillRequest(page: Page) {
   await page.getByLabel("Henüz test yetkim yok / yetkimden emin değilim.", { exact: true }).check();
 }
 
+test("a fresh render gets a new token while client-side validation preserves its token", async ({ page }) => {
+  await page.goto("/test-talep-et");
+  const tokenField = page.locator('input[name="submissionToken"]');
+  const firstToken = await tokenField.inputValue();
+  expect(firstToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
+  await expect(page.getByRole("main").getByRole("alert")).toBeVisible();
+  await expect(tokenField).toHaveValue(firstToken);
+  await page.reload();
+  await expect(tokenField).not.toHaveValue(firstToken);
+  expect(await tokenField.inputValue()).toMatch(/^[A-Za-z0-9_-]{43}$/);
+});
+
 test("maximum-length multiline text is accepted consistently by client and server", async ({ page }) => {
   await fillRequest(page);
   await page.getByLabel("Test etmek istediğiniz sistem", { exact: true }).fill("a".repeat(998) + "\nb");
@@ -20,6 +33,8 @@ test("maximum-length multiline text is accepted consistently by client and serve
 
 test("a failed submission transport preserves the form and permits retry", async ({ page }) => {
   await fillRequest(page);
+  const submissionToken = await page.locator('input[name="submissionToken"]').inputValue();
+  expect(submissionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
   await page.route("**/test-talep-et", async (route) => {
     if (route.request().method() === "POST") await route.abort("failed");
     else await route.continue();
@@ -27,6 +42,7 @@ test("a failed submission transport preserves the form and permits retry", async
   await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
   await expect(page.getByRole("main").getByRole("alert")).toBeVisible();
   await expect(page.getByLabel("Adınız", { exact: true })).toHaveValue("Çağrı Öztürk");
+  await expect(page.locator('input[name="submissionToken"]')).toHaveValue(submissionToken);
   await page.unroute("**/test-talep-et");
   await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
   await expect(page).toHaveURL("/test-talep-et/tesekkurler");
@@ -36,11 +52,13 @@ test("server validation without JavaScript retains valid entries for correction"
   const context = await browser.newContext({ javaScriptEnabled: false, baseURL });
   const page = await context.newPage();
   await fillRequest(page);
+  const submissionToken = await page.locator('input[name="submissionToken"]').inputValue();
   await page.getByLabel("E-posta adresiniz", { exact: true }).fill("invalid");
   await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
   await expect(page.getByRole("main").getByRole("alert")).toBeVisible();
   await expect(page.getByLabel("Adınız", { exact: true })).toHaveValue("Çağrı Öztürk");
   await expect(page.getByLabel("Test etmek istediğiniz sistem", { exact: true })).toHaveValue("Hazırlık ortamı");
+  await expect(page.locator('input[name="submissionToken"]')).toHaveValue(submissionToken);
   await page.getByLabel("E-posta adresiniz", { exact: true }).fill("qa@example.test");
   await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
   await expect(page).toHaveURL("/test-talep-et/tesekkurler");

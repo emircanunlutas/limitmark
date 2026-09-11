@@ -8,14 +8,22 @@
     "start": "next start --hostname 127.0.0.1",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "tsx --test tests/request-schema.test.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "test:db": "tsx --test tests/persistence.integration.test.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
     "test:e2e": "playwright test",
+    "test:persistence-guard": "playwright test --config=playwright.persistence-guard.config.ts",
     "test:blockers": "playwright test --config=playwright.blockers.config.ts",
     "check": "npm run lint && npm run typecheck && npm test && npm run build"
   },
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "dependencies": {
+    "drizzle-orm": "0.45.2",
     "next": "16.3.4",
+    "postgres": "3.4.9",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "server-only": "0.0.1",
@@ -27,6 +35,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "drizzle-kit": "0.31.10",
     "eslint": "^9.39.0",
     "eslint-config-next": "16.3.4",
     "tsx": "^4.21.0",

@@ -8,6 +8,7 @@ import { fieldLabels, fieldLimits, getFieldErrors, getRequestValues, readRequest
 import { serviceOptions } from "@/lib/services";
 import { FormField } from "./form-field";
 import { Disclosure } from "./disclosure";
+import { submissionTokenField } from "@/lib/submission-token";
 
 const authorityOptions = [
   { value: "owner", label: "Sistem bana / temsil ettiğim kuruluşa ait." },
@@ -16,7 +17,7 @@ const authorityOptions = [
 ];
 const initialState: RequestState = { errors: {} };
 
-export function RequestForm({ initialService }: { initialService: string }) {
+export function RequestForm({ initialService, submissionToken }: { initialService: string; submissionToken: string }) {
   // Retain the native Server Action for submissions before hydration/without JS.
   const [serverState, formAction, serverPending] = useActionState(submitTestRequest, initialState);
   const [clientState, setClientState] = useState<RequestState | null>(null);
@@ -85,6 +86,7 @@ export function RequestForm({ initialService }: { initialService: string }) {
         }
       });
     }}>
+      <input type="hidden" name={submissionTokenField} value={state.submissionToken ?? submissionToken} />
       {(hasErrors || state.message) && <div className="error-summary" tabIndex={-1} ref={summaryRef} role="alert">
         <h2>{hasErrors ? "Lütfen işaretli alanları kontrol edin." : "Talep gönderilemedi."}</h2>
         {state.message && <p>{state.message}</p>}

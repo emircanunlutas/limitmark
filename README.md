@@ -24,8 +24,10 @@ Open **http://127.0.0.1:3000**. On PowerShell, use `npm.cmd` if local policy pre
 - `src/lib/site-config.ts`: neutral brand and server-side contact configuration.
 - `src/lib/request-schema.ts`: shared Zod validation, whitelisted field extraction and Turkish errors.
 - `src/app/test-talep-et/actions.ts`: independently validated Server Action.
-- `src/lib/submission-adapter.ts`: isolated submission boundary.
-- `src/lib/submission-policy.ts`: explicit production demo guard.
+- `src/lib/submission-adapter.ts`: isolated demo/production submission boundary.
+- `src/lib/inquiry-repository.ts`: idempotent transactional inquiry repository.
+- `src/lib/db/schema.ts` and `drizzle/`: typed PostgreSQL schema and SQL migrations.
+- `src/lib/submission-policy.ts` and `src/lib/persistence-config.ts`: explicit fail-closed gates.
 
 ## Routes
 
@@ -42,19 +44,56 @@ An unknown or repeated service query defaults to `unsure`. A custom Turkish 404 
 
 ## Submission behavior — read before launch
 
-**This version is a local/demo implementation. No email is sent, no request is stored, and no CRM or external recipient receives the form.** The confirmation page implements the approved future public copy; it is a demonstration of that flow, not evidence of delivery. Do not use this version to accept real inquiries.
+The default mode remains a local demo. In demo mode no email is sent, no request is stored, and no CRM or external recipient receives the form. The confirmation page demonstrates the approved future flow; it is not evidence of delivery.
 
 In development, valid requests pass through a non-persistent demo adapter and redirect to confirmation. Both client and server validate the same schema; server validation is authoritative. Unknown fields are stripped, repeated known fields and file values are rejected, lengths and enum values are checked, and stale provider details are removed when protection is not in use. Form data is never put into a URL, local storage or application logs. React renders text safely without raw HTML injection.
 
 In production, the demo adapter is **disabled by default**. A valid submission returns a clear unavailable message and retains the entered values. To preview the complete demo using a production build, explicitly set `ALLOW_DEMO_SUBMISSIONS=true` in the process environment or an ignored `.env.local`. This opt-in is for isolated preview only. Unknown `REQUEST_SUBMISSION_MODE` values always fail closed.
 
-To connect a real backend:
+Phase 1 adds an explicitly gated PostgreSQL mode. It is selected only when all of the following are valid:
 
-1. Implement a server-only `SubmissionAdapter` with an approved email/inbox/CRM or durable database destination. Extend the result type for real receipt and select it explicitly in `submitToAdapter`.
-2. Return success only after durable acceptance; map failures to the existing safe UI error. Add idempotency so retries cannot create duplicate inquiries.
-3. Retain the Server Action validation and 32 KB body limit. Add invisible backend rate limiting and abuse checks at the trusted ingress/adapter boundary. Do not trust arbitrary forwarded IP headers. Use shared rate-limit storage across server instances; no permanent CAPTCHA is included.
-4. Define retention, access controls and redacted operational logging. Never store credentials in source or log request bodies. Review host/proxy logging independently.
-5. Keep execution entirely separate: **a form submission never starts, schedules or authorizes a test**. Final targets, exclusions, limits, conditions, schedule, stop procedure and explicit authority must be documented manually before any testing.
+- `REQUEST_SUBMISSION_MODE=postgres`
+- `ENABLE_PERSISTENT_SUBMISSIONS=true`
+- `DATABASE_URL` is a credentialed `postgres://` or `postgresql://` runtime URL using the selected managed provider's pooled/serverless-safe endpoint where available
+- optional `DATABASE_POOL_MAX` is an integer from 1 through 10 (default `5`)
+
+Missing or malformed configuration never falls back to demo success. Database connection/query failures also produce the existing safe failure path, without exposing database details or submitted values. The runtime keeps one bounded Postgres.js pool per application process and disables prepared statements for compatibility with managed transaction poolers; it does not create a pool per request. This process-level bound does not replace provider-side pooling across multiple serverless instances. Use the selected managed provider's pooled/serverless-safe PostgreSQL endpoint where applicable. Provider-specific TLS/query parameters belong in the server-only URL.
+
+**REAL NON-DEMO PUBLIC SUBMISSIONS MUST NOT BE ENABLED UNTIL LATER ABUSE-CONTROL AND SECURITY/PRODUCTION-READINESS PHASES ARE COMPLETE.** Phase 1 is a persistence foundation, not public launch authorization.
+
+### Persistence transaction and idempotency
+
+Each fresh server render creates a 256-bit opaque submission token and places it in a hidden native form control. The same token survives hydrated submission, native submission, validation responses, corrected resubmission and transport retry. The server hashes a fixed-order serialization of the authoritative normalized Zod output with SHA-256; raw form bodies, tokens and fingerprints are not logged.
+
+The repository transaction attempts an inquiry insert using the database-unique token. A new row atomically creates exactly one `inquiry_received` event and one pending notification outbox row. A matching token and fingerprint is an idempotent success, including after a concurrent unique-constraint race. A matching token with a different fingerprint neither writes nor overwrites anything and returns a generic safe retry path. PostgreSQL is the source of truth; no external side effect occurs inside the transaction.
+
+`inquiry_events` is append-only (updates/deletes are rejected), and inquiry, event, note and outbox foreign keys use restrictive deletion rather than cascading history loss. The inquiry workflow vocabulary is `received`, `in_review`, `awaiting_scope`, `proposal_sent`, `approved`, `declined`, `completed`, and `archived`; Phase 1 does not implement transitions.
+
+Outbox states are explicit: `pending` has never been attempted, `processing` is actively leased, `retryable` may be claimed again after a failed attempt, `sent` is delivered, and `failed` is terminal retry exhaustion requiring operational attention. Only `pending` and `retryable` rows are eligible through the future claim index. `admin_notes` and notification worker behavior are schema-only. **No email or other real notification delivery exists in Phase 1.**
+
+### Migrations and database roles
+
+Use separate migration credentials; the application runtime role needs data access but must not require table/type/function creation privileges.
+
+```powershell
+$env:DATABASE_MIGRATION_URL = '<migration connection URL>'
+npm.cmd run db:migrate
+Remove-Item Env:DATABASE_MIGRATION_URL
+```
+
+Create future generated migrations with `npm run db:generate`, review the SQL, then apply them with `db:migrate`. Keep all URLs in the process environment or ignored local environment files, never tracked files.
+
+For PostgreSQL integration tests, create a **dedicated disposable database**. The suite applies tracked migrations and truncates the four Phase 1 tables between cases; never point it at development, staging or production data.
+
+```powershell
+$env:TEST_DATABASE_URL = '<dedicated disposable database URL>'
+npm.cmd run test:db
+Remove-Item Env:TEST_DATABASE_URL
+```
+
+Before a future public launch, retain the Server Action validation and 32 KB body limit, add approved shared abuse controls at the trusted ingress, define retention/access/backup policy, and review infrastructure logging. Never trust arbitrary forwarded IP headers or log request contents.
+
+Keep execution entirely separate: **a form submission never starts, schedules or authorizes a test**. Final targets, exclusions, limits, conditions, schedule, stop procedure and explicit authority must be documented manually before any testing.
 
 There is deliberately no target-fetching, probing, task queue or test executor in the application.
 
@@ -74,6 +113,8 @@ npm run build
 ```
 
 `npm run check` runs all four. Lint uses the ESLint CLI independently of the Next build. Unit tests cover the trust boundary, validation and the production demo guard.
+
+`npm run test:db` runs the PostgreSQL-only migration, idempotency, concurrency and rollback suite described above. `npm run test:persistence-guard` starts the production build with persistence requested but deliberately malformed database configuration and verifies fail-closed behavior with and without JavaScript.
 
 The browser regression suite covers form completion, service selection, associated errors, mobile keyboard navigation, independent disclosures, six viewport widths and automated accessibility rules. After a production build, install a test browser and run it:
 
@@ -141,7 +182,7 @@ The server binds to loopback by default, suitable for a reverse proxy. For a con
 
 Before public launch:
 
-- Connect and verify a real durable submission backend; remove production demo opt-in.
+- Select a managed PostgreSQL provider, apply the migration with the migration role, grant the least runtime privileges, and run the real PostgreSQL integration suite against that engine.
 - Approve the brand and configure a real contact address.
 - **Have final privacy, personal-data disclosure and legal/authorization texts reviewed.** Current support pages are operational placeholders, not finalized legal documents. Supply actual operator details, applicable legal basis, retention and request procedures.
 - Review third-party infrastructure permissions and the manual execution/stop procedure independently of this website.
