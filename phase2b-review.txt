@@ -1,0 +1,494 @@
+
+================================================================================
+FILE: src/lib/notification-config.ts
+================================================================================
+
+import { getContactEmail } from "./contact-email";
+
+export type NotificationEnvironment = {
+  [key: string]: string | undefined;
+  ENABLE_REAL_NOTIFICATIONS?: string;
+  RESEND_API_KEY?: string;
+  NOTIFICATION_FROM_EMAIL?: string;
+  NOTIFICATION_TO_EMAIL?: string;
+};
+
+export type NotificationConfiguration =
+  | { enabled: false; reason: "gate" | "api-key" | "sender" | "recipient" }
+  | { enabled: true; apiKey: string; fromEmail: string; toEmail: string };
+
+function getApiKey(value: string | undefined): string | null {
+  const key = value?.trim() ?? "";
+  return /^re_[A-Za-z0-9_-]+$/.test(key) && key.length <= 512 ? key : null;
+}
+
+/** Pure fail-closed parser; safe to unit test without constructing a provider client. */
+export function getNotificationConfiguration(
+  environment: NotificationEnvironment,
+): NotificationConfiguration {
+  if (environment.ENABLE_REAL_NOTIFICATIONS !== "true") {
+    return { enabled: false, reason: "gate" };
+  }
+
+  const apiKey = getApiKey(environment.RESEND_API_KEY);
+  if (!apiKey) return { enabled: false, reason: "api-key" };
+
+  const fromEmail = getContactEmail(environment.NOTIFICATION_FROM_EMAIL);
+  if (!fromEmail) return { enabled: false, reason: "sender" };
+
+  const toEmail = getContactEmail(environment.NOTIFICATION_TO_EMAIL);
+  if (!toEmail) return { enabled: false, reason: "recipient" };
+
+  return { enabled: true, apiKey, fromEmail, toEmail };
+}
+
+
+================================================================================
+FILE: src/lib/resend-notification-adapter.ts
+================================================================================
+
+import "server-only";
+import type {
+  NotificationAdapter,
+  NotificationCommand,
+  NotificationDeliveryResult,
+} from "./notification-adapter";
+import {
+  getNotificationConfiguration,
+  type NotificationEnvironment,
+} from "./notification-config";
+
+const resendEndpoint = "https://api.resend.com/emails";
+export const resendRequestTimeoutMs = 10_000;
+
+type ResendSendRequest = {
+  from: string;
+  to: string[];
+  subject: string;
+  text: string;
+};
+
+type ResendSendResult =
+  | { accepted: true }
+  | { accepted: false; statusCode: number | null; errorName: string | null };
+
+export interface ResendEmailClient {
+  send(request: ResendSendRequest, idempotencyKey: string): Promise<ResendSendResult>;
+}
+
+type FetchImplementation = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
+function readErrorName(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const name = Reflect.get(value, "name");
+  return typeof name === "string" ? name : null;
+}
+
+/** Minimal typed Resend HTTPS client. It never logs or returns response bodies/messages. */
+export class ResendHttpClient implements ResendEmailClient {
+  constructor(
+    private readonly apiKey: string,
+    private readonly fetchImplementation: FetchImplementation = fetch,
+    private readonly timeoutMs = resendRequestTimeoutMs,
+  ) {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+      throw new RangeError("timeoutMs must be a positive safe integer");
+    }
+  }
+
+  async send(request: ResendSendRequest, idempotencyKey: string): Promise<ResendSendResult> {
+    const response = await this.fetchImplementation(resendEndpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+        "User-Agent": "resilience-testing-website/notification-outbox",
+      },
+      body: JSON.stringify(request),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+
+    if (response.ok) return { accepted: true };
+
+    let errorName: string | null = null;
+    try {
+      errorName = readErrorName(await response.json());
+    } catch {
+      // A malformed provider body is deliberately discarded and classified by status only.
+    }
+    return { accepted: false, statusCode: response.status, errorName };
+  }
+}
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function validCommand(command: NotificationCommand): boolean {
+  return uuidPattern.test(command.idempotencyKey) &&
+    uuidPattern.test(command.inquiryId) &&
+    command.eventType === "inquiry_received";
+}
+
+function classifyProviderFailure(
+  statusCode: number | null,
+  errorName: string | null,
+): NotificationDeliveryResult {
+  if (statusCode === 429 || errorName === "rate_limit_exceeded" ||
+      errorName === "monthly_quota_exceeded" || errorName === "daily_quota_exceeded") {
+    return { outcome: "retryable_failure", errorCode: "rate_limited" };
+  }
+
+  if (statusCode === 408) {
+    return { outcome: "retryable_failure", errorCode: "timeout" };
+  }
+
+  if ((statusCode !== null && statusCode >= 500) ||
+      errorName === "application_error" || errorName === "internal_server_error" ||
+      errorName === "concurrent_idempotent_requests") {
+    return { outcome: "retryable_failure", errorCode: "provider_unavailable" };
+  }
+
+  const rejectedNames = new Set([
+    "invalid_idempotency_key",
+    "validation_error",
+    "missing_api_key",
+    "restricted_api_key",
+    "invalid_api_key",
+    "not_found",
+    "method_not_allowed",
+    "invalid_idempotent_request",
+    "invalid_attachment",
+    "invalid_from_address",
+    "invalid_access",
+    "invalid_parameter",
+    "invalid_region",
+    "missing_required_field",
+    "security_error",
+  ]);
+  if (errorName !== null && rejectedNames.has(errorName)) {
+    return { outcome: "permanent_failure", errorCode: "rejected" };
+  }
+  if (statusCode !== null && statusCode >= 400 && statusCode < 500) {
+    return { outcome: "permanent_failure", errorCode: "rejected" };
+  }
+
+  return { outcome: "retryable_failure", errorCode: "unknown" };
+}
+
+function classifyThrownFailure(error: unknown): NotificationDeliveryResult {
+  const name = readErrorName(error);
+  if (name === "AbortError" || name === "TimeoutError") {
+    return { outcome: "retryable_failure", errorCode: "timeout" };
+  }
+  if (error instanceof TypeError) {
+    return { outcome: "retryable_failure", errorCode: "provider_unavailable" };
+  }
+  return { outcome: "retryable_failure", errorCode: "unknown" };
+}
+
+export class ResendNotificationAdapter implements NotificationAdapter {
+  constructor(
+    private readonly client: ResendEmailClient,
+    private readonly fromEmail: string,
+    private readonly toEmail: string,
+  ) {}
+
+  async deliver(command: NotificationCommand): Promise<NotificationDeliveryResult> {
+    if (!validCommand(command)) {
+      return { outcome: "permanent_failure", errorCode: "rejected" };
+    }
+
+    const request: ResendSendRequest = {
+      from: this.fromEmail,
+      to: [this.toEmail],
+      subject: `New inquiry received — ${command.inquiryId}`,
+      text: `A new inquiry has been received.\n\nReference: ${command.inquiryId}`,
+    };
+
+    try {
+      const result = await this.client.send(request, command.idempotencyKey);
+      return result.accepted
+        ? { outcome: "delivered" }
+        : classifyProviderFailure(result.statusCode, result.errorName);
+    } catch (error) {
+      // Provider exception messages and stacks are deliberately neither logged nor returned.
+      return classifyThrownFailure(error);
+    }
+  }
+}
+
+export type ConfiguredNotificationAdapter =
+  | { available: false; reason: "gate" | "api-key" | "sender" | "recipient" }
+  | { available: true; adapter: NotificationAdapter };
+
+export function createConfiguredNotificationAdapter(
+  environment: NotificationEnvironment,
+  createClient: (apiKey: string) => ResendEmailClient,
+): ConfiguredNotificationAdapter {
+  const configuration = getNotificationConfiguration(environment);
+  if (!configuration.enabled) {
+    return { available: false, reason: configuration.reason };
+  }
+
+  return {
+    available: true,
+    adapter: new ResendNotificationAdapter(
+      createClient(configuration.apiKey),
+      configuration.fromEmail,
+      configuration.toEmail,
+    ),
+  };
+}
+
+/** Server-only runtime factory. It does not fall back to a synthetic success adapter. */
+export function getNotificationAdapter(
+  environment: NotificationEnvironment = process.env,
+): ConfiguredNotificationAdapter {
+  return createConfiguredNotificationAdapter(
+    environment,
+    (apiKey) => new ResendHttpClient(apiKey),
+  );
+}
+
+
+================================================================================
+FILE: tests/resend-notification.test.ts
+================================================================================
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { NotificationCommand } from "../src/lib/notification-adapter";
+import { getNotificationConfiguration } from "../src/lib/notification-config";
+import type { FailNotificationInput } from "../src/lib/notification-outbox-repository";
+import { processOutboxBatch } from "../src/lib/outbox-processor";
+import {
+  createConfiguredNotificationAdapter,
+  ResendHttpClient,
+  ResendNotificationAdapter,
+  type ResendEmailClient,
+} from "../src/lib/resend-notification-adapter";
+
+const command: NotificationCommand = {
+  idempotencyKey: "00000000-0000-4000-8000-000000000001",
+  inquiryId: "00000000-0000-4000-8000-000000000002",
+  eventType: "inquiry_received",
+};
+
+const completeEnvironment = {
+  ENABLE_REAL_NOTIFICATIONS: "true",
+  RESEND_API_KEY: "re_synthetic_unit_test_key",
+  NOTIFICATION_FROM_EMAIL: "notifications@example.test",
+  NOTIFICATION_TO_EMAIL: "internal@example.test",
+};
+
+test("notification configuration and construction fail closed", () => {
+  assert.deepEqual(getNotificationConfiguration({}), { enabled: false, reason: "gate" });
+  assert.deepEqual(
+    getNotificationConfiguration({ ...completeEnvironment, ENABLE_REAL_NOTIFICATIONS: "TRUE" }),
+    { enabled: false, reason: "gate" },
+  );
+  assert.deepEqual(
+    getNotificationConfiguration({ ...completeEnvironment, RESEND_API_KEY: "" }),
+    { enabled: false, reason: "api-key" },
+  );
+  assert.deepEqual(
+    getNotificationConfiguration({ ...completeEnvironment, RESEND_API_KEY: "malformed" }),
+    { enabled: false, reason: "api-key" },
+  );
+  assert.deepEqual(
+    getNotificationConfiguration({ ...completeEnvironment, NOTIFICATION_FROM_EMAIL: "Sender <sender@example.test>" }),
+    { enabled: false, reason: "sender" },
+  );
+  assert.deepEqual(
+    getNotificationConfiguration({ ...completeEnvironment, NOTIFICATION_TO_EMAIL: "not-an-address" }),
+    { enabled: false, reason: "recipient" },
+  );
+
+  let constructedWith: string | null = null;
+  const configured = createConfiguredNotificationAdapter(completeEnvironment, (apiKey) => {
+    constructedWith = apiKey;
+    return { async send() { return { accepted: true }; } };
+  });
+  assert.equal(configured.available, true);
+  assert.equal(constructedWith, completeEnvironment.RESEND_API_KEY);
+
+  let disabledClientConstructed = false;
+  const disabled = createConfiguredNotificationAdapter(
+    { ...completeEnvironment, ENABLE_REAL_NOTIFICATIONS: "false" },
+    () => {
+      disabledClientConstructed = true;
+      return { async send() { return { accepted: true }; } };
+    },
+  );
+  assert.deepEqual(disabled, { available: false, reason: "gate" });
+  assert.equal(disabledClientConstructed, false);
+});
+
+test("accepted Resend delivery uses minimal content and the stable outbox idempotency key", async () => {
+  const sends: Array<{ request: unknown; idempotencyKey: string }> = [];
+  const client: ResendEmailClient = {
+    async send(request, idempotencyKey) {
+      sends.push({ request, idempotencyKey });
+      return { accepted: true };
+    },
+  };
+  const adapter = new ResendNotificationAdapter(
+    client,
+    completeEnvironment.NOTIFICATION_FROM_EMAIL,
+    completeEnvironment.NOTIFICATION_TO_EMAIL,
+  );
+  const commandWithForbiddenExtras = {
+    ...command,
+    name: "FORBIDDEN CUSTOMER NAME",
+    email: "forbidden-customer@example.test",
+    company: "FORBIDDEN COMPANY",
+    system: "FORBIDDEN TARGET",
+    objective: "FORBIDDEN OBJECTIVE",
+    notes: "FORBIDDEN NOTES",
+    provider: "FORBIDDEN PROVIDER",
+    submissionToken: "FORBIDDEN TOKEN",
+    payloadFingerprint: "FORBIDDEN FINGERPRINT",
+  } as NotificationCommand;
+
+  assert.deepEqual(await adapter.deliver(commandWithForbiddenExtras), { outcome: "delivered" });
+  assert.deepEqual(await adapter.deliver(commandWithForbiddenExtras), { outcome: "delivered" });
+  assert.deepEqual(sends.map(({ idempotencyKey }) => idempotencyKey), [
+    command.idempotencyKey,
+    command.idempotencyKey,
+  ]);
+  assert.deepEqual(sends[0].request, {
+    from: "notifications@example.test",
+    to: ["internal@example.test"],
+    subject: `New inquiry received — ${command.inquiryId}`,
+    text: `A new inquiry has been received.\n\nReference: ${command.inquiryId}`,
+  });
+
+  const serialized = JSON.stringify(sends[0].request);
+  for (const forbidden of [
+    "FORBIDDEN CUSTOMER NAME",
+    "forbidden-customer@example.test",
+    "FORBIDDEN COMPANY",
+    "FORBIDDEN TARGET",
+    "FORBIDDEN OBJECTIVE",
+    "FORBIDDEN NOTES",
+    "FORBIDDEN PROVIDER",
+    "FORBIDDEN TOKEN",
+    "FORBIDDEN FINGERPRINT",
+    command.eventType,
+  ]) {
+    assert.equal(serialized.includes(forbidden), false);
+  }
+});
+
+test("Resend rate limits, temporary failures, and permanent rejections are classified", async () => {
+  async function deliver(result: Awaited<ReturnType<ResendEmailClient["send"]>>) {
+    const client: ResendEmailClient = { async send() { return result; } };
+    return new ResendNotificationAdapter(client, "from@example.test", "to@example.test")
+      .deliver(command);
+  }
+
+  assert.deepEqual(await deliver({ accepted: false, statusCode: 429, errorName: "rate_limit_exceeded" }), {
+    outcome: "retryable_failure", errorCode: "rate_limited",
+  });
+  assert.deepEqual(await deliver({ accepted: false, statusCode: 503, errorName: "internal_server_error" }), {
+    outcome: "retryable_failure", errorCode: "provider_unavailable",
+  });
+  assert.deepEqual(await deliver({ accepted: false, statusCode: 409, errorName: "concurrent_idempotent_requests" }), {
+    outcome: "retryable_failure", errorCode: "provider_unavailable",
+  });
+  assert.deepEqual(await deliver({ accepted: false, statusCode: 400, errorName: "invalid_from_address" }), {
+    outcome: "permanent_failure", errorCode: "rejected",
+  });
+  assert.deepEqual(await deliver({ accepted: false, statusCode: null, errorName: "future_unclassified_error" }), {
+    outcome: "retryable_failure", errorCode: "unknown",
+  });
+});
+
+test("timeouts and network failures remain retryable without exposing exception text", async () => {
+  const timeoutClient: ResendEmailClient = {
+    async send() {
+      throw new DOMException("RAW TIMEOUT PROVIDER TEXT", "TimeoutError");
+    },
+  };
+  const networkClient: ResendEmailClient = {
+    async send() {
+      throw new TypeError("RAW NETWORK PROVIDER TEXT");
+    },
+  };
+  const unknownClient: ResendEmailClient = {
+    async send() {
+      throw new Error("RAW UNKNOWN PROVIDER TEXT");
+    },
+  };
+
+  assert.deepEqual(await new ResendNotificationAdapter(timeoutClient, "from@example.test", "to@example.test").deliver(command), {
+    outcome: "retryable_failure", errorCode: "timeout",
+  });
+  assert.deepEqual(await new ResendNotificationAdapter(networkClient, "from@example.test", "to@example.test").deliver(command), {
+    outcome: "retryable_failure", errorCode: "provider_unavailable",
+  });
+  const unknown = await new ResendNotificationAdapter(unknownClient, "from@example.test", "to@example.test").deliver(command);
+  assert.deepEqual(unknown, { outcome: "retryable_failure", errorCode: "unknown" });
+  assert.equal(JSON.stringify(unknown).includes("RAW UNKNOWN PROVIDER TEXT"), false);
+});
+
+test("the HTTPS client bounds calls, sends the official idempotency header, and discards raw errors", async () => {
+  let capturedInit: RequestInit | undefined;
+  const rawProviderText = "RAW PROVIDER RESPONSE MUST NOT ESCAPE";
+  const rejectingFetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    capturedInit = init;
+    return new Response(JSON.stringify({
+      name: "validation_error",
+      message: rawProviderText,
+      unexpected: { sensitive: rawProviderText },
+    }), { status: 400 });
+  };
+  const client = new ResendHttpClient("re_synthetic_unit_test_key", rejectingFetch, 50);
+  const adapter = new ResendNotificationAdapter(client, "from@example.test", "to@example.test");
+  const result = await adapter.deliver(command);
+
+  assert.deepEqual(result, { outcome: "permanent_failure", errorCode: "rejected" });
+  assert.equal(JSON.stringify(result).includes(rawProviderText), false);
+  assert.equal(new Headers(capturedInit?.headers).get("Idempotency-Key"), command.idempotencyKey);
+  assert.equal(capturedInit?.signal instanceof AbortSignal, true);
+  assert.equal(JSON.stringify(capturedInit?.body).includes(rawProviderText), false);
+
+  const failureWrites: FailNotificationInput[] = [];
+  const summary = await processOutboxBatch({
+    repository: {
+      async claimBatch() {
+        return [{
+          outboxId: command.idempotencyKey,
+          inquiryId: command.inquiryId,
+          eventType: command.eventType,
+          attempts: 1,
+          lockedUntil: new Date("2026-09-11T12:01:00.000Z"),
+        }];
+      },
+      async markSent() { return true; },
+      async markFailure(input) { failureWrites.push(input); return true; },
+    },
+    adapter,
+    now: new Date("2026-09-11T12:00:00.000Z"),
+    leaseDurationMs: 60_000,
+  });
+  assert.equal(summary.failed, 1);
+  assert.equal(failureWrites[0].errorCode, "rejected");
+  assert.equal(JSON.stringify(failureWrites[0]).includes(rawProviderText), false);
+
+  const hangingFetch = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    });
+  const timedClient = new ResendHttpClient("re_synthetic_unit_test_key", hangingFetch, 5);
+  const timedResult = await new ResendNotificationAdapter(
+    timedClient,
+    "from@example.test",
+    "to@example.test",
+  ).deliver(command);
+  assert.deepEqual(timedResult, { outcome: "retryable_failure", errorCode: "timeout" });
+});
+

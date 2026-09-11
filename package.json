@@ -8,7 +8,7 @@
     "start": "next start --hostname 127.0.0.1",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "tsx --conditions=react-server --test tests/*.test.ts",
     "test:db": "tsx --test --test-concurrency=1 tests/persistence.integration.test.ts tests/notification-outbox.integration.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

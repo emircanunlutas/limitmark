@@ -27,6 +27,7 @@ Open **http://127.0.0.1:3000**. On PowerShell, use `npm.cmd` if local policy pre
 - `src/lib/submission-adapter.ts`: isolated demo/production submission boundary.
 - `src/lib/inquiry-repository.ts`: idempotent transactional inquiry repository.
 - `src/lib/notification-adapter.ts`: provider-neutral, minimal notification delivery contract.
+- `src/lib/notification-config.ts` and `src/lib/resend-notification-adapter.ts`: fail-closed Resend configuration, minimal message construction, bounded HTTPS delivery, and provider-neutral result classification.
 - `src/lib/notification-outbox-repository.ts` and `src/lib/outbox-processor.ts`: PostgreSQL claim/lease persistence and deployment-neutral batch processing.
 - `src/lib/notification-retry-policy.ts`: deterministic, configurable retry timing and budget.
 - `src/lib/db/schema.ts` and `drizzle/`: typed PostgreSQL schema and SQL migrations.
@@ -95,7 +96,42 @@ Success moves the row to `sent`, records `sent_at`, clears the lease, and clears
 
 Delivery is intentionally **at least once**, not exactly once. If a provider delivers successfully and the process dies before `sent` is recorded, the expired lease permits another delivery. A future production adapter should pass the stable outbox row ID as the provider idempotency key where supported. Lease ownership prevents stale database updates, but it cannot retract an already completed external delivery.
 
-Synthetic adapters cover successful, retryable, permanent, thrown, and delayed behavior without internet calls. **There is still no real e-mail provider, message template, external notification call, or production scheduler in Phase 2A.** Resend, SES, SendGrid, SMTP, Slack, and other real delivery work are deferred to Phase 2B.
+Synthetic adapters cover successful, retryable, permanent, thrown, and delayed behavior without internet calls. Phase 2A itself remains provider-neutral and deployment-neutral.
+
+### Phase 2B Resend notification provider
+
+Phase 2B adds a server-only `ResendNotificationAdapter` that can be passed to the existing `processOutboxBatch()` service. It adds provider capability only: it does not add a scheduler, cron Route Handler, worker daemon, automatic invocation, admin dashboard, or public enablement. PostgreSQL and the existing durable outbox state transitions remain the source of truth.
+
+Real delivery fails closed and is available only when all four values are valid:
+
+- `ENABLE_REAL_NOTIFICATIONS=true` (the value is exact; missing, `false`, and unknown values keep delivery unavailable)
+- `RESEND_API_KEY` is a non-empty, syntactically valid `re_...` key
+- `NOTIFICATION_FROM_EMAIL` is a plain valid mailbox on a sender domain verified in the Resend account
+- `NOTIFICATION_TO_EMAIL` is one plain valid internal recipient mailbox
+
+Keep these values in the server environment or an ignored local environment file. They are not `NEXT_PUBLIC_` variables and must never be exposed to browser code or logs. Disabled or malformed configuration does not construct a Resend client and never falls back to synthetic success. `.env.example` contains names and empty placeholders only.
+
+The adapter sends one plain-text e-mail with exactly this shape (where `<inquiry UUID>` is the existing opaque inquiry reference):
+
+```text
+From: <configured sender>
+To: <configured internal recipient>
+Subject: New inquiry received — <inquiry UUID>
+
+A new inquiry has been received.
+
+Reference: <inquiry UUID>
+```
+
+No customer name, customer e-mail, company, system, target, objective, notes, provider/protection details, submission token, payload fingerprint, or event payload is included. There is no admin-dashboard link because no admin dashboard exists yet.
+
+Every attempt passes the unchanged notification outbox row UUID as Resend's `Idempotency-Key` request header. Retries of the same outbox command therefore reuse the same key and payload. Resend currently retains idempotency keys for 24 hours, so this reduces duplicates only within that provider window; the durable end-to-end model remains **at least once**, never exactly once.
+
+The HTTPS request is bounded to ten seconds. Abort timeouts become retryable `timeout`; network failures and Resend server/temporary errors become retryable `provider_unavailable`; provider and quota rate limits become retryable `rate_limited`; clear request, sender, recipient, credential, and idempotency rejections become permanent `rejected`. Unknown failures remain conservatively retryable `unknown`. Provider bodies, exception messages, headers, request payloads, addresses, and credentials are neither logged nor returned to the processor, and only the existing bounded error codes can reach `notification_outbox.last_error_code`.
+
+The official Node SDK was evaluated before implementation. Its current client has no request-timeout option and logs parsed API error objects outside production, which conflicts with this project's timeout and error-privacy requirements. Phase 2B therefore uses one small typed `fetch` client against Resend's official HTTPS API rather than adding the SDK dependency.
+
+No real e-mail is sent merely by building or starting the application. A verified Resend account/domain/API key must be configured and an operator must explicitly invoke a future deployment-specific batch entry point. Public persistent form submissions remain separately protected by the existing `REQUEST_SUBMISSION_MODE=postgres` and `ENABLE_PERSISTENT_SUBMISSIONS=true` go-live gates, which must stay closed until later abuse-control and production-readiness work is complete.
 
 ### Migrations and database roles
 
