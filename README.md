@@ -26,6 +26,9 @@ Open **http://127.0.0.1:3000**. On PowerShell, use `npm.cmd` if local policy pre
 - `src/app/test-talep-et/actions.ts`: independently validated Server Action.
 - `src/lib/submission-adapter.ts`: isolated demo/production submission boundary.
 - `src/lib/inquiry-repository.ts`: idempotent transactional inquiry repository.
+- `src/lib/notification-adapter.ts`: provider-neutral, minimal notification delivery contract.
+- `src/lib/notification-outbox-repository.ts` and `src/lib/outbox-processor.ts`: PostgreSQL claim/lease persistence and deployment-neutral batch processing.
+- `src/lib/notification-retry-policy.ts`: deterministic, configurable retry timing and budget.
 - `src/lib/db/schema.ts` and `drizzle/`: typed PostgreSQL schema and SQL migrations.
 - `src/lib/submission-policy.ts` and `src/lib/persistence-config.ts`: explicit fail-closed gates.
 
@@ -69,7 +72,30 @@ The repository transaction attempts an inquiry insert using the database-unique 
 
 `inquiry_events` is append-only (updates/deletes are rejected), and inquiry, event, note and outbox foreign keys use restrictive deletion rather than cascading history loss. The inquiry workflow vocabulary is `received`, `in_review`, `awaiting_scope`, `proposal_sent`, `approved`, `declined`, `completed`, and `archived`; Phase 1 does not implement transitions.
 
-Outbox states are explicit: `pending` has never been attempted, `processing` is actively leased, `retryable` may be claimed again after a failed attempt, `sent` is delivered, and `failed` is terminal retry exhaustion requiring operational attention. Only `pending` and `retryable` rows are eligible through the future claim index. `admin_notes` and notification worker behavior are schema-only. **No email or other real notification delivery exists in Phase 1.**
+Outbox states are explicit: `pending` has never been attempted, `processing` is actively leased, `retryable` may be claimed again after a failed attempt, `sent` is delivered, and `failed` is terminal retry exhaustion or permanent rejection requiring operational attention. `admin_notes` remains schema-only.
+
+### Phase 2A notification outbox processor
+
+Phase 2A adds a pure, deployment-neutral `processOutboxBatch()` service. A future cron handler, scheduled function, CLI, or always-on worker can construct the repository and adapter and invoke the same service; there is no cron Route Handler or deployment-provider binding in this phase. Batch delivery is sequential for initial rate control, defaults to 10 rows, and rejects sizes above the enforced maximum of 100.
+
+The lifecycle is:
+
+1. In one short PostgreSQL transaction, select eligible rows with `FOR UPDATE SKIP LOCKED`, update them to `processing`, set `locked_until`, and increment `attempts`.
+2. Commit that claim transaction before calling the notification adapter.
+3. Deliver only a minimal command containing the outbox ID/idempotency key, inquiry reference, and event type. Customer e-mail, system, objective, provider, and notes are not passed to the adapter.
+4. Conditionally persist `sent`, `retryable`, or `failed` only if the exact lease and attempt are still owned by that worker.
+
+Eligible rows are `pending` or `retryable` with `available_at <= now`, plus `processing` rows whose non-null lease has expired. A future `locked_until` cannot be stolen. `sent` and `failed` are terminal and are never automatically claimed. Expired `processing` rows need no administrative reset: a later claim starts a new attempt and replaces the lease. A late result from the expired worker is discarded through the lease/attempt ownership condition, so it cannot overwrite the newer worker's state. Notification processing never mutates or deletes the related inquiry.
+
+`attempts` means the number of delivery attempts started. Atomically claiming a row for delivery starts one attempt and increments it exactly once; merely inspecting or skipping a row does not. Consequently, a process crash immediately after a committed claim may consume an attempt even if the adapter call did not begin. The lease still makes the row recoverable.
+
+The default retry policy allows five total attempts. Its deterministic bounded exponential calculator starts at one minute, doubles per failed attempt, and caps at one hour; under the default budget, attempts one through four schedule one-, two-, four-, and eight-minute retries, while a fifth failure is terminal. Callers can supply another explicit attempt budget and timing policy. A retryable result with budget remaining moves to `retryable`, schedules `available_at`, clears the lease, and stores only an allowlisted non-sensitive error code. Exhaustion moves directly to `failed`. A permanent result also moves immediately to `failed`. An unexpected adapter throw is caught without retaining or logging its message and is treated as retryable `unknown`, subject to the same budget. A repository/process crash leaves a claimed row in `processing` until lease recovery rather than falsely recording success.
+
+Success moves the row to `sent`, records `sent_at`, clears the lease, and clears `last_error_code`. Error metadata is limited to `timeout`, `rate_limited`, `provider_unavailable`, `rejected`, or `unknown`; raw exception text, response bodies, credentials, secret URLs, tokens, stack traces, and inquiry content are not stored or logged.
+
+Delivery is intentionally **at least once**, not exactly once. If a provider delivers successfully and the process dies before `sent` is recorded, the expired lease permits another delivery. A future production adapter should pass the stable outbox row ID as the provider idempotency key where supported. Lease ownership prevents stale database updates, but it cannot retract an already completed external delivery.
+
+Synthetic adapters cover successful, retryable, permanent, thrown, and delayed behavior without internet calls. **There is still no real e-mail provider, message template, external notification call, or production scheduler in Phase 2A.** Resend, SES, SendGrid, SMTP, Slack, and other real delivery work are deferred to Phase 2B.
 
 ### Migrations and database roles
 
@@ -90,6 +116,8 @@ $env:TEST_DATABASE_URL = '<dedicated disposable database URL>'
 npm.cmd run test:db
 Remove-Item Env:TEST_DATABASE_URL
 ```
+
+The database command runs both the Phase 1 persistence suite and Phase 2A outbox suite serially against the disposable database. Phase 2A coverage includes atomic claims, overlapping workers/processors, leases and expiry, retries and exhaustion, terminal states, batch bounds, attempts, thrown adapters, stale-worker outcome rejection, and inquiry immutability.
 
 Before a future public launch, retain the Server Action validation and 32 KB body limit, add approved shared abuse controls at the trusted ingress, define retention/access/backup policy, and review infrastructure logging. Never trust arbitrary forwarded IP headers or log request contents.
 
