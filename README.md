@@ -43,7 +43,8 @@ Open **http://127.0.0.1:3000**. On PowerShell, use `npm.cmd` if local policy pre
 | `/test-talep-et/tesekkurler` | Confirmation copy; excluded from indexing |
 | `/gizlilik` | Preliminary privacy information |
 | `/test-yetkilendirmesi` | Operational scope and authorization principles |
-| `/admin` | Authenticated internal skeleton only; no inquiry-management functionality |
+| `/admin` | Independently authorized, read-only inquiry list with bounded search, status filtering and pagination |
+| `/admin/inquiries/<uuid>` | Independently authorized, read-only inquiry submission, event history and existing admin notes |
 
 An unknown or repeated service query defaults to `unsure`. A custom Turkish 404 and recoverable error page are included.
 
@@ -124,7 +125,7 @@ A new inquiry has been received.
 Reference: <inquiry UUID>
 ```
 
-No customer name, customer e-mail, company, system, target, objective, notes, provider/protection details, submission token, payload fingerprint, or event payload is included. There is no admin-dashboard link because no admin dashboard exists yet.
+No customer name, customer e-mail, company, system, target, objective, notes, provider/protection details, submission token, payload fingerprint, or event payload is included. Phase 4A does not add an admin-dashboard link to this message; notification content remains intentionally minimal.
 
 Every attempt passes the unchanged notification outbox row UUID as Resend's `Idempotency-Key` request header. Retries of the same outbox command therefore reuse the same key and payload. Resend currently retains idempotency keys for 24 hours, so this reduces duplicates only within that provider window; the durable end-to-end model remains **at least once**, never exactly once.
 
@@ -136,11 +137,11 @@ No real e-mail is sent merely by building or starting the application. A verifie
 
 ### Phase 3 Cloudflare Access admin authentication
 
-Phase 3 adds only an internal `/admin` authentication and authorization foundation. It does not add an inquiry list, inquiry detail, notes, status changes, analytics, role management, customer accounts, or a customer portal. Primary authentication and MFA remain the responsibility of Cloudflare Access and the configured external identity provider; the application stores no users, passwords, MFA secrets, sessions, or Access tokens.
+Phase 3 established only the internal `/admin` authentication and authorization foundation; Phase 4A builds the read-only views described below on that boundary. Primary authentication and MFA remain the responsibility of Cloudflare Access and the configured external identity provider; the application stores no users, passwords, MFA secrets, sessions, or Access tokens.
 
 The trust chain is Cloudflare Access policy, then application-side cryptographic JWT verification, then an independent exact-email allowlist. The server accepts the application token only from Cloudflare's documented `Cf-Access-Jwt-Assertion` origin header. It ignores the `CF_Authorization` cookie, query parameters, `X-User-Email`, `X-Forwarded-Email`, and other forwarded identity headers. The header takes deterministic precedence because it is the only accepted source.
 
-Every `/admin` server render calls the reusable `requireAdmin()` boundary. Future admin Server Actions and Route Handlers must call the same boundary independently; middleware or Cloudflare policy must never become the sole authorization check. The page is force-dynamic and shows only `Limitmark Admin` plus a neutral authenticated-state message. It does not expose the identity, token claims, allowlist, customer information, counts, notification state, or other operational data.
+Every `/admin` server render calls the reusable `requireAdmin()` boundary. Future admin Server Actions and Route Handlers must call the same boundary independently; middleware or Cloudflare policy must never become the sole authorization check. The original Phase 3 page was force-dynamic and exposed only a neutral authenticated state; Phase 4A preserves the dynamic and authorization guarantees while adding bounded inquiry reads.
 
 Configure all three server-only values at runtime:
 
@@ -155,6 +156,20 @@ Operational references: Cloudflare's current documentation for [validating Acces
 Signing keys are obtained over HTTPS from `<team-domain>/cdn-cgi/access/certs`; no signing key or Cloudflare API credential is stored in the app. The library keeps an in-process JWKS cache for ten minutes, bounds retrieval to five seconds, observes a 30-second refresh cooldown, selects rotating keys by `kid`, and re-fetches when appropriate. A matching cached public key still performs a fresh cryptographic signature and claims verification on every request. If a required fetch or refresh fails and no usable verified key is available, access is denied. Instance restarts and newly scaled instances begin with an empty cache, so temporary Cloudflare/network failure can temporarily deny admin access by design.
 
 There is deliberately no environment-controlled development bypass. A local browser cannot open `/admin` unless its request carries a valid token from the configured Access application and the identity is explicitly allowlisted. Unit tests use locally generated asymmetric keys and an injected in-memory JWKS resolver; they never contact a real Cloudflare account or endpoint.
+
+### Phase 4A read-only inquiry administration
+
+Phase 4A replaces the authenticated skeleton with a small Server Component dashboard. `/admin` reads a projection containing only the received timestamp, status, name, e-mail, company, requested service and environment. `/admin/inquiries/<uuid>` reads the bounded submitted fields plus chronological append-only events and existing admin notes. It does not read or expose submission tokens, payload fingerprints, event metadata, notification-outbox state or provider errors. Submitted and note content is rendered only as React text; it is not interpreted as HTML, Markdown or a URL.
+
+Both routes call `requireAdmin()` independently before resolving repository access. No JSON admin API, mutation endpoint, Server Action, status control, note editor, retry control, assignment, bulk action or export is present. Both routes are force-dynamic and publish static customer-free metadata with `noindex,nofollow`. Inquiry detail links disable Next.js prefetch so the list does not speculatively fetch customer records.
+
+List pagination is server-side, newest first by `created_at DESC, id DESC`, with 25 visible rows and one look-ahead row. Page input normalizes to `1..10000`; filters are preserved in previous/next links. Offset pagination is intentionally simple for the current scale and should be replaced by cursor pagination if the table becomes large. Search is trimmed to 254 characters, treats `%`, `_` and `\` literally, and checks only inquiry UUID prefix, name, e-mail and company. The status filter reuses the authoritative schema vocabulary: `received`, `in_review`, `awaiting_scope`, `proposal_sent`, `approved`, `completed`, `declined`, and `archived`. Unknown values, including `scheduled`, normalize to the unfiltered state and never influence SQL construction.
+
+Event history and admin notes are deliberately oldest-first with timestamp-plus-ID tie-breakers, and each collection is capped at the 500 most recent records to prevent an unbounded response. The UI identifies a truncated history. Event metadata is not selected. Only admin actors expose their stored actor identifier; system events do not. A missing or invalid UUID receives the same generic not-found outcome.
+
+Admin database reads reuse the existing fail-closed PostgreSQL configuration and therefore remain unavailable unless the existing persistence configuration is fully enabled. Configuration absence and connection/query failure render an explicit neutral “Inquiry data unavailable” state without error details; a successful empty query renders a different empty state. Phase 4A does not set `ENABLE_PERSISTENT_SUBMISSIONS`, add a database URL, migrate production, or otherwise enable public persistence.
+
+The cosmetic redirect from `admin.limitmark.com/` to `/admin` is deferred. Hostname alone must not become an authorization signal, and no broad routing/proxy change was justified for this read-only phase.
 
 Cloudflare control-plane work remains manual and must be completed before launch:
 

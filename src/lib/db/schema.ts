@@ -13,7 +13,7 @@ import {
 import { sql } from "drizzle-orm";
 import { fieldLimits } from "../request-schema";
 
-export const inquiryStatus = pgEnum("inquiry_status", [
+export const inquiryStatusValues = [
   "received",
   "in_review",
   "awaiting_scope",
@@ -22,7 +22,9 @@ export const inquiryStatus = pgEnum("inquiry_status", [
   "declined",
   "completed",
   "archived",
-]);
+] as const;
+
+export const inquiryStatus = pgEnum("inquiry_status", inquiryStatusValues);
 
 export const inquiryEventType = pgEnum("inquiry_event_type", [
   "inquiry_received",

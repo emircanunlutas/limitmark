@@ -1,6 +1,15 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
+test("direct-origin admin requests fail closed without leaking inquiry content", async ({ request }) => {
+  const storedOnlyMarker = "SYNTHETIC_STORED_INQUIRY_CONTENT";
+  for (const route of ["/admin?q=attempted-bypass&status=received&page=1", "/admin/inquiries/00000000-0000-4000-8000-000000000042?admin=true"]) {
+    const response = await request.get(route);
+    expect(response.status()).toBe(404);
+    expect(await response.text()).not.toContain(storedOnlyMarker);
+  }
+});
+
 test("service links preselect an editable service; unknown query safely defaults", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("link", { name: "Web Uygulaması Dayanıklılık Testi — Bu Testi Görüşelim", exact: true }).click();

@@ -265,17 +265,15 @@ test("the request boundary authorizes only a verified allowlisted identity", asy
   assert.equal(await resolveAdminFromRequest(requestHeaders, {}, verify), null);
 });
 
-test("the admin route calls the real boundary and contains only the minimal skeleton", async () => {
+test("the admin list route retains the real application-side boundary", async () => {
   const pageSource = await readFile(new URL("../src/app/admin/page.tsx", import.meta.url), "utf8");
   const enforcementSource = await readFile(new URL("../src/lib/admin-auth.ts", import.meta.url), "utf8");
   assert.match(pageSource, /authorize: \(\) => Promise<AuthorizedAdminIdentity> = requireAdmin/);
-  assert.match(pageSource, /return renderAdminSkeleton\(\)/);
+  assert.match(pageSource, /return renderAdminInquiryList\(searchParams\)/);
   assert.match(pageSource, /await authorize\(\)/);
   assert.match(enforcementSource, /if \(!identity\) notFound\(\)/);
   assert.doesNotMatch(enforcementSource, /forbidden/);
   assert.match(pageSource, /Limitmark Admin/);
-  assert.match(pageSource, /Authenticated internal access/);
-  for (const forbiddenContent of ["inquiry", "customer", "notification", "database", "token", "claim"]) {
-    assert.equal(pageSource.toLowerCase().includes(forbiddenContent), false, forbiddenContent);
-  }
+  assert.match(pageSource, /Read-only inquiry administration/);
+  assert.doesNotMatch(pageSource, /submissionToken|payloadFingerprint|notificationOutbox/);
 });
