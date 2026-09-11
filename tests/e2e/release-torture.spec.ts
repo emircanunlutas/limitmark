@@ -1,6 +1,15 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { fieldLimits } from "../../src/lib/request-schema";
+
+async function fillValidRequest(page: Page) {
+  await page.locator("#name").fill("Örnek Talep");
+  await page.locator("#email").fill("qa@example.test");
+  await page.locator("#system").fill("Hazırlık ortamımızdaki uygulama");
+  await page.locator("#objective").fill("Kontrollü yük altında erişim davranışı");
+  await page.locator("#environment").selectOption("staging");
+  await page.locator('input[value="authorized"]').check();
+}
 
 test("empty, whitespace and malformed email errors can be corrected with keyboard submission", async ({ page }) => {
   await page.goto("/test-talep-et");
@@ -97,4 +106,49 @@ test("a malformed POST bypassing all browser limits is rejected by the server", 
   await expect(errors.getByRole("link")).toHaveCount(7);
   for (const field of Object.keys(fieldLimits)) await expect(page.locator(`#${field}`)).toHaveAttribute("aria-invalid", "true");
   await expect(page).not.toHaveURL(/tesekkurler/);
+});
+
+test("corrected resubmission clears stale server errors while the action is pending", async ({ page }) => {
+  let postCount = 0;
+  let releaseSecondPost!: () => void;
+  let markSecondPostHeld!: () => void;
+  const secondPostHeld = new Promise<void>((resolve) => { markSecondPostHeld = resolve; });
+  const releaseSecondPostGate = new Promise<void>((resolve) => { releaseSecondPost = resolve; });
+
+  await page.route("**/test-talep-et", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    postCount += 1;
+    if (postCount === 1) {
+      const body = route.request().postData()!;
+      const email = /(name="[^"\r\n]*_email"\r\n\r\n)[\s\S]*?(?=\r\n--)/;
+      expect(email.test(body)).toBe(true);
+      await route.continue({ postData: body.replace(email, "$1invalid") });
+      return;
+    }
+    markSecondPostHeld();
+    await releaseSecondPostGate;
+    await route.continue();
+  });
+
+  await page.goto("/test-talep-et");
+  await fillValidRequest(page);
+  const submit = page.locator('button[type="submit"]');
+  await submit.click();
+  const summary = page.getByRole("main").getByRole("alert");
+  await expect(summary.getByRole("link", { name: /^E-posta adresiniz:/ })).toBeVisible();
+  await expect(page.locator("#email")).toHaveAttribute("aria-invalid", "true");
+
+  await page.locator("#email").fill("corrected@example.test");
+  await submit.click();
+  await secondPostHeld;
+  try {
+    await expect(submit).toBeDisabled();
+    await expect(submit).toHaveText("Gönderiliyor…");
+    await expect(summary).toHaveCount(0);
+    await expect(page.locator("#email")).not.toHaveAttribute("aria-invalid", "true");
+    await expect(page.locator("#email-error")).toHaveCount(0);
+  } finally {
+    releaseSecondPost();
+  }
+  await expect(page).toHaveURL("/test-talep-et/tesekkurler");
 });

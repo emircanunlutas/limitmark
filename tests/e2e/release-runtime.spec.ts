@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
-test("production pages have no runtime errors and retain usable geometry after fonts load", async ({ page }, testInfo) => {
+test("production pages have no runtime errors and retain usable geometry after fonts load", async ({ page, baseURL }, testInfo) => {
   const errors: string[] = [];
   const failedResponses: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -9,7 +9,7 @@ test("production pages have no runtime errors and retain usable geometry after f
     if (message.type() === "error" || message.type() === "warning") errors.push(message.text());
   });
   page.on("response", (response) => {
-    if (response.url().startsWith("http://127.0.0.1:3100") && response.status() >= 400) failedResponses.push(`${response.status()} ${response.url()}`);
+    if (response.url().startsWith(baseURL!) && response.status() >= 400) failedResponses.push(`${response.status()} ${response.url()}`);
   });
   for (const width of [1440, 375]) {
     await page.setViewportSize({ width, height: 900 });

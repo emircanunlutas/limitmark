@@ -67,15 +67,19 @@ export function RequestForm({ initialService }: { initialService: string }) {
         setValidationAttempt((attempt) => attempt + 1);
         return;
       }
-      setClientErrors(null);
+      // Hide errors from the previous server result while this corrected request is pending.
+      setClientErrors({});
       submittingRef.current = true;
       startTransition(async () => {
         try {
-          setClientState(await submitTestRequest(initialState, data));
+          const nextState = await submitTestRequest(initialState, data);
+          setClientState(nextState);
+          setClientErrors(null);
         } catch (error) {
           // Preserve Next.js redirect/not-found control flow; handle transport failures.
           unstable_rethrow(error);
           setClientState({ errors: {}, message: "Talebiniz iletilemedi. Bilgileriniz bu sayfada duruyor; lütfen tekrar deneyin." });
+          setClientErrors(null);
         } finally {
           submittingRef.current = false;
         }
@@ -139,6 +143,11 @@ export function RequestForm({ initialService }: { initialService: string }) {
         {values.protection === "using" && <FormField id="provider" label={fieldLabels.provider} optional error={errors.provider}>
           <input {...inputProps("provider")} type="text" maxLength={fieldLimits.provider} />
         </FormField>}
+        {values.protection !== "using" && <noscript>
+          <FormField id="provider" label={fieldLabels.provider} optional>
+            <input id="provider" name="provider" type="text" maxLength={fieldLimits.provider} defaultValue={values.provider} />
+          </FormField>
+        </noscript>}
         <FormField id="notes" label={fieldLabels.notes} optional error={errors.notes} helper="En fazla 2000 karakter. Gizli erişim bilgileri paylaşmayın.">
           <textarea {...inputProps("notes", true)} maxLength={fieldLimits.notes} rows={4} />
         </FormField>

@@ -1,13 +1,13 @@
 import { test, expect } from "@playwright/test";
 
-test("routes, history, refresh, all CTA targets and anchors remain consistent", async ({ page, request }) => {
+test("routes, history, refresh, all CTA targets and anchors remain consistent", async ({ page, request, baseURL }) => {
   test.setTimeout(60_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
   const internalFailures: string[] = [];
   page.on("requestfailed", (failure) => {
-    if (failure.url().startsWith("http://127.0.0.1:3100") && !failure.failure()?.errorText.includes("ERR_ABORTED")) internalFailures.push(`${failure.url()}: ${failure.failure()?.errorText}`);
+    if (failure.url().startsWith(baseURL!) && !failure.failure()?.errorText.includes("ERR_ABORTED")) internalFailures.push(`${failure.url()}: ${failure.failure()?.errorText}`);
   });
   // Complete pending prefetches before deliberate full-document unloads. WebKit
   // reports canceled prefetches during unload as access-control errors.
@@ -37,7 +37,7 @@ test("routes, history, refresh, all CTA targets and anchors remain consistent", 
   const destinations = await page.locator("a[href]").evaluateAll((links) => [...new Set(links.map((link) => link.getAttribute("href") ?? ""))]);
   for (const href of destinations) {
     if (!href.startsWith("/") && !href.startsWith("#")) continue;
-    const target = new URL(href, "http://127.0.0.1:3100");
+    const target = new URL(href, baseURL);
     expect((await request.get(target.pathname + target.search)).status()).toBe(200);
   }
   await page.getByRole("link", { name: "Web Uygulaması Dayanıklılık Testi — Bu Testi Görüşelim", exact: true }).click();

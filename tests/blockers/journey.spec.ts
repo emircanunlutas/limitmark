@@ -87,8 +87,8 @@ async function assertLayout(page: Page) {
   await expect(page.getByRole("main")).toBeVisible();
 }
 
-test("simulation rules block representative tracker names but allow the real first-party path", () => {
-  const origin = "http://127.0.0.1:3100";
+test("simulation rules block representative tracker names but allow the real first-party path", ({ baseURL }) => {
+  const origin = baseURL!;
   for (const path of ["/analytics.js", "/api/telemetry", "/tracking/pixel.gif", "/collect", "/ads/banner.js", "/beacon"]) {
     expect(blockReason("tracking-only", origin + path, "fetch", origin), path).toBe("tracker-like");
   }

@@ -44,6 +44,7 @@ export function getRequestValues(data: Record<string, unknown>): NonNullable<Req
     const value = data[field];
     if (typeof value !== "string") continue;
     const limit = field in fieldLimits ? fieldLimits[field as keyof typeof fieldLimits] : 32;
+    // Keep one excess character so restored over-limit input remains visibly invalid.
     values[field] = value.replace(/\r\n?/g, "\n").slice(0, limit + 1);
   }
   return values;

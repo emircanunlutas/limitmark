@@ -78,14 +78,37 @@ test("all primary pages pass automated WCAG A/AA rules", async ({ page }) => {
   }
 });
 
-test("server validation rejects an invalid request with JavaScript disabled", async ({ browser }) => {
-  const context = await browser.newContext({ javaScriptEnabled: false });
+test("server validation rejects an invalid request with JavaScript disabled", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false, baseURL });
   const page = await context.newPage();
-  await page.goto("http://127.0.0.1:3100/test-talep-et");
+  await page.goto("/test-talep-et");
   await page.getByLabel("Adınız", { exact: true }).fill("   ");
   await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
   await expect(page.getByRole("main").getByRole("alert")).toContainText("Lütfen işaretli alanları kontrol edin.");
   await expect(page).not.toHaveURL(/tesekkurler/);
+  await context.close();
+});
+
+test("optional provider remains available to a successful native submission", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false, baseURL });
+  const page = await context.newPage();
+  await page.goto("/test-talep-et");
+  await page.getByLabel("Adınız", { exact: true }).fill("Örnek Talep");
+  await page.getByLabel("E-posta adresiniz", { exact: true }).fill("qa@example.test");
+  await page.getByLabel("Test etmek istediğiniz sistem", { exact: true }).fill("Hazırlık ortamımızdaki uygulama");
+  await page.getByLabel("Testten ne öğrenmek istiyorsunuz?", { exact: true }).fill("Kontrollü yük altında erişim davranışı");
+  await page.getByLabel("Test edilecek ortam", { exact: true }).selectOption("staging");
+  await page.getByLabel("Sistem sahibinden test için açık yetkim var.", { exact: true }).check();
+  await page.getByText("Ek bilgi ekle (isteğe bağlı)", { exact: true }).click();
+  await page.getByLabel("Mevcut koruma hakkında bilginiz var mı?", { exact: false }).selectOption("using");
+  const provider = page.getByLabel("Koruma hizmeti / sağlayıcı", { exact: false });
+  await expect(provider).toBeVisible();
+  await provider.fill("Örnek sağlayıcı");
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: "load" }),
+    page.getByRole("button", { name: "Talebi Gönder", exact: true }).click(),
+  ]);
+  await expect(page).toHaveURL("/test-talep-et/tesekkurler");
   await context.close();
 });
 
@@ -107,7 +130,7 @@ test("internal links resolve and section anchors exist", async ({ page, request 
     const hrefs = await page.locator("a[href]").evaluateAll((links) => links.map((link) => link.getAttribute("href") ?? ""));
     for (const href of hrefs) {
       if (!href.startsWith("/") && !href.startsWith("#")) continue;
-      const target = new URL(href, `http://127.0.0.1:3100${route}`);
+      const target = new URL(href, page.url());
       routes.add(target.pathname + target.search);
       if (target.hash && target.pathname === route) await expect(page.locator(target.hash)).toHaveCount(1);
     }
