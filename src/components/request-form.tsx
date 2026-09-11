@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useEffect, useRef, useState, useTransition } from "react";
+import { useActionState, useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { unstable_rethrow } from "next/navigation";
 import { submitTestRequest } from "@/app/test-talep-et/actions";
-import { fieldLabels, fieldLimits, getFieldErrors, readRequestFormData, requestSchema, type FieldErrors, type RequestField, type RequestState } from "@/lib/request-schema";
+import { fieldLabels, fieldLimits, getFieldErrors, getRequestValues, readRequestFormData, requestSchema, type FieldErrors, type RequestField, type RequestState } from "@/lib/request-schema";
 import { serviceOptions } from "@/lib/services";
 import { FormField } from "./form-field";
 import { Disclosure } from "./disclosure";
@@ -28,7 +28,13 @@ export function RequestForm({ initialService }: { initialService: string }) {
   const [clientErrors, setClientErrors] = useState<FieldErrors | null>(null);
   const [validationAttempt, setValidationAttempt] = useState(0);
   const summaryRef = useRef<HTMLDivElement>(null);
-  const formRef = useRef<HTMLFormElement>(null);
+  const hydrateForm = useCallback((form: HTMLFormElement | null) => {
+    if (!form) return;
+    // Adopt native edits made before hydration. Otherwise the next controlled
+    // render replaces those DOM values with the empty initial React state.
+    const draft = getRequestValues(readRequestFormData(new FormData(form)));
+    setValues((previous) => ({ ...previous, ...draft }));
+  }, []);
   const errors = clientErrors ?? state.errors;
   const hasErrors = Object.keys(errors).length > 0;
 
@@ -49,7 +55,7 @@ export function RequestForm({ initialService }: { initialService: string }) {
   }
 
   return (
-    <form ref={formRef} className="request-form" action={formAction} noValidate onSubmit={(event) => {
+    <form ref={hydrateForm} className="request-form" action={formAction} noValidate onSubmit={(event) => {
       // Handle hydrated submissions explicitly: React's automatic form reset also
       // runs for returned validation errors, and transport errors must stay inline.
       event.preventDefault();

@@ -99,6 +99,21 @@ Remove-Item Env:QA_CROSS_BROWSER
 
 The Windows WebKit harness skips links on Tab even on plain HTML. Its original keyboard assertions remain enabled; see the QA report before interpreting those failures. No global keyboard preferences are changed.
 
+### Privacy / content-blocker resilience
+
+After a production build, run the dedicated suite using the already installed browsers:
+
+```powershell
+$env:PLAYWRIGHT_BROWSERS_PATH = "$PWD/.playwright"
+$env:QA_CROSS_BROWSER = 'true'
+npm.cmd run test:blockers
+Remove-Item Env:QA_CROSS_BROWSER
+```
+
+Without `QA_CROSS_BROWSER`, the suite runs Chromium only. It starts its own demo-enabled production preview on port 3100; run it separately from the existing E2E suite. Fresh contexts simulate tracker-like blocking, all external requests blocked, and font-file blocking, with unblocked controls. Tests cover desktop/mobile navigation, disclosures, validation, optional values, submission, confirmation, transport retry, native submission without JavaScript and draft retention across delayed hydration. No extension detection or bypass is included.
+
+Each run retains JSON request/console audits, screenshots and failure traces under `artifacts/blocker-runs/<timestamp>/`; `QA_BLOCKER_RUN_DIRECTORY` can set an explicit output directory. These artifacts are ignored by Git. The findings, diagnostic classifications, actual results and real-extension smoke checklist are in [PRIVACY_BLOCKER_AUDIT.md](PRIVACY_BLOCKER_AUDIT.md).
+
 To check development-mode form behavior, set `QA_DEV=true` and run `npm.cmd run test:e2e -- release-form release-torture --project=chromium`, then remove `QA_DEV`. This uses the repository's development server on port 3000, reusing it if already running. The default suite always starts an isolated production server on port 3100.
 
 Contact configuration and the production demo guard have a separate suite. For example, using a **synthetic test-only** mailbox:

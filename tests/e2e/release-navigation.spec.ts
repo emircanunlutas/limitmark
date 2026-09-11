@@ -69,10 +69,14 @@ test("404 and malformed service queries do not produce an exception or unexpecte
     await expect(page.getByRole("heading", { name: "Sayfa bulunamadı.", exact: true })).toBeVisible();
     await page.getByRole("link", { name: "Ana Sayfaya Dön", exact: true }).click();
     await expect(page).toHaveURL("/");
+    // As in the route/history case above, let the return navigation and its
+    // prefetches settle before deliberately unloading the whole document.
+    await page.waitForLoadState("networkidle");
   }
   for (const query of ["hizmet=web&hizmet=network", "hizmet=%3Cscript%3E", "hizmet=", "hizmet=WEB"]) {
     await page.goto(`/test-talep-et?${query}`);
     await expect(page.getByLabel("İlgilendiğiniz hizmet")).toHaveValue("unsure");
+    await page.waitForLoadState("networkidle");
   }
   expect(errors).toEqual([]);
 });

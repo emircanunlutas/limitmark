@@ -10,6 +10,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "tsx --test tests/request-schema.test.ts",
     "test:e2e": "playwright test",
+    "test:blockers": "playwright test --config=playwright.blockers.config.ts",
     "check": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "engines": { "node": ">=22.0.0" },
