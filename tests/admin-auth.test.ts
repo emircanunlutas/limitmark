@@ -234,6 +234,16 @@ test("missing JWT and spoofed identity headers cannot authorize", async () => {
   assert.equal(verifierCalls, 0);
 });
 
+test("public edge credentials and Host/forwarding headers do not authorize admin", async () => {
+  for (const host of ["admin.limitmark.com", "limitmark.com", "deployment.vercel.app"]) {
+    assert.equal(await resolveAdminFromRequest(new Headers({
+      host, "x-forwarded-host": "admin.limitmark.com", "origin": "https://admin.limitmark.com",
+      "cf-connecting-ip": "203.0.113.9", "x-vercel-forwarded-for": "203.0.113.9",
+      "x-limitmark-origin-secret": "A".repeat(43),
+    }), environment), null);
+  }
+});
+
 test("the documented assertion header is extracted; cookies and query strings are ignored", () => {
   assert.equal(extractCloudflareAccessToken(new Headers({
     "Cf-Access-Jwt-Assertion": " header-token ",

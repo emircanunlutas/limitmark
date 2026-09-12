@@ -1,10 +1,12 @@
 import { Buffer } from "node:buffer";
 import { getPersistenceConfiguration, type PersistenceEnvironment } from "./persistence-config";
 import { publicInquiryTurnstileAction } from "./turnstile";
+import { isPublicOriginProtectionDisabled } from "./public-origin";
 
 export type PublicSubmissionEnvironment = PersistenceEnvironment & {
   VERCEL?: string;
   VERCEL_ENV?: string;
+  PUBLIC_ORIGIN_PROTECTION?: string;
   RATE_LIMIT_PROVIDER?: string;
   SUBMISSION_CLIENT_IP_SOURCE?: string;
   SUBMISSION_CLIENT_KEY_SECRET?: string;
@@ -79,8 +81,11 @@ export function getPublicSubmissionConfiguration(
   if (!rateLimitProvider || !availableRateLimitProviders.includes(rateLimitProvider)) {
     return { enabled: false, reason: "rate-limit-provider" };
   }
+  // Authenticating an origin bearer does not establish a visitor IP. Until a
+  // Cloudflare identity policy is reviewed, proxied persistence stays closed.
   if (environment.VERCEL !== "1" ||
       environment.VERCEL_ENV !== "production" ||
+      !isPublicOriginProtectionDisabled(environment) ||
       environment.SUBMISSION_CLIENT_IP_SOURCE !== "vercel") {
     return { enabled: false, reason: "deployment-boundary" };
   }

@@ -13,6 +13,7 @@ import {
 import { InMemoryTestRateLimitAdapter } from "./support/in-memory-rate-limit-adapter";
 import { createPayloadFingerprint } from "../src/lib/payload-fingerprint";
 import { readRequestFormData, requestSchema } from "../src/lib/request-schema";
+import type { RateLimitAdapter } from "../src/lib/rate-limit";
 
 const secret = "A".repeat(43);
 const identity = { source: "vercel", hmacSecret: secret } as const;
@@ -20,6 +21,51 @@ const token = "s".repeat(43);
 const verified: TurnstileVerifier = { async verify() { return "verified"; } };
 const headers = (ip: string, extras: Record<string, string> = {}) => new Headers({ "x-vercel-forwarded-for": ip, ...extras });
 const limits = { client: { limit: 2, windowMs: 1_000 }, globalBurst: { limit: 3, windowMs: 1_000 } };
+
+test("independent budgets surround Turnstile and only opaque keys leave identity derivation", async () => {
+  const calls: string[] = [];
+  const limiter: RateLimitAdapter = { async consume(rules) {
+    calls.push(rules[0].key.includes(":pre:") ? "pre" : "post");
+    assert.match(rules[0].key, /^public-inquiry:(?:pre:)?client:v1:[A-Za-z0-9_-]{43}$/);
+    assert.equal(JSON.stringify(rules).includes("203.0.113.9"), false);
+    assert.equal(JSON.stringify(rules).includes(secret), false);
+    return "allowed";
+  } };
+  const turnstile: TurnstileVerifier = { async verify() { calls.push("turnstile"); return "verified"; } };
+  assert.equal(await enforceSubmissionAbuseControls({ headers: headers("203.0.113.9"), clientIdentity: identity,
+    submissionToken: token, turnstileToken: "synthetic", rateLimiter: limiter, turnstile }), "allowed");
+  assert.deepEqual(calls, ["pre", "turnstile", "post"]);
+});
+
+test("pre-verification rejection protects Siteverify; post-verification failure still denies persistence", async () => {
+  for (const stage of ["pre", "post"]) {
+    for (const outcome of ["limited", "unavailable", "throw"] as const) {
+      const calls: string[] = [];
+      const rateLimiter: RateLimitAdapter = { async consume(rules) {
+        const current = rules[0].key.includes(":pre:") ? "pre" : "post";
+        calls.push(current);
+        if (current !== stage) return "allowed";
+        if (outcome === "throw") throw new Error("synthetic outage");
+        return outcome;
+      } };
+      const turnstile: TurnstileVerifier = { async verify() { calls.push("turnstile"); return "verified"; } };
+      assert.equal(await enforceSubmissionAbuseControls({ headers: headers("203.0.113.9"), clientIdentity: identity,
+        submissionToken: token, turnstileToken: "synthetic", rateLimiter, turnstile }), outcome === "throw" ? "unavailable" : outcome);
+      assert.deepEqual(calls, stage === "pre" ? ["pre"] : ["pre", "turnstile", "post"]);
+    }
+  }
+});
+
+test("failed challenges consume the pre-verification budget without spending the strict budget", async () => {
+  const limiter = new InMemoryTestRateLimitAdapter(() => 0);
+  const input = { headers: headers("203.0.113.9"), clientIdentity: identity, submissionToken: token,
+    turnstileToken: "synthetic", rateLimiter: limiter, limits,
+    preVerificationLimits: { client: { limit: 3, windowMs: 1000 }, globalBurst: { limit: 10, windowMs: 1000 } } };
+  assert.equal(await enforceSubmissionAbuseControls({ ...input, turnstile: { async verify() { return "rejected"; } } }), "rejected");
+  assert.equal(await enforceSubmissionAbuseControls({ ...input, turnstile: verified }), "allowed");
+  assert.equal(await enforceSubmissionAbuseControls({ ...input, turnstile: verified }), "allowed");
+  assert.equal(await enforceSubmissionAbuseControls({ ...input, turnstile: verified }), "limited");
+});
 
 function protect(rateLimiter: InMemoryTestRateLimitAdapter, ip: string, verifier = verified) {
   return enforceSubmissionAbuseControls({

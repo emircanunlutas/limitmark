@@ -5,6 +5,8 @@ import { ContactLink } from "@/components/contact-link";
 
 export const metadata: Metadata = { title: "Talebinizi aldık", robots: { index: false, follow: false } };
 
+export const dynamic = "force-dynamic";
+
 export default function ConfirmationPage() {
   return <div className="page-shell"><Container><div className="confirmation-page">
     <h1>Talebinizi aldık.</h1>

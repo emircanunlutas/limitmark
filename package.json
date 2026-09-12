@@ -14,6 +14,7 @@
     "db:migrate": "drizzle-kit migrate",
     "test:e2e": "playwright test",
     "test:persistence-guard": "playwright test --config=playwright.persistence-guard.config.ts",
+    "test:edge-origin": "playwright test --config=playwright.edge-origin.config.ts",
     "test:blockers": "playwright test --config=playwright.blockers.config.ts",
     "check": "npm run lint && npm run typecheck && npm test && npm run build"
   },
