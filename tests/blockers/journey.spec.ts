@@ -40,7 +40,7 @@ test("blocked third parties do not prevent recovery from a failed submission tra
     await submit.click();
     await expect(page).toHaveURL("/test-talep-et/tesekkurler");
     await settle(page);
-    await expect(page.getByRole("heading", { name: "Talebinizi aldık.", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Demo akışı tamamlandı.", exact: true })).toBeVisible();
     expect(audit.requests.filter((request) => request.method === "POST")).toHaveLength(2);
     expect(audit.blocked.some((request) => request.reason === "third-party")).toBe(true);
     audit.assertHealthy();
@@ -73,7 +73,7 @@ test(`${profile}: without JavaScript preserves server validation and native subm
     ]);
     await expect(page).toHaveURL("/test-talep-et/tesekkurler");
     await settle(page);
-    await expect(page.getByRole("heading", { name: "Talebinizi aldık.", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Demo akışı tamamlandı.", exact: true })).toBeVisible();
     expect(audit.requests.filter((request) => request.method === "POST")).toHaveLength(2);
     if (profile !== "observe") expect(audit.blocked.some((request) => request.reason === "third-party")).toBe(true);
     audit.assertHealthy();
@@ -231,8 +231,8 @@ for (const { profile, width, optional } of scenarios) {
       await submit.click();
       await expect(page).toHaveURL("/test-talep-et/tesekkurler");
       await settle(page);
-      await expect(page.getByRole("heading", { name: "Talebinizi aldık.", exact: true })).toBeVisible();
-      await expect(page.getByText("Bu başvuru bir test başlatmadı", { exact: false })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Demo akışı tamamlandı.", exact: true })).toBeVisible();
+      await expect(page.getByText("gerçek bir talep oluşturulmadı", { exact: false })).toBeVisible();
       expect(audit.requests.filter((request) => request.method === "POST" && new URL(request.url).pathname === "/test-talep-et")).toHaveLength(1);
       await page.reload();
       await settle(page);

@@ -23,12 +23,13 @@ test("enabled origin boundary denies direct and spoofed requests on the built se
   expect(action.status()).toBe(404);
 });
 
-test("authenticated origin navigation works without reflecting its credential or enabling persistence", async ({ request }) => {
+test("authenticated origin navigation reaches the closed intake without reflecting its credential", async ({ request }) => {
   for (const host of ["limitmark.com", "www.limitmark.com"]) {
     const response = await request.get("/test-talep-et", { headers: { ...trusted, host, "x-forwarded-host": host } });
     expect(response.status()).toBe(200);
     const html = await response.text();
-    expect(html).toContain('name="submissionToken"');
+    expect(html).toContain("Çevrim içi talepler şu anda kullanılamıyor.");
+    expect(html).not.toContain('name="submissionToken"');
     expect(html).not.toContain(secret);
     expect(html).not.toContain("challenges.cloudflare.com/turnstile");
     expect(JSON.stringify(response.headers())).not.toContain(secret);

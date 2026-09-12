@@ -47,8 +47,9 @@ test("uncertain authority and optional protection complete the demo journey", as
   await page.getByLabel("Koruma hizmeti / sağlayıcı", { exact: false }).fill("Örnek sağlayıcı");
   await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
   await expect(page).toHaveURL("/test-talep-et/tesekkurler");
-  await expect(page.getByRole("heading", { name: "Talebinizi aldık.", exact: true })).toBeVisible();
-  await expect(page.getByText("Bu başvuru bir test başlatmadı", { exact: false })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Demo akışı tamamlandı.", exact: true })).toBeVisible();
+  await expect(page.getByText("Formdaki bilgiler kaydedilmedi", { exact: false })).toBeVisible();
+  await expect(page.getByText("gerçek bir talep oluşturulmadı", { exact: false })).toBeVisible();
 });
 
 test("mobile menu supports keyboard, Escape and navigation; disclosures are independent", async ({ page }) => {

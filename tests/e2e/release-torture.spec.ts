@@ -41,7 +41,7 @@ test("empty, whitespace and malformed email errors can be corrected with keyboar
   await page.locator("#name").press("Enter");
   await expect(page).toHaveURL("/test-talep-et/tesekkurler");
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Talebinizi aldık.", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Demo akışı tamamlandı.", exact: true })).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL("/test-talep-et");
   await expect(page.locator("form")).toBeVisible();

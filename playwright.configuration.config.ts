@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Run against a build made with the CONTACT_EMAIL value under test.
-// Unlike the demo journey suite, this server deliberately has no demo opt-in.
+// Closed-intake Production boundary. The complete demo override is deliberate:
+// Vercel Production must ignore it categorically.
 export default defineConfig({
   testDir: "./tests/configuration",
   workers: 1,
@@ -13,6 +13,12 @@ export default defineConfig({
     command: "node node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3100",
     url: "http://127.0.0.1:3100",
     reuseExistingServer: false,
-    env: { ALLOW_DEMO_SUBMISSIONS: "false", REQUEST_SUBMISSION_MODE: "demo" },
+    env: {
+      VERCEL: "1",
+      VERCEL_ENV: "production",
+      ALLOW_DEMO_SUBMISSIONS: "true",
+      REQUEST_SUBMISSION_MODE: "demo",
+      CONTACT_EMAIL: "inquiries@example.test",
+    },
   },
 });

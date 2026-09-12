@@ -51,7 +51,7 @@ for (const profile of ["observe", "third-party-and-tracking"] as const) {
       await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
       await expect(page).toHaveURL("/test-talep-et/tesekkurler");
       await page.waitForLoadState("networkidle");
-      await expect(page.getByRole("heading", { name: "Talebinizi aldık.", exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Demo akışı tamamlandı.", exact: true })).toBeVisible();
       expect(audit.requests.filter((request) => request.method === "POST")).toHaveLength(1);
       if (profile !== "observe") expect(audit.blocked.some((request) => request.reason === "third-party")).toBe(true);
       audit.observations.heldScripts = heldScripts;

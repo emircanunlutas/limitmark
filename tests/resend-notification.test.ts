@@ -18,6 +18,8 @@ const command: NotificationCommand = {
 };
 
 const completeEnvironment = {
+  VERCEL: "1",
+  VERCEL_ENV: "production",
   ENABLE_REAL_NOTIFICATIONS: "true",
   RESEND_API_KEY: "re_synthetic_unit_test_key",
   NOTIFICATION_FROM_EMAIL: "notifications@example.test",
@@ -25,7 +27,15 @@ const completeEnvironment = {
 };
 
 test("notification configuration and construction fail closed", () => {
-  assert.deepEqual(getNotificationConfiguration({}), { enabled: false, reason: "gate" });
+  assert.deepEqual(getNotificationConfiguration({}), { enabled: false, reason: "deployment-boundary" });
+  assert.deepEqual(
+    getNotificationConfiguration({ ...completeEnvironment, VERCEL_ENV: "preview" }),
+    { enabled: false, reason: "deployment-boundary" },
+  );
+  assert.deepEqual(
+    getNotificationConfiguration({ VERCEL: "1", VERCEL_ENV: "production" }),
+    { enabled: false, reason: "gate" },
+  );
   assert.deepEqual(
     getNotificationConfiguration({ ...completeEnvironment, ENABLE_REAL_NOTIFICATIONS: "TRUE" }),
     { enabled: false, reason: "gate" },

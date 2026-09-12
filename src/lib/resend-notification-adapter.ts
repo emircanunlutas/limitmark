@@ -169,7 +169,7 @@ export class ResendNotificationAdapter implements NotificationAdapter {
 }
 
 export type ConfiguredNotificationAdapter =
-  | { available: false; reason: "gate" | "api-key" | "sender" | "recipient" }
+  | { available: false; reason: "deployment-boundary" | "gate" | "api-key" | "sender" | "recipient" }
   | { available: true; adapter: NotificationAdapter };
 
 export function createConfiguredNotificationAdapter(

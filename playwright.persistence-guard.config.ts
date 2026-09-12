@@ -12,6 +12,9 @@ export default defineConfig({
     url: "http://127.0.0.1:3100",
     reuseExistingServer: false,
     env: {
+      VERCEL: "1",
+      VERCEL_ENV: "production",
+      CONTACT_EMAIL: "inquiries@example.test",
       ALLOW_DEMO_SUBMISSIONS: "true",
       REQUEST_SUBMISSION_MODE: "postgres",
       ENABLE_PERSISTENT_SUBMISSIONS: "true",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fieldLimits, getFieldErrors, getRequestValues, readRequestFormData, requestSchema } from "../src/lib/request-schema";
 import { resolveService } from "../src/lib/services";
-import { isDemoSubmissionAllowed } from "../src/lib/submission-policy";
+import { getSubmissionRuntimeMode, isDemoSubmissionAllowed } from "../src/lib/submission-policy";
 import { getContactEmail } from "../src/lib/contact-email";
 
 const valid = {
@@ -75,11 +75,17 @@ test("service query state accepts known IDs and safely defaults otherwise", () =
 });
 
 test("production never silently accepts a demo submission", () => {
-  assert.equal(isDemoSubmissionAllowed({ NODE_ENV: "development" }), true);
+  assert.equal(isDemoSubmissionAllowed({ NODE_ENV: "development", REQUEST_SUBMISSION_MODE: "demo" }), true);
   assert.equal(isDemoSubmissionAllowed({ NODE_ENV: "production" }), false);
-  assert.equal(isDemoSubmissionAllowed({ NODE_ENV: "production", ALLOW_DEMO_SUBMISSIONS: "true" }), true);
+  assert.equal(isDemoSubmissionAllowed({ NODE_ENV: "production", REQUEST_SUBMISSION_MODE: "demo", ALLOW_DEMO_SUBMISSIONS: "true" }), true);
   assert.equal(isDemoSubmissionAllowed({ NODE_ENV: "production", ALLOW_DEMO_SUBMISSIONS: "false" }), false);
   assert.equal(isDemoSubmissionAllowed({ NODE_ENV: "development", REQUEST_SUBMISSION_MODE: "unconfigured" }), false);
+  const production = { VERCEL: "1", VERCEL_ENV: "production", NODE_ENV: "production", ALLOW_DEMO_SUBMISSIONS: "true" };
+  assert.equal(getSubmissionRuntimeMode(production), "unavailable");
+  assert.equal(getSubmissionRuntimeMode({ ...production, REQUEST_SUBMISSION_MODE: "demo" }), "unavailable");
+  assert.equal(isDemoSubmissionAllowed({ ...production, REQUEST_SUBMISSION_MODE: "demo" }), false);
+  assert.equal(getSubmissionRuntimeMode({ VERCEL: "1", VERCEL_ENV: "preview", NODE_ENV: "production", REQUEST_SUBMISSION_MODE: "demo", ALLOW_DEMO_SUBMISSIONS: "true" }), "demo");
+  assert.equal(getSubmissionRuntimeMode({ NODE_ENV: "development", REQUEST_SUBMISSION_MODE: "demo" }), "demo");
 });
 
 test("multipart CRLF and browser LF use the same multiline limits", () => {

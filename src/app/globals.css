@@ -166,6 +166,12 @@ a.text-link:active { color: var(--accent-active); }
 .page-heading h1 + p { margin-top: var(--space-6); }
 .page-heading .request-notice { color: var(--text-primary); }
 .request-form { max-width: 760px; }
+.demo-notice { max-width: 760px; margin: calc(-1 * var(--space-6)) 0 var(--space-8); padding: var(--space-4); border-left: 2px solid var(--border-control); background: var(--surface); color: var(--text-primary); }
+.closed-intake { max-width: 680px; padding: var(--space-12); border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: var(--surface); }
+.closed-intake-eyebrow { color: var(--accent); font-size: .8125rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.closed-intake h1 { margin-top: var(--space-3); font-size: 2.75rem; line-height: 1.18182; letter-spacing: -.02em; }
+.closed-intake h1 + p, .closed-intake p + p { margin-top: var(--space-6); }
+.closed-intake-contact { margin-top: var(--space-8); }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-8) var(--space-6); }
 .form-field { min-width: 0; }
 .field-full { grid-column: 1 / -1; }
@@ -306,6 +312,8 @@ fieldset.form-field { padding: 0; margin: 0; border: 0; }
   .footer-primary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2) var(--space-6); }
   .page-shell { padding-block: var(--space-12); }
   .page-heading h1, .support-page h1, .confirmation-page h1 { font-size: 2rem; line-height: 1.25; }
+  .closed-intake { padding: var(--space-6); }
+  .closed-intake h1 { font-size: 2rem; line-height: 1.25; }
   .form-grid { grid-template-columns: 1fr; }
   .page-heading { margin-bottom: var(--space-8); }
   .faq-item summary { padding-inline: var(--space-4); }

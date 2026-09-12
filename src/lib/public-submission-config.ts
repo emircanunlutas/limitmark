@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { getPersistenceConfiguration, type PersistenceEnvironment } from "./persistence-config";
 import { publicInquiryTurnstileAction } from "./turnstile";
 import { isPublicOriginProtectionDisabled } from "./public-origin";
+import { isDemoSubmissionAllowed } from "./submission-policy";
 
 export type PublicSubmissionEnvironment = PersistenceEnvironment & {
   VERCEL?: string;
@@ -124,4 +125,25 @@ export function getTurnstileClientConfiguration(
   const configuration = getPublicSubmissionConfiguration(environment, availableRateLimitProviders);
   if (!configuration.enabled) return null;
   return { siteKey: configuration.turnstile.siteKey, action: configuration.turnstile.expectedAction };
+}
+
+export type PublicIntakeState =
+  | { kind: "closed" }
+  | { kind: "demo" }
+  | { kind: "real"; turnstile: { siteKey: string; action: typeof publicInquiryTurnstileAction } };
+
+/** One server-side presentation decision keeps the page aligned with submission admission. */
+export function getPublicIntakeState(
+  environment: PublicSubmissionEnvironment,
+  availableRateLimitProviders: readonly string[],
+): PublicIntakeState {
+  const configuration = getPublicSubmissionConfiguration(environment, availableRateLimitProviders);
+  if (configuration.enabled) {
+    return {
+      kind: "real",
+      turnstile: { siteKey: configuration.turnstile.siteKey, action: configuration.turnstile.expectedAction },
+    };
+  }
+  if (isDemoSubmissionAllowed(environment)) return { kind: "demo" };
+  return { kind: "closed" };
 }

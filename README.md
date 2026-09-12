@@ -54,9 +54,9 @@ The default mode remains a local demo. In demo mode no email is sent, no request
 
 In development, valid requests pass through a non-persistent demo adapter and redirect to confirmation. Both client and server validate the same schema; server validation is authoritative. Unknown fields are stripped, repeated known fields and file values are rejected, lengths and enum values are checked, and stale provider details are removed when protection is not in use. Form data is never put into a URL, local storage or application logs. React renders text safely without raw HTML injection.
 
-In production, the demo adapter is **disabled by default**. A valid submission returns a clear unavailable message and retains the entered values. To preview the complete demo using a production build, explicitly set `ALLOW_DEMO_SUBMISSIONS=true` in the process environment or an ignored `.env.local`. This opt-in is for isolated preview only. Unknown `REQUEST_SUBMISSION_MODE` values always fail closed.
+Vercel Production categorically disables the demo adapter. `ALLOW_DEMO_SUBMISSIONS=true`, an explicit demo mode, and a missing mode cannot override that boundary. When real intake is unavailable, Production renders a static closed-intake panel instead of a usable form and offers `CONTACT_EMAIL` only when it is configured. An intentional local or Preview production-build demo may use `ALLOW_DEMO_SUBMISSIONS=true`; its form and confirmation explicitly state that no inquiry was stored or delivered. Unknown `REQUEST_SUBMISSION_MODE` values always fail closed.
 
-Phase 1 adds an explicitly gated PostgreSQL foundation. Database access is configured only when all of the following are valid:
+The PostgreSQL runtime is available when `DATABASE_URL` is a valid credentialed PostgreSQL URL and `DATABASE_POOL_MAX` is valid. Public intake is a separate decision and is configured only when all of the following are valid:
 
 - `REQUEST_SUBMISSION_MODE=postgres`
 - `ENABLE_PERSISTENT_SUBMISSIONS=true`
@@ -128,7 +128,7 @@ Synthetic adapters cover successful, retryable, permanent, thrown, and delayed b
 
 Phase 2B adds a server-only `ResendNotificationAdapter` that can be passed to the existing `processOutboxBatch()` service. It adds provider capability only: it does not add a scheduler, cron Route Handler, worker daemon, automatic invocation, admin dashboard, or public enablement. PostgreSQL and the existing durable outbox state transitions remain the source of truth.
 
-Real delivery fails closed and is available only when all four values are valid:
+Real delivery fails closed, requires the exact Vercel Production runtime boundary, and is available only when all four values are valid:
 
 - `ENABLE_REAL_NOTIFICATIONS=true` (the value is exact; missing, `false`, and unknown values keep delivery unavailable)
 - `RESEND_API_KEY` is a non-empty, syntactically valid `re_...` key
@@ -191,7 +191,7 @@ List pagination is server-side, newest first by `created_at DESC, id DESC`, with
 
 Event history and admin notes are deliberately oldest-first with timestamp-plus-ID tie-breakers, and each collection is capped at the 500 most recent records to prevent an unbounded response. The UI identifies a truncated history. Event metadata is not selected. Only admin actors expose their stored actor identifier; system events do not. A missing or invalid UUID receives the same generic not-found outcome.
 
-Admin database reads reuse the existing fail-closed PostgreSQL configuration and therefore remain unavailable unless the existing persistence configuration is fully enabled. Configuration absence and connection/query failure render an explicit neutral “Inquiry data unavailable” state without error details; a successful empty query renders a different empty state. Phase 4A does not set `ENABLE_PERSISTENT_SUBMISSIONS`, add a database URL, migrate production, or otherwise enable public persistence.
+Admin database reads and mutations require the exact Vercel Production runtime boundary plus the independent database runtime configuration. Preview, branch, development, and unknown environments fail closed before a repository is constructed, even if Production database and Access values were copied there. Every route and Server Action still requires the independently verified Cloudflare Access JWT and exact e-mail allowlist. Disabling `ENABLE_PERSISTENT_SUBMISSIONS` closes public intake without disabling authorized Production administration. Configuration absence and connection/query failure render an explicit neutral “Inquiry data unavailable” state without error details; a successful empty query renders a different empty state.
 
 The cosmetic redirect from `admin.limitmark.com/` to `/admin` is deferred. Hostname alone must not become an authorization signal, and no broad routing/proxy change was justified for this read-only phase.
 
@@ -264,7 +264,7 @@ npm run build
 
 `npm run check` runs all four. Lint uses the ESLint CLI independently of the Next build. Unit tests cover the trust boundary, validation and the production demo guard.
 
-`npm run test:db` runs the PostgreSQL-only migration, idempotency, concurrency and rollback suite described above. `npm run test:persistence-guard` starts the production build with persistence requested but deliberately malformed database configuration and verifies fail-closed behavior with and without JavaScript.
+`npm run test:db` runs the PostgreSQL-only migration, idempotency, concurrency and rollback suite described above and remains convenient for local use by skipping when `TEST_DATABASE_URL` is absent. `npm run test:db:required` is the required database gate: it fails immediately when `TEST_DATABASE_URL` is missing, then runs the same complete serial integration suite. `npm run test:persistence-guard` starts the production build with persistence requested but deliberately malformed database configuration and verifies that intake stays visibly closed. `npm run test:closed-intake` verifies the Vercel Production closed-intake presentation and accessibility boundary.
 
 The browser regression suite covers form completion, service selection, associated errors, mobile keyboard navigation, independent disclosures, six viewport widths and automated accessibility rules. After a production build, install a test browser and run it:
 

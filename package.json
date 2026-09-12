@@ -10,11 +10,13 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "tsx --conditions=react-server --test tests/*.test.ts",
     "test:db": "tsx --conditions=react-server --test --test-concurrency=1 tests/persistence.integration.test.ts tests/notification-outbox.integration.test.ts tests/admin-inquiry-repository.integration.test.ts tests/admin-inquiry-mutations.integration.test.ts",
+    "test:db:required": "node -e \"if (!process.env.TEST_DATABASE_URL) { console.error('TEST_DATABASE_URL is required'); process.exit(1) }\" && npm run test:db",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "test:e2e": "playwright test",
     "test:persistence-guard": "playwright test --config=playwright.persistence-guard.config.ts",
     "test:edge-origin": "playwright test --config=playwright.edge-origin.config.ts",
+    "test:closed-intake": "playwright test --config=playwright.configuration.config.ts",
     "test:blockers": "playwright test --config=playwright.blockers.config.ts",
     "check": "npm run lint && npm run typecheck && npm test && npm run build"
   },

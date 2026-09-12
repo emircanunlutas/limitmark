@@ -1,6 +1,7 @@
 import { getContactEmail } from "./contact-email";
+import { isVercelProduction, type VercelEnvironment } from "./deployment-environment";
 
-export type NotificationEnvironment = {
+export type NotificationEnvironment = VercelEnvironment & {
   [key: string]: string | undefined;
   ENABLE_REAL_NOTIFICATIONS?: string;
   RESEND_API_KEY?: string;
@@ -9,7 +10,7 @@ export type NotificationEnvironment = {
 };
 
 export type NotificationConfiguration =
-  | { enabled: false; reason: "gate" | "api-key" | "sender" | "recipient" }
+  | { enabled: false; reason: "deployment-boundary" | "gate" | "api-key" | "sender" | "recipient" }
   | { enabled: true; apiKey: string; fromEmail: string; toEmail: string };
 
 function getApiKey(value: string | undefined): string | null {
@@ -21,6 +22,9 @@ function getApiKey(value: string | undefined): string | null {
 export function getNotificationConfiguration(
   environment: NotificationEnvironment,
 ): NotificationConfiguration {
+  if (!isVercelProduction(environment)) {
+    return { enabled: false, reason: "deployment-boundary" };
+  }
   if (environment.ENABLE_REAL_NOTIFICATIONS !== "true") {
     return { enabled: false, reason: "gate" };
   }

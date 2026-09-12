@@ -1,10 +1,10 @@
 import "server-only";
 import type { TestRequest } from "./request-schema";
-import { isDemoSubmissionAllowed } from "./submission-policy";
+import { getSubmissionRuntimeMode } from "./submission-policy";
 import { createPayloadFingerprint } from "./payload-fingerprint";
 import type { HeaderReader } from "./client-identity";
 import { availableProductionRateLimitProviders, createProductionRateLimitAdapter } from "./rate-limit";
-import { getPublicSubmissionConfiguration } from "./public-submission-config";
+import { getPublicSubmissionConfiguration, type PublicSubmissionEnvironment } from "./public-submission-config";
 import { enforceSubmissionAbuseControls } from "./submission-abuse-control";
 import { CloudflareTurnstileVerifier } from "./turnstile";
 
@@ -27,14 +27,15 @@ export async function submitToAdapter(
   request: TestRequest,
   submissionToken: string,
   security?: { headers: HeaderReader; turnstileToken: string | null },
+  environment: PublicSubmissionEnvironment = process.env,
 ): Promise<SubmissionResult> {
-  if ((process.env.REQUEST_SUBMISSION_MODE ?? "demo") === "demo") {
-    // Fail closed on a conventional production host unless explicitly previewing.
-    if (!isDemoSubmissionAllowed(process.env)) return { status: "unavailable" };
+  const runtimeMode = getSubmissionRuntimeMode(environment);
+  if (runtimeMode === "demo") {
     return demoAdapter.submit(request, submissionToken);
   }
+  if (runtimeMode === "unavailable") return { status: "unavailable" };
 
-  const configuration = getPublicSubmissionConfiguration(process.env, availableProductionRateLimitProviders);
+  const configuration = getPublicSubmissionConfiguration(environment, availableProductionRateLimitProviders);
   // Unknown modes, a closed go-live gate, and missing/malformed configuration
   // are deliberately indistinguishable to the public caller.
   if (!configuration.enabled) return { status: "unavailable" };
