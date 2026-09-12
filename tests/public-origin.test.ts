@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { NextRequest } from "next/server";
-import { proxy } from "../src/proxy";
+import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
+import { config as proxyConfig, proxy } from "../src/proxy";
 import { isPublicOriginAllowed, publicOriginHeader } from "../src/lib/public-origin";
 import { derivePrivateClientKey, type ClientIdentityConfiguration } from "../src/lib/client-identity";
 import { getPublicSubmissionConfiguration } from "../src/lib/public-submission-config";
@@ -9,6 +10,17 @@ import { getPublicSubmissionConfiguration } from "../src/lib/public-submission-c
 const secret = "A".repeat(43);
 const environment = { PUBLIC_ORIGIN_PROTECTION: "required", PUBLIC_ORIGIN_SECRET: secret, VERCEL: "1", VERCEL_ENV: "production" };
 const valid = () => new Headers({ host: "limitmark.com", "x-forwarded-host": "limitmark.com", [publicOriginHeader]: secret });
+
+test("Proxy excludes only the exact raw-body inquiry pathname while retaining surrounding coverage", () => {
+  for (const url of ["https://limitmark.com/api/public-inquiries", "https://limitmark.com/api/public-inquiries?x=1"]) {
+    assert.equal(unstable_doesMiddlewareMatch({ config: proxyConfig, url }), false);
+  }
+  for (const url of [
+    "https://limitmark.com/admin", "https://limitmark.com/api/public-inquiries/",
+    "https://limitmark.com/api/public-inquiries/alias", "https://limitmark.com/api/Public-inquiries",
+    "https://limitmark.com/api/%70ublic-inquiries", "https://limitmark.com/anything-else",
+  ]) assert.equal(unstable_doesMiddlewareMatch({ config: proxyConfig, url }), true);
+});
 
 test("origin protection is opt-in; unknown, empty and incomplete settings fail closed", () => {
   assert.equal(isPublicOriginAllowed(new Headers(), {}), true);
@@ -42,7 +54,7 @@ test("direct-origin spoofing, duplicate secrets and host manipulation cannot aut
   assert.equal(isPublicOriginAllowed(www, environment), true);
 });
 
-test("Cloudflare client identity stays unsupported even with a valid origin credential", () => {
+test("legacy direct-IP derivation stays disabled while signed ingress configuration is selected", () => {
   const headers = valid();
   headers.set("cf-connecting-ip", "203.0.113.9");
   headers.set("x-vercel-forwarded-for", "198.51.100.1");
@@ -51,18 +63,20 @@ test("Cloudflare client identity stays unsupported even with a valid origin cred
   }
   const complete = {
     ...environment, REQUEST_SUBMISSION_MODE: "postgres", ENABLE_PERSISTENT_SUBMISSIONS: "true",
-    DATABASE_URL: "postgresql://runtime:synthetic@db.example.test/app", RATE_LIMIT_PROVIDER: "synthetic-shared",
-    SUBMISSION_CLIENT_IP_SOURCE: "vercel", SUBMISSION_CLIENT_KEY_SECRET: secret,
+    DATABASE_URL: "postgresql://runtime:synthetic@db.example.test/app", RATE_LIMIT_PROVIDER: "cloudflare-do",
+    VERCEL_PROJECT_ID: "prj_limitmark", VERCEL_DEPLOYMENT_ID: "dpl_reviewed", INGRESS_PROTOCOL: "lm-ingress-v1",
+    INGRESS_AUDIENCE: "prj_limitmark", INGRESS_PUBLIC_KEYS: JSON.stringify([["current", secret]]), INGRESS_REQUEST_BINDING_KEY: "B".repeat(43),
+    ADMISSION_SERVICE_URL: "https://admission.example.test", ADMISSION_OIDC_AUDIENCE: "https://admission.example.test",
+    ADMISSION_RELEASE_ID: "dpl_reviewed", ADMISSION_RELEASE_RPC_KEY: "C".repeat(43),
     TURNSTILE_MODE: "enabled", TURNSTILE_SITE_KEY: "synthetic-key", TURNSTILE_SECRET_KEY: "synthetic-secret",
     TURNSTILE_EXPECTED_HOSTNAME: "limitmark.com",
   };
-  for (const PUBLIC_ORIGIN_PROTECTION of ["required", "unknown", ""]) {
-    assert.deepEqual(getPublicSubmissionConfiguration({ ...complete, PUBLIC_ORIGIN_PROTECTION }, ["synthetic-shared"]),
-      { enabled: false, reason: "deployment-boundary" });
+  assert.equal(getPublicSubmissionConfiguration(complete, ["cloudflare-do"]).enabled, true);
+  for (const PUBLIC_ORIGIN_PROTECTION of ["unknown", ""]) {
+    assert.deepEqual(getPublicSubmissionConfiguration({ ...complete, PUBLIC_ORIGIN_PROTECTION }, ["cloudflare-do"]), { enabled: false, reason: "deployment-boundary" });
   }
   for (const SUBMISSION_CLIENT_IP_SOURCE of ["cloudflare-via-vercel", "unknown", ""]) {
-    assert.deepEqual(getPublicSubmissionConfiguration({ ...complete, PUBLIC_ORIGIN_PROTECTION: "disabled", SUBMISSION_CLIENT_IP_SOURCE }, ["synthetic-shared"]),
-      { enabled: false, reason: "deployment-boundary" });
+    assert.equal(getPublicSubmissionConfiguration({ ...complete, SUBMISSION_CLIENT_IP_SOURCE }, ["cloudflare-do"]).enabled, true);
   }
 });
 

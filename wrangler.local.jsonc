@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "limitmark-phase5c-local-authority",
+  "main": "workers/local-do-harness.ts",
+  "compatibility_date": "2026-09-12",
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      { "name": "AUTHORITY", "class_name": "LocalTestAdmissionAuthority" }
+    ]
+  },
+  "migrations": [
+    { "tag": "local-v1", "new_sqlite_classes": ["LocalTestAdmissionAuthority"] }
+  ]
+}

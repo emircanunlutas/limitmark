@@ -3,8 +3,8 @@
 import Link from "next/link";
 import Script from "next/script";
 import { useActionState, useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { unstable_rethrow } from "next/navigation";
 import { submitTestRequest } from "@/app/test-talep-et/actions";
+import { useRouter } from "next/navigation";
 import { fieldLabels, fieldLimits, getFieldErrors, getRequestValues, readRequestFormData, requestSchema, type FieldErrors, type RequestField, type RequestState } from "@/lib/request-schema";
 import { serviceOptions } from "@/lib/services";
 import { FormField } from "./form-field";
@@ -23,7 +23,7 @@ export function RequestForm({ initialService, submissionToken, turnstile }: {
   submissionToken: string;
   turnstile: null | { siteKey: string; action: string };
 }) {
-  // Retain the native Server Action for submissions before hydration/without JS.
+  const router = useRouter();
   const [serverState, formAction, serverPending] = useActionState(submitTestRequest, initialState);
   const [clientState, setClientState] = useState<RequestState | null>(null);
   const state = clientState ?? serverState;
@@ -79,17 +79,33 @@ export function RequestForm({ initialService, submissionToken, turnstile }: {
         setValidationAttempt((attempt) => attempt + 1);
         return;
       }
-      // Hide errors from the previous server result while this corrected request is pending.
+      // Hide errors from the previous response while this corrected request is pending.
       setClientErrors({});
       submittingRef.current = true;
       startTransition(async () => {
         try {
-          const nextState = await submitTestRequest(initialState, data);
-          setClientState(nextState);
+          const body = new URLSearchParams();
+          for (const [name, value] of data.entries()) {
+            if (name.startsWith("$ACTION_")) continue;
+            if (typeof value !== "string") throw new Error("files-not-supported");
+            body.append(name, value);
+          }
+          const response = await fetch("/api/public-inquiries", {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+            body: body.toString(),
+            credentials: "same-origin",
+            redirect: "error",
+          });
+          const responseBody = await response.json() as { kind?: string; location?: string; state?: RequestState };
+          if (responseBody.kind === "redirect" && responseBody.location === "/test-talep-et/tesekkurler") {
+            router.push(responseBody.location);
+            return;
+          }
+          if (!responseBody.state) throw new Error("malformed-response");
+          setClientState(responseBody.state);
           setClientErrors(null);
-        } catch (error) {
-          // Preserve Next.js redirect/not-found control flow; handle transport failures.
-          unstable_rethrow(error);
+        } catch {
           setClientState({ errors: {}, message: "Talebiniz iletilemedi. Bilgileriniz bu sayfada duruyor; lütfen tekrar deneyin." });
           setClientErrors(null);
         } finally {

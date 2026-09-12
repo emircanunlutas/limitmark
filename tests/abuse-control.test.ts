@@ -238,8 +238,11 @@ test("public persistence cannot enable without every abuse-control gate", () => 
   const complete = {
     REQUEST_SUBMISSION_MODE: "postgres", ENABLE_PERSISTENT_SUBMISSIONS: "true",
     DATABASE_URL: "postgresql://runtime:synthetic@db.example.test/app",
-    VERCEL: "1", VERCEL_ENV: "production", RATE_LIMIT_PROVIDER: "synthetic-shared", SUBMISSION_CLIENT_IP_SOURCE: "vercel",
-    SUBMISSION_CLIENT_KEY_SECRET: secret, TURNSTILE_MODE: "enabled",
+    VERCEL: "1", VERCEL_ENV: "production", VERCEL_PROJECT_ID: "prj_limitmark", VERCEL_DEPLOYMENT_ID: "dpl_reviewed",
+    PUBLIC_ORIGIN_PROTECTION: "required", PUBLIC_ORIGIN_SECRET: secret, RATE_LIMIT_PROVIDER: "cloudflare-do", INGRESS_PROTOCOL: "lm-ingress-v1",
+    INGRESS_AUDIENCE: "prj_limitmark", INGRESS_PUBLIC_KEYS: JSON.stringify([["current", secret]]), INGRESS_REQUEST_BINDING_KEY: "B".repeat(43),
+    ADMISSION_SERVICE_URL: "https://admission.example.test", ADMISSION_OIDC_AUDIENCE: "https://admission.example.test",
+    ADMISSION_RELEASE_ID: "dpl_reviewed", ADMISSION_RELEASE_RPC_KEY: "C".repeat(43), TURNSTILE_MODE: "enabled",
     TURNSTILE_SITE_KEY: "real-looking-site-key", TURNSTILE_SECRET_KEY: "real-looking-secret-key",
     TURNSTILE_EXPECTED_HOSTNAME: "www.example.test",
   };
@@ -250,16 +253,19 @@ test("public persistence cannot enable without every abuse-control gate", () => 
     ["VERCEL_ENV", "preview", "deployment-boundary"],
     ["VERCEL_ENV", "development", "deployment-boundary"],
     ["VERCEL_ENV", undefined, "deployment-boundary"],
-    ["SUBMISSION_CLIENT_IP_SOURCE", "x-forwarded-for", "deployment-boundary"],
-    ["SUBMISSION_CLIENT_KEY_SECRET", "short", "client-key-secret"],
+    ["PUBLIC_ORIGIN_PROTECTION", "disabled", "deployment-boundary"],
+    ["INGRESS_PROTOCOL", "unknown", "ingress"],
+    ["INGRESS_REQUEST_BINDING_KEY", "short", "ingress"],
+    ["ADMISSION_RELEASE_ID", "other", "admission"],
     ["TURNSTILE_MODE", "disabled", "turnstile"],
     ["TURNSTILE_SECRET_KEY", "", "turnstile"],
     ["TURNSTILE_EXPECTED_HOSTNAME", "https://www.example.test", "turnstile"],
   ] as const;
   for (const [field, value, reason] of cases) {
-    assert.deepEqual(getPublicSubmissionConfiguration({ ...complete, [field]: value }, ["synthetic-shared"]), { enabled: false, reason });
+    assert.deepEqual(getPublicSubmissionConfiguration({ ...complete, [field]: value }, ["cloudflare-do"]), { enabled: false, reason });
   }
-  assert.equal(getPublicSubmissionConfiguration(complete, ["synthetic-shared"]).enabled, true);
+  assert.deepEqual(getPublicSubmissionConfiguration({ ...complete, ADMISSION_RELEASE_RPC_KEY: complete.INGRESS_REQUEST_BINDING_KEY }, ["cloudflare-do"]), { enabled: false, reason: "admission" });
+  assert.equal(getPublicSubmissionConfiguration(complete, ["cloudflare-do"]).enabled, true);
   assert.equal(getTurnstileClientConfiguration(complete, []), null);
 });
 
@@ -267,8 +273,11 @@ test("every documented Cloudflare testing key is denied by the production gate",
   const complete = {
     REQUEST_SUBMISSION_MODE: "postgres", ENABLE_PERSISTENT_SUBMISSIONS: "true",
     DATABASE_URL: "postgresql://runtime:synthetic@db.example.test/app",
-    VERCEL: "1", VERCEL_ENV: "production", RATE_LIMIT_PROVIDER: "synthetic-shared",
-    SUBMISSION_CLIENT_IP_SOURCE: "vercel", SUBMISSION_CLIENT_KEY_SECRET: secret,
+    VERCEL: "1", VERCEL_ENV: "production", VERCEL_PROJECT_ID: "prj_limitmark", VERCEL_DEPLOYMENT_ID: "dpl_reviewed",
+    PUBLIC_ORIGIN_PROTECTION: "required", PUBLIC_ORIGIN_SECRET: secret, RATE_LIMIT_PROVIDER: "cloudflare-do", INGRESS_PROTOCOL: "lm-ingress-v1",
+    INGRESS_AUDIENCE: "prj_limitmark", INGRESS_PUBLIC_KEYS: JSON.stringify([["current", secret]]), INGRESS_REQUEST_BINDING_KEY: "B".repeat(43),
+    ADMISSION_SERVICE_URL: "https://admission.example.test", ADMISSION_OIDC_AUDIENCE: "https://admission.example.test",
+    ADMISSION_RELEASE_ID: "dpl_reviewed", ADMISSION_RELEASE_RPC_KEY: "C".repeat(43),
     TURNSTILE_MODE: "enabled", TURNSTILE_SITE_KEY: "real-looking-site-key",
     TURNSTILE_SECRET_KEY: "real-looking-secret-key", TURNSTILE_EXPECTED_HOSTNAME: "www.example.test",
   };
@@ -286,15 +295,15 @@ test("every documented Cloudflare testing key is denied by the production gate",
   ];
   for (const TURNSTILE_SITE_KEY of documentedSiteKeys) {
     assert.deepEqual(
-      getPublicSubmissionConfiguration({ ...complete, TURNSTILE_SITE_KEY }, ["synthetic-shared"]),
+      getPublicSubmissionConfiguration({ ...complete, TURNSTILE_SITE_KEY }, ["cloudflare-do"]),
       { enabled: false, reason: "turnstile" },
     );
   }
   for (const TURNSTILE_SECRET_KEY of documentedSecretKeys) {
     assert.deepEqual(
-      getPublicSubmissionConfiguration({ ...complete, TURNSTILE_SECRET_KEY }, ["synthetic-shared"]),
+      getPublicSubmissionConfiguration({ ...complete, TURNSTILE_SECRET_KEY }, ["cloudflare-do"]),
       { enabled: false, reason: "turnstile" },
     );
   }
-  assert.equal(getPublicSubmissionConfiguration(complete, ["synthetic-shared"]).enabled, true);
+  assert.equal(getPublicSubmissionConfiguration(complete, ["cloudflare-do"]).enabled, true);
 });

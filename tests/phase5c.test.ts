@@ -115,7 +115,7 @@ test("Phase 5C: even a future provider registration cannot open unreviewed ingre
   for (const source of ["cloudflare-via-vercel", "cloudflare", "x-forwarded-for", "unknown", ""]) {
     for (const protection of ["disabled", "required"]) {
       assert.deepEqual(getPublicSubmissionConfiguration({ ...production, SUBMISSION_CLIENT_IP_SOURCE: source,
-        PUBLIC_ORIGIN_PROTECTION: protection, PUBLIC_ORIGIN_SECRET: secret }, ["upstash"]),
+        RATE_LIMIT_PROVIDER: "cloudflare-do", PUBLIC_ORIGIN_PROTECTION: protection, PUBLIC_ORIGIN_SECRET: secret }, ["cloudflare-do"]),
       { enabled: false, reason: "deployment-boundary" });
     }
   }

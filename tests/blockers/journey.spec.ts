@@ -233,7 +233,7 @@ for (const { profile, width, optional } of scenarios) {
       await settle(page);
       await expect(page.getByRole("heading", { name: "Demo akışı tamamlandı.", exact: true })).toBeVisible();
       await expect(page.getByText("gerçek bir talep oluşturulmadı", { exact: false })).toBeVisible();
-      expect(audit.requests.filter((request) => request.method === "POST" && new URL(request.url).pathname === "/test-talep-et")).toHaveLength(1);
+      expect(audit.requests.filter((request) => request.method === "POST" && new URL(request.url).pathname === "/api/public-inquiries")).toHaveLength(1);
       await page.reload();
       await settle(page);
       await assertLayout(page);

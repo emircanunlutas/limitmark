@@ -84,17 +84,15 @@ test("a malformed POST bypassing all browser limits is rejected by the server", 
   await page.locator("#environment").selectOption("staging");
   await page.locator('input[value="owner"]').check();
   let intercepted = false;
-  await page.route("**/test-talep-et", async (route) => {
+  await page.route("**/api/public-inquiries", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     intercepted = true;
-    let body = route.request().postData()!;
+    const body = new URLSearchParams(route.request().postData()!);
     for (const [field, limit] of Object.entries(fieldLimits)) {
-      // React action multipart fields have a numeric prefix; preserve that protocol.
-      const pattern = new RegExp(`(name="[^"\\r\\n]*_${field}"\\r\\n\\r\\n)[\\s\\S]*?(?=\\r\\n--)`);
-      expect(pattern.test(body), field).toBe(true);
-      body = body.replace(pattern, (_match, prefix: string) => prefix + "a".repeat(limit + 1));
+      expect(body.has(field), field).toBe(true);
+      body.set(field, "a".repeat(limit + 1));
     }
-    await route.continue({ postData: body });
+    await route.continue({ postData: body.toString() });
   });
   // Optional provider must be present for the mutation above.
   await page.locator(".form-extras summary").click();
@@ -115,14 +113,14 @@ test("corrected resubmission clears stale server errors while the action is pend
   const secondPostHeld = new Promise<void>((resolve) => { markSecondPostHeld = resolve; });
   const releaseSecondPostGate = new Promise<void>((resolve) => { releaseSecondPost = resolve; });
 
-  await page.route("**/test-talep-et", async (route) => {
+  await page.route("**/api/public-inquiries", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     postCount += 1;
     if (postCount === 1) {
-      const body = route.request().postData()!;
-      const email = /(name="[^"\r\n]*_email"\r\n\r\n)[\s\S]*?(?=\r\n--)/;
-      expect(email.test(body)).toBe(true);
-      await route.continue({ postData: body.replace(email, "$1invalid") });
+      const body = new URLSearchParams(route.request().postData()!);
+      expect(body.has("email")).toBe(true);
+      body.set("email", "invalid");
+      await route.continue({ postData: body.toString() });
       return;
     }
     markSecondPostHeld();

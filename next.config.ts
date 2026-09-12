@@ -4,9 +4,17 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   experimental: {
     serverActions: { bodySizeLimit: "32kb" },
+    proxyClientMaxBodySize: "64kb",
   },
   async headers() {
     return [{
+      source: "/api/public-inquiries",
+      headers: [
+        { key: "Cache-Control", value: "private, no-store, max-age=0, must-revalidate" },
+        { key: "CDN-Cache-Control", value: "no-store" },
+        { key: "Vercel-CDN-Cache-Control", value: "no-store" },
+      ],
+    }, {
       source: "/:path*",
       headers: [
         // Limited CSP: nonce/hash and Access form-redirect review are deferred.

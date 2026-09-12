@@ -23,9 +23,9 @@ export interface RateLimitAdapter {
   consume(rules: readonly RateLimitRule[]): Promise<RateLimitDecision>;
 }
 
-// Phase 5C: Upstash's documented eventual consistency does not establish this
-// strict contract across failover/partitions. See PHASE5C_SECURITY_REPORT.md.
-// Keep the registry empty until a provider with sufficient guarantees is reviewed.
+// I1 contains the selected Cloudflare DO implementation and local conformance
+// tests, but this launch registry intentionally stays empty. A later authorized
+// provider/configuration phase must not be inferred from emulator evidence.
 export const availableProductionRateLimitProviders = [] as const;
 export type ProductionRateLimitProvider = (typeof availableProductionRateLimitProviders)[number];
 

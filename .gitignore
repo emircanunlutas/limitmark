@@ -3,6 +3,7 @@ node_modules/
 out/
 .npm-cache/
 .playwright/
+.wrangler/
 test-results/
 playwright-report/
 artifacts/

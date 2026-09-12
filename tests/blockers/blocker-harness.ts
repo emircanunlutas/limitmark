@@ -73,7 +73,7 @@ export async function installAudit(context: BrowserContext, page: Page, baseURL:
     const record = { url: request.url(), method: request.method(), type: request.resourceType(), reason: blockReason(profile, request.url(), request.resourceType(), origin), prefetch: request.headers()["next-router-prefetch"] === "1", serverAction: Boolean(request.headers()["next-action"]), phase };
     // Separate, deliberate transport fault to verify retry while privacy blocking
     // remains enabled. This is not a tracker rule or an optional-request failure.
-    if (options.failFirstSubmission && injectedFailures === 0 && request.method() === "POST" && request.url() === `${origin}/test-talep-et`) {
+    if (options.failFirstSubmission && injectedFailures === 0 && request.method() === "POST" && request.url() === `${origin}/api/public-inquiries`) {
       record.reason = "injected-submit-failure";
       injectedFailures++;
     }
@@ -125,12 +125,22 @@ export async function installAudit(context: BrowserContext, page: Page, baseURL:
       && navigations.includes(new URL(actionRedirect.split(";")[0], origin).href);
   }
 
+  function isCompletedRouterNavigationCancellation(request: FailureRecord) {
+    const requestUrl = new URL(request.url);
+    return info.project.name === "chromium" && requestUrl.origin === origin && requestUrl.pathname === "/test-talep-et/tesekkurler"
+      && requestUrl.searchParams.has("_rsc") && request.method === "GET" && request.type === "fetch" && request.reason === null
+      && !request.serverAction && request.error === "net::ERR_ABORTED" && request.responseStatus === 200
+      && request.responseContentType?.startsWith("text/x-component") === true
+      && navigations.includes(new URL("/test-talep-et/tesekkurler", origin).href);
+  }
+
   async function save() {
     const report = {
       profile, options, browser: info.project.name, viewport: page.viewportSize(),
       requests, blocked, failures, badResponses, pageErrors, navigations, navigationFailures,
       optionalPrefetchCancellations: failures.filter(isOptionalPrefetchCancellation),
       completedServerActionRedirectCancellations: failures.filter(isCompletedServerActionRedirectCancellation),
+      completedRouterNavigationCancellations: failures.filter(isCompletedRouterNavigationCancellation),
       disabledScriptPreloads: failures.filter(isDisabledScript),
       console: messages.map((message) => ({ ...message, classification: consoleClassification(message) })),
       observations,
@@ -143,7 +153,7 @@ export async function installAudit(context: BrowserContext, page: Page, baseURL:
   function assertHealthy() {
     expect(pageErrors, "Uncaught browser errors").toEqual([]);
     expect(navigationFailures, "Failed document navigations").toEqual([]);
-    expect(failures.filter((request) => new URL(request.url).origin === origin && request.reason !== "injected-submit-failure" && !isOptionalPrefetchCancellation(request) && !isCompletedServerActionRedirectCancellation(request) && !isDisabledScript(request)), "Failed first-party critical requests").toEqual([]);
+    expect(failures.filter((request) => new URL(request.url).origin === origin && request.reason !== "injected-submit-failure" && !isOptionalPrefetchCancellation(request) && !isCompletedServerActionRedirectCancellation(request) && !isCompletedRouterNavigationCancellation(request) && !isDisabledScript(request)), "Failed first-party critical requests").toEqual([]);
     expect(failures.filter((request) => request.reason === "injected-submit-failure"), "Explicitly injected transport failures").toHaveLength(options.failFirstSubmission ? 1 : 0);
     expect(badResponses, "Unexpected HTTP failures").toEqual([]);
     expect(messages.filter((message) => ["error", "warning"].includes(message.type) && consoleClassification(message) === "unexpected"), "Unexpected console diagnostics (full log retained)").toEqual([]);

@@ -35,7 +35,7 @@ test("a failed submission transport preserves the form and permits retry", async
   await fillRequest(page);
   const submissionToken = await page.locator('input[name="submissionToken"]').inputValue();
   expect(submissionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
-  await page.route("**/test-talep-et", async (route) => {
+  await page.route("**/api/public-inquiries", async (route) => {
     if (route.request().method() === "POST") await route.abort("failed");
     else await route.continue();
   });
@@ -43,7 +43,7 @@ test("a failed submission transport preserves the form and permits retry", async
   await expect(page.getByRole("main").getByRole("alert")).toBeVisible();
   await expect(page.getByLabel("Adınız", { exact: true })).toHaveValue("Çağrı Öztürk");
   await expect(page.locator('input[name="submissionToken"]')).toHaveValue(submissionToken);
-  await page.unroute("**/test-talep-et");
+  await page.unroute("**/api/public-inquiries");
   await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
   await expect(page).toHaveURL("/test-talep-et/tesekkurler");
 });
@@ -70,7 +70,7 @@ test("rapid duplicate clicks create only one in-flight submission", async ({ pag
   let posts = 0;
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
-  await page.route("**/test-talep-et", async (route) => {
+  await page.route("**/api/public-inquiries", async (route) => {
     if (route.request().method() === "POST") { posts++; await held; }
     await route.continue();
   });
@@ -84,11 +84,11 @@ test("rapid duplicate clicks create only one in-flight submission", async ({ pag
 
 test("a server validation response does not reset unrelated selects and radios", async ({ page }) => {
   await fillRequest(page);
-  await page.route("**/test-talep-et", async (route) => {
+  await page.route("**/api/public-inquiries", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     const body = route.request().postData()!;
-    expect(body).toContain("\r\nstaging\r\n");
-    await route.continue({ postData: body.replace("\r\nstaging\r\n", "\r\ninvalid-environment\r\n") });
+    expect(body).toContain("environment=staging");
+    await route.continue({ postData: body.replace("environment=staging", "environment=invalid-environment") });
   });
   await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
   await expect(page.getByRole("main").getByRole("alert")).toBeVisible();

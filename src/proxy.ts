@@ -12,7 +12,6 @@ export function proxy(request: NextRequest) {
   // Immutable bundles contain no customer data and are also needed by the
   // independently protected admin hostname, which never receives this secret.
   const staticAsset = (request.method === "GET" || request.method === "HEAD") && path.startsWith("/_next/static/");
-
   const denied = !admin && !verification && !staticAsset && !isPublicOriginAllowed(request.headers, process.env);
   const response = denied
     ? new NextResponse(null, { status: 404 })
@@ -27,6 +26,8 @@ export function proxy(request: NextRequest) {
   return response;
 }
 
-// Include all requests; only the explicit namespaces above are exempt. RSC,
-// suffixes and prefetch headers do not bypass dynamic-route origin checks.
-export const config = { matcher: "/:path*" };
+// The exact raw-body inquiry boundary must not enter Next's Proxy body clone:
+// an over-limit clone can discard the crossing chunk before the Route Handler
+// can observe byte 32,769. The Route Handler independently enforces every
+// origin, ingress, environment and body check. All other pathnames remain here.
+export const config = { matcher: "/((?!api/public-inquiries$).*)" };

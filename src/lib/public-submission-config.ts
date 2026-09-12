@@ -1,149 +1,75 @@
 import { Buffer } from "node:buffer";
 import { getPersistenceConfiguration, type PersistenceEnvironment } from "./persistence-config";
+import { INGRESS_VERSION } from "./ingress-protocol";
 import { publicInquiryTurnstileAction } from "./turnstile";
-import { isPublicOriginProtectionDisabled } from "./public-origin";
 import { isDemoSubmissionAllowed } from "./submission-policy";
 
 export type PublicSubmissionEnvironment = PersistenceEnvironment & {
-  VERCEL?: string;
-  VERCEL_ENV?: string;
-  PUBLIC_ORIGIN_PROTECTION?: string;
-  RATE_LIMIT_PROVIDER?: string;
-  SUBMISSION_CLIENT_IP_SOURCE?: string;
-  SUBMISSION_CLIENT_KEY_SECRET?: string;
-  TURNSTILE_MODE?: string;
-  TURNSTILE_SITE_KEY?: string;
-  TURNSTILE_SECRET_KEY?: string;
-  TURNSTILE_EXPECTED_HOSTNAME?: string;
+  VERCEL?: string; VERCEL_ENV?: string; VERCEL_PROJECT_ID?: string; VERCEL_DEPLOYMENT_ID?: string;
+  PUBLIC_ORIGIN_PROTECTION?: string; RATE_LIMIT_PROVIDER?: string;
+  INGRESS_PROTOCOL?: string; INGRESS_AUDIENCE?: string; INGRESS_PUBLIC_KEYS?: string; INGRESS_REQUEST_BINDING_KEY?: string;
+  ADMISSION_SERVICE_URL?: string; ADMISSION_OIDC_AUDIENCE?: string; ADMISSION_RELEASE_ID?: string; ADMISSION_RELEASE_RPC_KEY?: string;
+  TURNSTILE_MODE?: string; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; TURNSTILE_EXPECTED_HOSTNAME?: string;
 };
 
 export type PublicSubmissionConfiguration =
-  | { enabled: false; reason: "persistence" | "rate-limit-provider" | "deployment-boundary" | "client-key-secret" | "turnstile" }
-  | {
-      enabled: true;
-      databaseUrl: string;
-      poolMax: number;
-      rateLimitProvider: string;
-      clientIdentity: { source: "vercel"; hmacSecret: string };
-      turnstile: {
-        siteKey: string;
-        secretKey: string;
-        expectedHostname: string;
-        expectedAction: typeof publicInquiryTurnstileAction;
-        timeoutMs: number;
-      };
-    };
+  | { enabled: false; reason: "persistence" | "rate-limit-provider" | "deployment-boundary" | "ingress" | "admission" | "turnstile" }
+  | { enabled: true; databaseUrl: string; poolMax: number; rateLimitProvider: "cloudflare-do"; turnstile: {
+      siteKey: string; secretKey: string; expectedHostname: string; expectedAction: typeof publicInquiryTurnstileAction; timeoutMs: number;
+    } };
 
 function isSecret(value: string | undefined): value is string {
   if (!value || !/^[A-Za-z0-9_-]{43}$/.test(value)) return false;
+  try { return Buffer.from(value, "base64url").length === 32; } catch { return false; }
+}
+function isCredential(value: string | undefined): value is string { return Boolean(value && value.length >= 8 && value.length <= 256); }
+function isIdentifier(value: string | undefined, maximum: number): value is string { return Boolean(value && value.length <= maximum && /^[A-Za-z0-9_.:-]+$/.test(value)); }
+function isAudience(value: string | undefined): value is string { return Boolean(value && value.length <= 256 && /^[\x21-\x7e]+$/.test(value)); }
+function isHttpsServiceRoot(value: string | undefined): boolean {
+  try { const url = new URL(value ?? ""); return url.protocol === "https:" && url.pathname === "/" && !url.search && !url.hash && !url.username && !url.password; } catch { return false; }
+}
+function hasBoundedPublicKeys(value: string | undefined): boolean {
+  if (!value || value.length > 1_024) return false;
   try {
-    return Buffer.from(value, "base64url").length === 32;
-  } catch {
-    return false;
-  }
+    const keys = JSON.parse(value) as unknown;
+    return Array.isArray(keys) && keys.length >= 1 && keys.length <= 2 && keys.every((item) => Array.isArray(item) && item.length === 2 &&
+      typeof item[0] === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(item[0]) && isSecret(item[1]));
+  } catch { return false; }
 }
-
-function isCredential(value: string | undefined): value is string {
-  return Boolean(value && value.length >= 8 && value.length <= 256);
-}
-
-// Exact production-safety denylist from Cloudflare's documented testing keys.
-// Do not infer production validity from a key prefix or shape.
-const turnstileTestSiteKeys = new Set([
-  "1x00000000000000000000AA",
-  "2x00000000000000000000AB",
-  "1x00000000000000000000BB",
-  "2x00000000000000000000BB",
-  "3x00000000000000000000FF",
-]);
-const turnstileTestSecretKeys = new Set([
-  "1x0000000000000000000000000000000AA",
-  "2x0000000000000000000000000000000AA",
-  "3x0000000000000000000000000000000AA",
-]);
-
 function isHostname(value: string | undefined): value is string {
   if (!value || value.length > 253 || value.includes(":") || value.includes("/") || value.includes("*")) return false;
-  try {
-    const url = new URL(`https://${value}`);
-    return url.hostname === value && value.includes(".");
-  } catch {
-    return false;
-  }
+  try { const url = new URL(`https://${value}`); return url.hostname === value && value.includes("."); } catch { return false; }
 }
 
-export function getPublicSubmissionConfiguration(
-  environment: PublicSubmissionEnvironment,
-  availableRateLimitProviders: readonly string[],
-): PublicSubmissionConfiguration {
+const turnstileTestSiteKeys = new Set(["1x00000000000000000000AA", "2x00000000000000000000AB", "1x00000000000000000000BB", "2x00000000000000000000BB", "3x00000000000000000000FF"]);
+const turnstileTestSecretKeys = new Set(["1x0000000000000000000000000000000AA", "2x0000000000000000000000000000000AA", "3x0000000000000000000000000000000AA"]);
+
+export function getPublicSubmissionConfiguration(environment: PublicSubmissionEnvironment, availableRateLimitProviders: readonly string[]): PublicSubmissionConfiguration {
   const persistence = getPersistenceConfiguration(environment);
   if (!persistence.enabled) return { enabled: false, reason: "persistence" };
-  const rateLimitProvider = environment.RATE_LIMIT_PROVIDER?.trim() ?? "";
-  if (!rateLimitProvider || !availableRateLimitProviders.includes(rateLimitProvider)) {
-    return { enabled: false, reason: "rate-limit-provider" };
-  }
-  // Authenticating an origin bearer does not establish a visitor IP. Until a
-  // Cloudflare identity policy is reviewed, proxied persistence stays closed.
-  if (environment.VERCEL !== "1" ||
-      environment.VERCEL_ENV !== "production" ||
-      !isPublicOriginProtectionDisabled(environment) ||
-      environment.SUBMISSION_CLIENT_IP_SOURCE !== "vercel") {
-    return { enabled: false, reason: "deployment-boundary" };
-  }
-  if (!isSecret(environment.SUBMISSION_CLIENT_KEY_SECRET)) return { enabled: false, reason: "client-key-secret" };
-  if (environment.TURNSTILE_MODE !== "enabled" ||
-      !isCredential(environment.TURNSTILE_SITE_KEY) ||
-      !isCredential(environment.TURNSTILE_SECRET_KEY) ||
-      turnstileTestSiteKeys.has(environment.TURNSTILE_SITE_KEY) ||
-      turnstileTestSecretKeys.has(environment.TURNSTILE_SECRET_KEY) ||
-      !isHostname(environment.TURNSTILE_EXPECTED_HOSTNAME)) {
-    return { enabled: false, reason: "turnstile" };
-  }
-  return {
-    enabled: true,
-    databaseUrl: persistence.databaseUrl,
-    poolMax: persistence.poolMax,
-    rateLimitProvider,
-    clientIdentity: { source: "vercel", hmacSecret: environment.SUBMISSION_CLIENT_KEY_SECRET },
-    turnstile: {
-      siteKey: environment.TURNSTILE_SITE_KEY,
-      secretKey: environment.TURNSTILE_SECRET_KEY,
-      expectedHostname: environment.TURNSTILE_EXPECTED_HOSTNAME,
-      expectedAction: publicInquiryTurnstileAction,
-      timeoutMs: 5_000,
-    },
-  };
+  if (environment.RATE_LIMIT_PROVIDER !== "cloudflare-do" || !availableRateLimitProviders.includes("cloudflare-do")) return { enabled: false, reason: "rate-limit-provider" };
+  if (environment.VERCEL !== "1" || environment.VERCEL_ENV !== "production" || environment.PUBLIC_ORIGIN_PROTECTION !== "required" ||
+      !isSecret(environment.PUBLIC_ORIGIN_SECRET) || !isIdentifier(environment.VERCEL_PROJECT_ID, 96) || !isIdentifier(environment.VERCEL_DEPLOYMENT_ID, 128)) return { enabled: false, reason: "deployment-boundary" };
+  if (environment.INGRESS_PROTOCOL !== INGRESS_VERSION || environment.INGRESS_AUDIENCE !== environment.VERCEL_PROJECT_ID ||
+      !hasBoundedPublicKeys(environment.INGRESS_PUBLIC_KEYS) || !isSecret(environment.INGRESS_REQUEST_BINDING_KEY)) return { enabled: false, reason: "ingress" };
+  if (!isHttpsServiceRoot(environment.ADMISSION_SERVICE_URL) || !isAudience(environment.ADMISSION_OIDC_AUDIENCE) ||
+      environment.ADMISSION_RELEASE_ID !== environment.VERCEL_DEPLOYMENT_ID || !isSecret(environment.ADMISSION_RELEASE_RPC_KEY)) return { enabled: false, reason: "admission" };
+  if (new Set([environment.PUBLIC_ORIGIN_SECRET, environment.INGRESS_REQUEST_BINDING_KEY, environment.ADMISSION_RELEASE_RPC_KEY, environment.TURNSTILE_SECRET_KEY]).size !== 4) return { enabled: false, reason: "admission" };
+  if (environment.TURNSTILE_MODE !== "enabled" || !isCredential(environment.TURNSTILE_SITE_KEY) || !isCredential(environment.TURNSTILE_SECRET_KEY) ||
+      turnstileTestSiteKeys.has(environment.TURNSTILE_SITE_KEY) || turnstileTestSecretKeys.has(environment.TURNSTILE_SECRET_KEY) || !isHostname(environment.TURNSTILE_EXPECTED_HOSTNAME)) return { enabled: false, reason: "turnstile" };
+  return { enabled: true, databaseUrl: persistence.databaseUrl, poolMax: persistence.poolMax, rateLimitProvider: "cloudflare-do", turnstile: {
+    siteKey: environment.TURNSTILE_SITE_KEY, secretKey: environment.TURNSTILE_SECRET_KEY, expectedHostname: environment.TURNSTILE_EXPECTED_HOSTNAME,
+    expectedAction: publicInquiryTurnstileAction, timeoutMs: 5_000,
+  } };
 }
 
-export function getTurnstileClientConfiguration(
-  environment: PublicSubmissionEnvironment,
-  availableRateLimitProviders: readonly string[],
-): null | {
-  siteKey: string;
-  action: typeof publicInquiryTurnstileAction;
-} {
-  const configuration = getPublicSubmissionConfiguration(environment, availableRateLimitProviders);
-  if (!configuration.enabled) return null;
-  return { siteKey: configuration.turnstile.siteKey, action: configuration.turnstile.expectedAction };
+export function getTurnstileClientConfiguration(environment: PublicSubmissionEnvironment, providers: readonly string[]) {
+  const configuration = getPublicSubmissionConfiguration(environment, providers);
+  return configuration.enabled ? { siteKey: configuration.turnstile.siteKey, action: configuration.turnstile.expectedAction } : null;
 }
-
-export type PublicIntakeState =
-  | { kind: "closed" }
-  | { kind: "demo" }
-  | { kind: "real"; turnstile: { siteKey: string; action: typeof publicInquiryTurnstileAction } };
-
-/** One server-side presentation decision keeps the page aligned with submission admission. */
-export function getPublicIntakeState(
-  environment: PublicSubmissionEnvironment,
-  availableRateLimitProviders: readonly string[],
-): PublicIntakeState {
-  const configuration = getPublicSubmissionConfiguration(environment, availableRateLimitProviders);
-  if (configuration.enabled) {
-    return {
-      kind: "real",
-      turnstile: { siteKey: configuration.turnstile.siteKey, action: configuration.turnstile.expectedAction },
-    };
-  }
-  if (isDemoSubmissionAllowed(environment)) return { kind: "demo" };
-  return { kind: "closed" };
+export type PublicIntakeState = { kind: "closed" } | { kind: "demo" } | { kind: "real"; turnstile: { siteKey: string; action: typeof publicInquiryTurnstileAction } };
+export function getPublicIntakeState(environment: PublicSubmissionEnvironment, providers: readonly string[]): PublicIntakeState {
+  const configuration = getPublicSubmissionConfiguration(environment, providers);
+  if (configuration.enabled) return { kind: "real", turnstile: { siteKey: configuration.turnstile.siteKey, action: configuration.turnstile.expectedAction } };
+  return isDemoSubmissionAllowed(environment) ? { kind: "demo" } : { kind: "closed" };
 }

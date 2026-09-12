@@ -24,6 +24,6 @@ export default defineConfig({
     command: `node node_modules/next/dist/bin/next ${development ? "dev" : "start"} --hostname 127.0.0.1 --port ${port}`,
     url: baseURL,
     reuseExistingServer: development,
-    env: { ALLOW_DEMO_SUBMISSIONS: "true", REQUEST_SUBMISSION_MODE: "demo" },
+    env: { ALLOW_DEMO_SUBMISSIONS: "true", REQUEST_SUBMISSION_MODE: "demo", PUBLIC_DEMO_ORIGIN: baseURL },
   },
 });
