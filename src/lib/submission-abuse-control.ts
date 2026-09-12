@@ -1,3 +1,5 @@
+import "server-only";
+
 import { derivePrivateClientKey, type HeaderReader, type ClientIdentityConfiguration } from "./client-identity";
 import type { RateLimitAdapter, RateLimitDecision, RateLimitRule } from "./rate-limit";
 import { createTurnstileIdempotencyKey, type TurnstileDecision, type TurnstileVerifier } from "./turnstile";
@@ -9,6 +11,8 @@ export const publicInquiryRateLimits = {
 
 // A separate budget bounds verification cost. Failed challenges do not spend
 // the stricter post-verification budget, but still consume this outer budget.
+// These are uncalibrated cost ceilings, not availability guarantees. Distributed
+// rejected challenges can starve new verification for one minute; see Phase 5C.
 export const publicInquiryPreVerificationRateLimits = {
   client: { limit: 30, windowMs: 10 * 60_000 },
   globalBurst: { limit: 300, windowMs: 60_000 },
@@ -39,7 +43,7 @@ export async function enforceSubmissionAbuseControls(input: {
   } catch {
     return "unavailable";
   }
-  if (rateLimitDecision !== "allowed") return rateLimitDecision;
+  if (rateLimitDecision !== "allowed") return rateLimitDecision === "limited" ? "limited" : "unavailable";
   let turnstileDecision: TurnstileDecision;
   try {
     turnstileDecision = await input.turnstile.verify(
@@ -51,10 +55,11 @@ export async function enforceSubmissionAbuseControls(input: {
   }
   if (turnstileDecision !== "verified") return turnstileDecision === "rejected" ? "rejected" : "unavailable";
   try {
-    return await input.rateLimiter.consume([
+    const decision = await input.rateLimiter.consume([
       { key: `public-inquiry:client:v1:${clientKey}`, ...limits.client },
       { key: "public-inquiry:global:v1", ...limits.globalBurst },
     ]);
+    return decision === "allowed" || decision === "limited" ? decision : "unavailable";
   } catch {
     return "unavailable";
   }
