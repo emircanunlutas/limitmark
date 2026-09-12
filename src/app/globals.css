@@ -248,6 +248,19 @@ fieldset.form-field { padding: 0; margin: 0; border: 0; }
 .admin-note-list li > div { display: flex; gap: var(--space-4); color: var(--text-secondary); font-size: .875rem; }
 .admin-note-list p { margin-top: var(--space-2); color: var(--text-primary); }
 .admin-neutral-empty { margin-top: var(--space-6); }
+.admin-notice { padding: var(--space-4); border: 1px solid var(--border-control); border-radius: var(--radius-small); background: var(--surface); }
+.admin-notice-success { border-color: var(--accent); }
+.admin-action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-6); margin-top: var(--space-6); }
+.admin-action-form { display: grid; align-content: start; gap: var(--space-3); padding: var(--space-5); border: 1px solid var(--border-subtle); border-radius: var(--radius-small); }
+.admin-action-form h3 { font-size: 1.125rem; }
+.admin-action-form label, .admin-note-form label { color: var(--text-secondary); font-size: .875rem; font-weight: 500; }
+.admin-action-form select, .admin-note-form textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--border-control); border-radius: var(--radius-small); background: var(--background); color: var(--text-primary); }
+.admin-action-form select { min-height: 48px; }
+.admin-action-form .button, .admin-note-form .button { justify-self: start; }
+.admin-confirm { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--space-2); }
+.admin-confirm input { width: 18px; height: 18px; margin-top: 2px; }
+.admin-note-form { display: grid; gap: var(--space-3); margin-top: var(--space-6); }
+.admin-note-form textarea { resize: vertical; white-space: pre-wrap; }
 
 @media (min-width: 1024px) and (max-width: 1279px) {
   .hero { padding-block: 56px 64px; }
@@ -277,6 +290,7 @@ fieldset.form-field { padding: 0; margin: 0; border: 0; }
   :root { --header-height: 64px; --page-margin: 20px; --grid-columns: 4; --grid-gap: 16px; --section-space: 48px; }
   h1 { font-size: 2.5rem; line-height: 1.15; }
   h2 { font-size: 1.75rem; line-height: 1.28572; }
+  .admin-action-grid { grid-template-columns: 1fr; }
   .hero { padding-block: var(--space-12); }
   .hero-intro { font-size: 1.125rem; line-height: 1.55556; }
   .hero-grid { row-gap: 40px; }

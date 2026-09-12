@@ -44,6 +44,8 @@ export const inquiries = pgTable("inquiries", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   status: inquiryStatus("status").notNull().default("received"),
+  revision: integer("revision").notNull().default(0),
+  preArchiveStatus: inquiryStatus("pre_archive_status"),
   name: varchar("name", { length: fieldLimits.name }).notNull(),
   email: varchar("email", { length: fieldLimits.email }).notNull(),
   company: varchar("company", { length: fieldLimits.company }).notNull().default(""),
@@ -69,6 +71,8 @@ export const inquiries = pgTable("inquiries", {
   check("inquiries_protection_valid", sql`${table.protection} in ('unknown', 'none', 'using')`),
   check("inquiries_submission_token_format", sql`${table.submissionToken} ~ '^[A-Za-z0-9_-]{43}$'`),
   check("inquiries_payload_fingerprint_format", sql`${table.payloadFingerprint} ~ '^[0-9a-f]{64}$'`),
+  check("inquiries_revision_nonnegative", sql`${table.revision} >= 0`),
+  check("inquiries_pre_archive_status_valid", sql`${table.preArchiveStatus} is null or ${table.preArchiveStatus} <> 'archived'`),
 ]);
 
 export const inquiryEvents = pgTable("inquiry_events", {

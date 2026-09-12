@@ -43,8 +43,8 @@ Open **http://127.0.0.1:3000**. On PowerShell, use `npm.cmd` if local policy pre
 | `/test-talep-et/tesekkurler` | Confirmation copy; excluded from indexing |
 | `/gizlilik` | Preliminary privacy information |
 | `/test-yetkilendirmesi` | Operational scope and authorization principles |
-| `/admin` | Independently authorized, read-only inquiry list with bounded search, status filtering and pagination |
-| `/admin/inquiries/<uuid>` | Independently authorized, read-only inquiry submission, event history and existing admin notes |
+| `/admin` | Independently authorized inquiry list with bounded search, status filtering and pagination |
+| `/admin/inquiries/<uuid>` | Independently authorized detail, controlled workflow actions, internal note creation and audit history |
 
 An unknown or repeated service query defaults to `unsure`. A custom Turkish 404 and recoverable error page are included.
 
@@ -165,7 +165,7 @@ Phase 3 established only the internal `/admin` authentication and authorization 
 
 The trust chain is Cloudflare Access policy, then application-side cryptographic JWT verification, then an independent exact-email allowlist. The server accepts the application token only from Cloudflare's documented `Cf-Access-Jwt-Assertion` origin header. It ignores the `CF_Authorization` cookie, query parameters, `X-User-Email`, `X-Forwarded-Email`, and other forwarded identity headers. The header takes deterministic precedence because it is the only accepted source.
 
-Every `/admin` server render calls the reusable `requireAdmin()` boundary. Future admin Server Actions and Route Handlers must call the same boundary independently; middleware or Cloudflare policy must never become the sole authorization check. The original Phase 3 page was force-dynamic and exposed only a neutral authenticated state; Phase 4A preserves the dynamic and authorization guarantees while adding bounded inquiry reads.
+Every `/admin` server render and every Phase 4B admin Server Action calls the reusable `requireAdmin()` boundary independently; middleware or Cloudflare policy must never become the sole authorization check. The original Phase 3 page was force-dynamic and exposed only a neutral authenticated state; later admin phases preserve the dynamic and authorization guarantees.
 
 Configure all three server-only values at runtime:
 
@@ -194,6 +194,20 @@ Event history and admin notes are deliberately oldest-first with timestamp-plus-
 Admin database reads reuse the existing fail-closed PostgreSQL configuration and therefore remain unavailable unless the existing persistence configuration is fully enabled. Configuration absence and connection/query failure render an explicit neutral “Inquiry data unavailable” state without error details; a successful empty query renders a different empty state. Phase 4A does not set `ENABLE_PERSISTENT_SUBMISSIONS`, add a database URL, migrate production, or otherwise enable public persistence.
 
 The cosmetic redirect from `admin.limitmark.com/` to `/admin` is deferred. Hostname alone must not become an authorization signal, and no broad routing/proxy change was justified for this read-only phase.
+
+### Phase 4B controlled admin inquiry mutations
+
+Phase 4B adds four narrow Server Actions on the inquiry detail route: advance/decline through an explicit workflow edge, create an internal plain-text note, archive, and restore. Every action first calls `requireAdmin()`, then validates the opaque inquiry UUID, expected revision and operation-specific input before resolving the mutation repository. Actor identity is always the verified Access email returned by `requireAdmin()`; there is no actor form field. Errors collapse to bounded `conflict`, `invalid`, or `unavailable` UI notices and never include database/provider detail.
+
+The authoritative transition graph is `received -> in_review -> awaiting_scope -> proposal_sent -> approved -> completed`, with `received`, `in_review`, `awaiting_scope`, and `proposal_sent` also able to move to `declined`. `approved`, `completed`, and `declined` have no reopening edge. `archived` has no ordinary status edge: archive and restore are separate operations.
+
+The `inquiries.revision` integer is a durable optimistic-concurrency token. Each successful status, note, archive, or restore operation compares the submitted revision in its SQL `UPDATE`, increments it, and writes its event inside one PostgreSQL transaction. A stale compare-and-swap changes nothing and creates no note or event. Internal notes deliberately participate in the same revision stream: two note forms rendered from the same revision cannot both win, preventing a stale note from being attached without the admin first reviewing intervening inquiry activity.
+
+Archive stores the exact active status in `pre_archive_status`, sets `status=archived` and `archived_at`, increments the revision, and appends one `archived` event. Restore requires that durable prior status, restores it exactly, clears the archive fields, increments the revision, and appends one `restored` event. A legacy/manual archived row without a trustworthy `pre_archive_status` cannot be restored through the application; it fails closed rather than guessing `received`.
+
+Status events contain only `previousStatus` and `newStatus`; archive/restore events contain only their relevant known status; `note_added` metadata is null. The detail reader validates exact metadata shapes against the authoritative statuses before creating its audit DTO. Malformed/legacy metadata and extra keys are ignored, and internal note content never enters event metadata. Customer-submitted notes, internal admin notes, and event history remain separate React-text-only UI sections.
+
+Next.js 16.3.4 Server Actions compare `Origin` with `Host` or `X-Forwarded-Host` and reject mismatches. This deployment uses that default same-origin boundary and the existing 32 KB action body limit; no broader `serverActions.allowedOrigins` or home-grown CSRF token is configured. This complements, but does not replace, Cloudflare Access and the per-action verified-JWT authorization. Public persistence gates are unchanged.
 
 Cloudflare control-plane work remains manual and must be completed before launch:
 
@@ -225,7 +239,7 @@ npm.cmd run test:db
 Remove-Item Env:TEST_DATABASE_URL
 ```
 
-The database command runs both the Phase 1 persistence suite and Phase 2A outbox suite serially against the disposable database. Phase 2A coverage includes atomic claims, overlapping workers/processors, leases and expiry, retries and exhaustion, terminal states, batch bounds, attempts, thrown adapters, stale-worker outcome rejection, and inquiry immutability.
+The database command runs the persistence, outbox, admin-read and admin-mutation suites serially against the disposable database. Phase 4B coverage includes compare-and-swap conflicts and races, transaction rollback on audit failure, note atomicity, exact archive/restore state, duplicate-event prevention, payload preservation, append-only enforcement, and baseline-to-Phase-4B migration preservation.
 
 Before a future public launch, retain the Server Action validation and 32 KB body limit, implement and register the selected shared rate-limit provider, configure the documented Vercel/Turnstile gates, define retention/access/backup policy, update the final privacy notice with the selected processors, and review platform/provider logging. Never trust arbitrary forwarded IP headers or log request contents.
 

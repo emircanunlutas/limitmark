@@ -274,6 +274,6 @@ test("the admin list route retains the real application-side boundary", async ()
   assert.match(enforcementSource, /if \(!identity\) notFound\(\)/);
   assert.doesNotMatch(enforcementSource, /forbidden/);
   assert.match(pageSource, /Limitmark Admin/);
-  assert.match(pageSource, /Read-only inquiry administration/);
+  assert.match(pageSource, /Controlled inquiry administration/);
   assert.doesNotMatch(pageSource, /submissionToken|payloadFingerprint|notificationOutbox/);
 });

@@ -9,7 +9,7 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "tsx --conditions=react-server --test tests/*.test.ts",
-    "test:db": "tsx --conditions=react-server --test --test-concurrency=1 tests/persistence.integration.test.ts tests/notification-outbox.integration.test.ts tests/admin-inquiry-repository.integration.test.ts",
+    "test:db": "tsx --conditions=react-server --test --test-concurrency=1 tests/persistence.integration.test.ts tests/notification-outbox.integration.test.ts tests/admin-inquiry-repository.integration.test.ts tests/admin-inquiry-mutations.integration.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "test:e2e": "playwright test",

@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-type AdminSearchParams = Promise<{ page?: string | string[]; status?: string | string[]; q?: string | string[] }>;
+type AdminSearchParams = Promise<{ page?: string | string[]; status?: string | string[]; q?: string | string[]; mutation?: string | string[] }>;
 const labels: Record<string, string> = {
   received: "Received", in_review: "In review", awaiting_scope: "Awaiting scope", proposal_sent: "Proposal sent",
   approved: "Approved", completed: "Completed", declined: "Declined", archived: "Archived",
@@ -56,7 +56,10 @@ export async function renderAdminInquiryList(
   getRepository: () => Promise<AdminInquiryReadRepository | null> = getAdminInquiryReadRepository,
 ) {
   await authorize();
-  const query = normalizeAdminInquiryQuery(await searchParams);
+  const rawSearchParams = await searchParams;
+  const query = normalizeAdminInquiryQuery(rawSearchParams);
+  const mutationValue = rawSearchParams.mutation;
+  const invalidMutation = mutationValue === "invalid";
   const repository = await getRepository();
   let content: React.ReactNode;
   if (!repository) {
@@ -68,7 +71,8 @@ export async function renderAdminInquiryList(
 
   return (
     <div className="page-shell admin-shell"><Container>
-      <header className="admin-heading"><p className="admin-eyebrow">Limitmark Admin</p><h1>Inquiries</h1><p>Read-only inquiry administration.</p></header>
+      <header className="admin-heading"><p className="admin-eyebrow">Limitmark Admin</p><h1>Inquiries</h1><p>Controlled inquiry administration.</p></header>
+      {invalidMutation && <p className="admin-notice admin-notice-warning" role="status">Nothing changed because that operation is not valid.</p>}
       <form className="admin-filters" action="/admin" method="get" role="search">
         <label><span>Search</span><input type="search" name="q" defaultValue={query.search} maxLength={254} placeholder="ID, name, email, or company" /></label>
         <label><span>Status</span><select name="status" defaultValue={query.status ?? ""}><option value="">All statuses</option>{adminInquiryStatuses.map((status) => <option value={status} key={status}>{displayLabel(status)}</option>)}</select></label>
