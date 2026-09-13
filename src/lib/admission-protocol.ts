@@ -2,6 +2,7 @@ import { decodeCanonicalBase64url, encodeBase64url, toArrayBuffer } from "./ingr
 
 export const ADMISSION_RPC_VERSION = "lm-admission-rpc-v1";
 export const ADMISSION_MAC_HEADER = "x-limitmark-admission-mac";
+export const ADMISSION_KEY_ID_HEADER = "x-limitmark-admission-key-id";
 export const ADMISSION_MAX_BODY_BYTES = 2_048;
 export const ADMISSION_RPC_MAX_SKEW_MS = 5_000;
 export const ADMISSION_PRE_PATH = "/v1/pre";

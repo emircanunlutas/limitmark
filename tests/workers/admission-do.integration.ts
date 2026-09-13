@@ -63,7 +63,7 @@ async function main() {
   try {
   await waitForReady(worker);
   const now = Date.now();
-  assert.deepEqual(await call("/__local/init", { releaseId, nowMs: now }), { status: 200, body: { initialized: true } });
+  assert.deepEqual(await call("/__local/init", { releaseId, nowMs: now }), { status: 200, body: { status: "initialized" } });
   const input = { releaseId, clientPseudonym: opaque(32, 1), requestBinding: opaque(32, 2), nonce: opaque(16, 3), issuedAtMs: Date.now() };
   const first = await call("/__local/pre", input);
   assert.equal(first.status, 200);

@@ -65,9 +65,9 @@ test("legacy direct-IP derivation stays disabled while signed ingress configurat
     ...environment, REQUEST_SUBMISSION_MODE: "postgres", ENABLE_PERSISTENT_SUBMISSIONS: "true",
     DATABASE_URL: "postgresql://runtime:synthetic@db.example.test/app", RATE_LIMIT_PROVIDER: "cloudflare-do",
     VERCEL_PROJECT_ID: "prj_limitmark", VERCEL_DEPLOYMENT_ID: "dpl_reviewed", INGRESS_PROTOCOL: "lm-ingress-v1",
-    INGRESS_AUDIENCE: "prj_limitmark", INGRESS_PUBLIC_KEYS: JSON.stringify([["current", secret]]), INGRESS_REQUEST_BINDING_KEY: "B".repeat(43),
+    INGRESS_AUDIENCE: "prj_limitmark", INGRESS_PUBLIC_KEYS: JSON.stringify([{ role: "current", keyId: "current", publicKey: secret, activatesAtMs: 0 }]), INGRESS_REQUEST_BINDING_KEY: "B".repeat(43),
     ADMISSION_SERVICE_URL: "https://admission.example.test", ADMISSION_OIDC_AUDIENCE: "https://admission.example.test",
-    ADMISSION_RELEASE_ID: "dpl_reviewed", ADMISSION_RELEASE_RPC_KEY: "C".repeat(43),
+    ADMISSION_RELEASE_ID: "dpl_reviewed", ADMISSION_RELEASE_KEY_ID: "release-current", ADMISSION_RELEASE_RPC_KEY: "C".repeat(43),
     TURNSTILE_MODE: "enabled", TURNSTILE_SITE_KEY: "synthetic-key", TURNSTILE_SECRET_KEY: "synthetic-secret",
     TURNSTILE_EXPECTED_HOSTNAME: "limitmark.com",
   };

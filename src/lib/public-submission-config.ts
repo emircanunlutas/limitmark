@@ -1,6 +1,8 @@
 import { Buffer } from "node:buffer";
 import { getPersistenceConfiguration, type PersistenceEnvironment } from "./persistence-config";
 import { INGRESS_VERSION } from "./ingress-protocol";
+import { parseIngressSigningKeyRollout } from "./ingress-key-rollout";
+import { validateRuntimeSecrets } from "../../deployment/secret-policy";
 import { publicInquiryTurnstileAction } from "./turnstile";
 import { isDemoSubmissionAllowed } from "./submission-policy";
 
@@ -8,7 +10,7 @@ export type PublicSubmissionEnvironment = PersistenceEnvironment & {
   VERCEL?: string; VERCEL_ENV?: string; VERCEL_PROJECT_ID?: string; VERCEL_DEPLOYMENT_ID?: string;
   PUBLIC_ORIGIN_PROTECTION?: string; RATE_LIMIT_PROVIDER?: string;
   INGRESS_PROTOCOL?: string; INGRESS_AUDIENCE?: string; INGRESS_PUBLIC_KEYS?: string; INGRESS_REQUEST_BINDING_KEY?: string;
-  ADMISSION_SERVICE_URL?: string; ADMISSION_OIDC_AUDIENCE?: string; ADMISSION_RELEASE_ID?: string; ADMISSION_RELEASE_RPC_KEY?: string;
+  ADMISSION_SERVICE_URL?: string; ADMISSION_OIDC_AUDIENCE?: string; ADMISSION_RELEASE_ID?: string; ADMISSION_RELEASE_KEY_ID?: string; ADMISSION_RELEASE_RPC_KEY?: string;
   TURNSTILE_MODE?: string; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string; TURNSTILE_EXPECTED_HOSTNAME?: string;
 };
 
@@ -28,14 +30,6 @@ function isAudience(value: string | undefined): value is string { return Boolean
 function isHttpsServiceRoot(value: string | undefined): boolean {
   try { const url = new URL(value ?? ""); return url.protocol === "https:" && url.pathname === "/" && !url.search && !url.hash && !url.username && !url.password; } catch { return false; }
 }
-function hasBoundedPublicKeys(value: string | undefined): boolean {
-  if (!value || value.length > 1_024) return false;
-  try {
-    const keys = JSON.parse(value) as unknown;
-    return Array.isArray(keys) && keys.length >= 1 && keys.length <= 2 && keys.every((item) => Array.isArray(item) && item.length === 2 &&
-      typeof item[0] === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(item[0]) && isSecret(item[1]));
-  } catch { return false; }
-}
 function isHostname(value: string | undefined): value is string {
   if (!value || value.length > 253 || value.includes(":") || value.includes("/") || value.includes("*")) return false;
   try { const url = new URL(`https://${value}`); return url.hostname === value && value.includes("."); } catch { return false; }
@@ -51,10 +45,12 @@ export function getPublicSubmissionConfiguration(environment: PublicSubmissionEn
   if (environment.VERCEL !== "1" || environment.VERCEL_ENV !== "production" || environment.PUBLIC_ORIGIN_PROTECTION !== "required" ||
       !isSecret(environment.PUBLIC_ORIGIN_SECRET) || !isIdentifier(environment.VERCEL_PROJECT_ID, 96) || !isIdentifier(environment.VERCEL_DEPLOYMENT_ID, 128)) return { enabled: false, reason: "deployment-boundary" };
   if (environment.INGRESS_PROTOCOL !== INGRESS_VERSION || environment.INGRESS_AUDIENCE !== environment.VERCEL_PROJECT_ID ||
-      !hasBoundedPublicKeys(environment.INGRESS_PUBLIC_KEYS) || !isSecret(environment.INGRESS_REQUEST_BINDING_KEY)) return { enabled: false, reason: "ingress" };
+      !parseIngressSigningKeyRollout(environment.INGRESS_PUBLIC_KEYS) || !isSecret(environment.INGRESS_REQUEST_BINDING_KEY)) return { enabled: false, reason: "ingress" };
   if (!isHttpsServiceRoot(environment.ADMISSION_SERVICE_URL) || !isAudience(environment.ADMISSION_OIDC_AUDIENCE) ||
-      environment.ADMISSION_RELEASE_ID !== environment.VERCEL_DEPLOYMENT_ID || !isSecret(environment.ADMISSION_RELEASE_RPC_KEY)) return { enabled: false, reason: "admission" };
+      environment.ADMISSION_RELEASE_ID !== environment.VERCEL_DEPLOYMENT_ID || !environment.ADMISSION_RELEASE_KEY_ID || !/^[A-Za-z0-9_-]{1,64}$/u.test(environment.ADMISSION_RELEASE_KEY_ID) ||
+      !isSecret(environment.ADMISSION_RELEASE_RPC_KEY)) return { enabled: false, reason: "admission" };
   if (new Set([environment.PUBLIC_ORIGIN_SECRET, environment.INGRESS_REQUEST_BINDING_KEY, environment.ADMISSION_RELEASE_RPC_KEY, environment.TURNSTILE_SECRET_KEY]).size !== 4) return { enabled: false, reason: "admission" };
+  if (!validateRuntimeSecrets("vercelApplication", environment as unknown as Record<string, unknown>, false)) return { enabled: false, reason: "admission" };
   if (environment.TURNSTILE_MODE !== "enabled" || !isCredential(environment.TURNSTILE_SITE_KEY) || !isCredential(environment.TURNSTILE_SECRET_KEY) ||
       turnstileTestSiteKeys.has(environment.TURNSTILE_SITE_KEY) || turnstileTestSecretKeys.has(environment.TURNSTILE_SECRET_KEY) || !isHostname(environment.TURNSTILE_EXPECTED_HOSTNAME)) return { enabled: false, reason: "turnstile" };
   return { enabled: true, databaseUrl: persistence.databaseUrl, poolMax: persistence.poolMax, rateLimitProvider: "cloudflare-do", turnstile: {

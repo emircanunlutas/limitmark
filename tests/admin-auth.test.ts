@@ -239,7 +239,8 @@ test("public edge credentials and Host/forwarding headers do not authorize admin
     assert.equal(await resolveAdminFromRequest(new Headers({
       host, "x-forwarded-host": "admin.limitmark.com", "origin": "https://admin.limitmark.com",
       "cf-connecting-ip": "203.0.113.9", "x-vercel-forwarded-for": "203.0.113.9",
-      "x-limitmark-origin-secret": "A".repeat(43),
+      "x-limitmark-origin-secret": "A".repeat(43), "x-vercel-protection-bypass": "B-public",
+      "x-vercel-admin-protection-bypass": "B-admin",
     }), environment), null);
   }
 });

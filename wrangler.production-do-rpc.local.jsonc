@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "limitmark-phase5c-production-do-rpc-test",
+  "main": "workers/production-do-rpc-harness.ts",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      { "name": "AUTHORITY", "class_name": "ProductionAdmissionAuthority" }
+    ]
+  },
+  "migrations": [
+    { "tag": "local-production-rpc-v1", "new_sqlite_classes": ["ProductionAdmissionAuthority"] }
+  ]
+}

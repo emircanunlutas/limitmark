@@ -1,0 +1,17 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "limitmark-public-ingress-production",
+  "main": "../workers/ingress-signer/index.ts",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "limitmark.com/*", "zone_name": "limitmark.com" },
+    { "pattern": "www.limitmark.com/*", "zone_name": "limitmark.com" }
+  ],
+  "vars": {
+    "INGRESS_AUDIENCE": "__REQUIRED_VERCEL_PROJECT_ID__",
+    "VERCEL_DEPLOYMENT_ID": "__REQUIRED_REVIEWED_DEPLOYMENT_ID__",
+    "INGRESS_SIGNING_KEY_ID": "__REQUIRED_SIGNING_KEY_ID__"
+  }
+}

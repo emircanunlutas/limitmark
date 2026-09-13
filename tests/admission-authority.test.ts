@@ -3,7 +3,9 @@ import test from "node:test";
 import { encodeBase64url } from "../src/lib/ingress-protocol";
 import {
   ADMISSION_POLICY_EPOCH,
+  ADMISSION_AUTHORITY_ID,
   PublicInquiryAdmissionAuthority,
+  initializeAuthority,
   admissionPolicy,
   type ClaimPreInput,
 } from "../workers/admission-service/authority";
@@ -24,7 +26,8 @@ function pre(now: number, changes: Partial<ClaimPreInput> = {}): ClaimPreInput {
 function initialized(nowRef: { value: number }, options: ConstructorParameters<typeof PublicInquiryAdmissionAuthority>[1] = {}) {
   const storage = new NodeSqliteDurableStorage();
   const authority = new PublicInquiryAdmissionAuthority({ storage }, { now: () => nowRef.value, ...options });
-  authority.initializeForLocalTest([releaseId], nowRef.value);
+  initializeAuthority(storage, { environment: "staging", authorityId: ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH,
+    releaseId, releaseKeyId: "test-key", nowMs: nowRef.value, confirmProduction: false });
   return { authority, storage };
 }
 
@@ -32,7 +35,8 @@ test("authority requires explicit initialization, exact epoch and active release
   const storage = new NodeSqliteDurableStorage();
   const missing = new PublicInquiryAdmissionAuthority({ storage }, { now: () => 1_000 });
   assert.equal(missing.claimPre(pre(1_000)).decision, "unavailable");
-  missing.initializeForLocalTest([releaseId], 1_000);
+  initializeAuthority(storage, { environment: "staging", authorityId: ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH,
+    releaseId, releaseKeyId: "test-key", nowMs: 1_000, confirmProduction: false });
   assert.equal(missing.claimPre(pre(1_000, { releaseId: "wrong" })).decision, "unavailable");
   const wrongEpoch = new PublicInquiryAdmissionAuthority({ storage }, { now: () => 1_000, expectedPolicyEpoch: `${ADMISSION_POLICY_EPOCH}-wrong` });
   assert.equal(wrongEpoch.claimPre(pre(1_000)).decision, "unavailable");

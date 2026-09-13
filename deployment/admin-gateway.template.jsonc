@@ -1,0 +1,17 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "limitmark-admin-gateway-production",
+  "main": "../workers/admin-gateway/index.ts",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "admin.limitmark.com/*", "zone_name": "limitmark.com" }
+  ],
+  "vars": {
+    "VERCEL_ADMIN_UPSTREAM_ORIGIN": "__REQUIRED_FIXED_REVIEWED_PRODUCTION_P_VERCEL_APP_ORIGIN__",
+    "CLOUDFLARE_ACCESS_TEAM_DOMAIN": "__REQUIRED_ACCESS_TEAM_ORIGIN__",
+    "CLOUDFLARE_ACCESS_AUD": "__REQUIRED_ACCESS_AUD__",
+    "ADMIN_ALLOWED_EMAIL": "__REQUIRED_EXACT_ADMIN_EMAIL__"
+  }
+}

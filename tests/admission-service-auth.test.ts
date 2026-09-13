@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  ADMISSION_MAC_HEADER, ADMISSION_PRE_PATH, ADMISSION_RPC_CONTENT_TYPE, ADMISSION_RPC_VERSION,
+  ADMISSION_KEY_ID_HEADER, ADMISSION_MAC_HEADER, ADMISSION_PRE_PATH, ADMISSION_RPC_CONTENT_TYPE, ADMISSION_RPC_VERSION,
   encodeAdmissionRpcPayload, importAdmissionRpcKey, signAdmissionRpc, type AdmissionRpcPayload,
 } from "../src/lib/admission-protocol";
 import { createProductionAdmissionClient } from "../src/lib/admission-client.server";
@@ -13,18 +13,18 @@ const keyText = encodeBase64url(new Uint8Array(32).fill(7));
 const opaque = (length: number, fill: number) => encodeBase64url(new Uint8Array(length).fill(fill));
 const policy = { issuer: "https://oidc.vercel.com/team", audience: "https://admission.limitmark.test", subject: "owner:team:project:prj_limitmark:environment:production", ownerId: "team", projectId: "prj_limitmark" };
 const validClaims: VerifiedVercelOidcClaims = { issuer: policy.issuer, audience: [policy.audience], subject: policy.subject,
-  ownerId: policy.ownerId, projectId: policy.projectId, environment: "production", issuedAtSeconds: 95, expiresAtSeconds: 200 };
+  ownerId: policy.ownerId, projectId: policy.projectId, environment: "production", issuedAtSeconds: 95, notBeforeSeconds: 95, expiresAtSeconds: 200 };
 
 async function serviceFixture(claims: Partial<VerifiedVercelOidcClaims> = {}, rpcKeyText = keyText) {
   const rpcKey = await importAdmissionRpcKey(rpcKeyText);
   const calls: string[] = [];
   const verifier: VercelOidcSignatureVerifier = { async verify(token) { if (token !== "vercel-token") throw new Error("signature"); return { ...validClaims, ...claims }; } };
-  const service = createAdmissionService({ releaseId: "dpl_reviewed", rpcKey, oidcPolicy: policy, oidcVerifier: verifier, now: () => 100_000,
+  const service = createAdmissionService({ releases: [{ role: "current", releaseId: "dpl_reviewed", keyId: "release-current", rpcKey, activatedAtMs: 0 }], oidcPolicy: policy, oidcVerifier: verifier, now: () => 100_000,
     authority: { claimPre() { calls.push("pre"); return { decision: "allowed", permit: opaque(32, 9), expiresAtMs: 160_000 }; }, consumePost() { calls.push("post"); return { decision: "allowed" }; } } });
   const payload: AdmissionRpcPayload = [ADMISSION_RPC_VERSION, "dpl_reviewed", opaque(16, 1), 100_000, opaque(32, 2), opaque(32, 3), opaque(16, 4), "-", 100_000];
   const body = encodeAdmissionRpcPayload(payload);
   const request = new Request(`https://admission.limitmark.test${ADMISSION_PRE_PATH}`, { method: "POST", body: toArrayBuffer(body),
-    headers: { authorization: "Bearer vercel-token", "content-type": ADMISSION_RPC_CONTENT_TYPE, [ADMISSION_MAC_HEADER]: await signAdmissionRpc(ADMISSION_PRE_PATH, body, rpcKey) } });
+    headers: { authorization: "Bearer vercel-token", "content-type": ADMISSION_RPC_CONTENT_TYPE, [ADMISSION_KEY_ID_HEADER]: "release-current", [ADMISSION_MAC_HEADER]: await signAdmissionRpc(ADMISSION_PRE_PATH, body, rpcKey) } });
   return { service, request, calls };
 }
 
@@ -33,10 +33,25 @@ test("service requires both exact Vercel workload claims and release MAC before 
   assert.equal((await valid.service(valid.request)).status, 200);
   assert.deepEqual(valid.calls, ["pre"]);
   for (const claims of [{ issuer: "https://attacker.test" }, { audience: ["wrong"] }, { subject: "wrong" }, { ownerId: "wrong" },
-    { projectId: "wrong" }, { environment: "preview" }, { expiresAtSeconds: 99 }, { notBeforeSeconds: 101 }]) {
+    { projectId: "wrong" }, { environment: "preview" }, { expiresAtSeconds: 95 }, { notBeforeSeconds: 106 },
+    { issuedAtSeconds: 106 }, { issuedAtSeconds: 0, expiresAtSeconds: 7_201 },
+    { issuedAtSeconds: 100.5 }, { notBeforeSeconds: "100" } as never, { expiresAtSeconds: Number.NaN }]) {
     const fixture = await serviceFixture(claims);
     assert.equal((await fixture.service(fixture.request)).status, 401);
     assert.deepEqual(fixture.calls, []);
+  }
+});
+
+test("authentication wrapper matches verifier timestamp tolerance and exchanged-token policy", async () => {
+  for (const claims of [
+    { issuedAtSeconds: 0, notBeforeSeconds: 0, expiresAtSeconds: 7_200 },
+    { issuedAtSeconds: 100, notBeforeSeconds: 1, expiresAtSeconds: 101 },
+    { issuedAtSeconds: 105, notBeforeSeconds: 105, expiresAtSeconds: 200 },
+    { issuedAtSeconds: 95, notBeforeSeconds: 95, expiresAtSeconds: 96 },
+  ]) {
+    const fixture = await serviceFixture(claims);
+    assert.equal((await fixture.service(fixture.request)).status, 200);
+    assert.deepEqual(fixture.calls, ["pre"]);
   }
 });
 
@@ -50,9 +65,30 @@ test("wrong release MAC and Access JWT substitution cannot reach the authority",
   assert.deepEqual(fixture.calls, []);
 });
 
+test("retired release keys and signer credentials cannot substitute for an active release", async () => {
+  const oldKey = await importAdmissionRpcKey(keyText);
+  const currentKey = await importAdmissionRpcKey(encodeBase64url(new Uint8Array(32).fill(8)));
+  const calls: string[] = [];
+  const verifier: VercelOidcSignatureVerifier = { async verify(token) { if (token !== "vercel-token") throw new Error("oidc"); return validClaims; } };
+  const service = createAdmissionService({
+    releases: [
+      { role: "current", releaseId: "dpl_current", keyId: "key-current", rpcKey: currentKey, activatedAtMs: 99_000 },
+      { role: "previous", releaseId: "dpl_reviewed", keyId: "key-retired", rpcKey: oldKey, activatedAtMs: 0, retireAtMs: 100_000 },
+    ], oidcPolicy: policy, oidcVerifier: verifier, now: () => 100_000,
+    authority: { claimPre() { calls.push("pre"); return { decision: "unavailable" }; }, consumePost() { calls.push("post"); return { decision: "unavailable" }; } },
+  });
+  const payload: AdmissionRpcPayload = [ADMISSION_RPC_VERSION, "dpl_reviewed", opaque(16, 1), 100_000, opaque(32, 2), opaque(32, 3), opaque(16, 4), "-", 100_000];
+  const body = encodeAdmissionRpcPayload(payload);
+  const request = (authorization: string) => new Request(`https://admission.limitmark.test${ADMISSION_PRE_PATH}`, { method: "POST", body: toArrayBuffer(body),
+    headers: { authorization, "content-type": ADMISSION_RPC_CONTENT_TYPE, [ADMISSION_KEY_ID_HEADER]: "key-retired", [ADMISSION_MAC_HEADER]: "signer-credential" } });
+  assert.equal((await service(request("Bearer vercel-token"))).status, 401);
+  assert.equal((await service(request("Bearer public-signer-credential"))).status, 401);
+  assert.deepEqual(calls, []);
+});
+
 test("Preview/development cannot construct a Production admission client", async () => {
   const base = { VERCEL: "1", VERCEL_ENV: "production", VERCEL_DEPLOYMENT_ID: "dpl_reviewed", ADMISSION_RELEASE_ID: "dpl_reviewed",
-    ADMISSION_SERVICE_URL: "https://admission.limitmark.test", ADMISSION_OIDC_AUDIENCE: policy.audience, ADMISSION_RELEASE_RPC_KEY: keyText };
+    ADMISSION_SERVICE_URL: "https://admission.limitmark.test", ADMISSION_OIDC_AUDIENCE: policy.audience, ADMISSION_RELEASE_KEY_ID: "release-current", ADMISSION_RELEASE_RPC_KEY: keyText };
   const oidc = { async getToken() { return "vercel-token"; } };
   for (const change of [{ VERCEL_ENV: "preview" }, { VERCEL_ENV: "development" }, { VERCEL: "0" }, { ADMISSION_RELEASE_ID: "other" }]) {
     assert.equal(await createProductionAdmissionClient({ ...base, ...change }, oidc), null);
@@ -62,7 +98,7 @@ test("Preview/development cannot construct a Production admission client", async
 test("admission client never retries a possibly consuming lost response", async () => {
   let calls = 0;
   const client = await createProductionAdmissionClient({ VERCEL: "1", VERCEL_ENV: "production", VERCEL_DEPLOYMENT_ID: "dpl_reviewed", ADMISSION_RELEASE_ID: "dpl_reviewed",
-    ADMISSION_SERVICE_URL: "https://admission.limitmark.test", ADMISSION_OIDC_AUDIENCE: policy.audience, ADMISSION_RELEASE_RPC_KEY: keyText },
+    ADMISSION_SERVICE_URL: "https://admission.limitmark.test", ADMISSION_OIDC_AUDIENCE: policy.audience, ADMISSION_RELEASE_KEY_ID: "release-current", ADMISSION_RELEASE_RPC_KEY: keyText },
   { async getToken() { return "vercel-token"; } }, async () => { calls++; throw new Error("lost-response"); });
   assert.ok(client);
   assert.equal((await client!.claimPre({ releaseId: "dpl_reviewed", clientPseudonym: opaque(32, 2), requestBinding: opaque(32, 3), nonce: opaque(16, 4), issuedAtMs: Date.now() })).decision, "unavailable");

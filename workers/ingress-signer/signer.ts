@@ -96,7 +96,7 @@ export function createIngressSigner(configuration: IngressSignerConfiguration, d
           approvedOrigin.username || approvedOrigin.password || approvedOrigin.port) return new Response(null, { status: 503 });
       const url = new URL(request.url);
       if (url.protocol !== "https:" || !configuration.publicHosts.includes(url.hostname as never) || url.port || url.username || url.password) return new Response(null, { status: 404 });
-      for (const name of reservedQuery) if (url.searchParams.has(name)) return new Response(null, { status: 404 });
+      for (const name of url.searchParams.keys()) if (reservedQuery.has(name.toLowerCase())) return new Response(null, { status: 404 });
       if (url.hostname === "www.limitmark.com" && (request.method === "GET" || request.method === "HEAD")) {
         return new Response(null, { status: 308, headers: { location: `https://limitmark.com${url.pathname}${url.search}` } });
       }
@@ -145,6 +145,11 @@ export function createIngressSigner(configuration: IngressSignerConfiguration, d
       // Never reflect internal request credentials or attestation.
       const responseHeaders = new Headers(response.headers);
       for (const name of strippedHeaders) responseHeaders.delete(name);
+      const setCookie = responseHeaders.get("set-cookie");
+      if (setCookie && /(?:^|[,;]\s*)_vercel_jwt=/iu.test(setCookie)) responseHeaders.delete("set-cookie");
+      for (const [name, value] of [...responseHeaders.entries()]) {
+        if (value.includes(configuration.vercelBypassSecret) || value.includes(configuration.originSecret) || value.includes(configuration.signingPrivateKeyPkcs8) || value.includes(configuration.identityHmacKey)) responseHeaders.delete(name);
+      }
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders });
     } catch {
       return new Response(null, { status: 503 });

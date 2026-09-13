@@ -2,6 +2,7 @@ import "server-only";
 
 import {
   ADMISSION_MAC_HEADER,
+  ADMISSION_KEY_ID_HEADER,
   ADMISSION_POST_PATH,
   ADMISSION_PRE_PATH,
   ADMISSION_RPC_CONTENT_TYPE,
@@ -23,12 +24,13 @@ export interface AdmissionClient {
 export type AdmissionClientEnvironment = {
   VERCEL?: string; VERCEL_ENV?: string; VERCEL_DEPLOYMENT_ID?: string;
   ADMISSION_SERVICE_URL?: string; ADMISSION_OIDC_AUDIENCE?: string;
-  ADMISSION_RELEASE_ID?: string; ADMISSION_RELEASE_RPC_KEY?: string;
+  ADMISSION_RELEASE_ID?: string; ADMISSION_RELEASE_KEY_ID?: string; ADMISSION_RELEASE_RPC_KEY?: string;
 };
 
 export async function createProductionAdmissionClient(environment: AdmissionClientEnvironment, oidc: ProductionOidcTokenProvider, request: typeof fetch = fetch): Promise<AdmissionClient | null> {
   if (environment.VERCEL !== "1" || environment.VERCEL_ENV !== "production" || !environment.VERCEL_DEPLOYMENT_ID ||
-      environment.ADMISSION_RELEASE_ID !== environment.VERCEL_DEPLOYMENT_ID || !environment.ADMISSION_OIDC_AUDIENCE) return null;
+      environment.ADMISSION_RELEASE_ID !== environment.VERCEL_DEPLOYMENT_ID || !environment.ADMISSION_OIDC_AUDIENCE ||
+      !environment.ADMISSION_RELEASE_KEY_ID || !/^[A-Za-z0-9_-]{1,64}$/u.test(environment.ADMISSION_RELEASE_KEY_ID)) return null;
   let endpoint: URL;
   try { endpoint = new URL(environment.ADMISSION_SERVICE_URL ?? ""); } catch { return null; }
   if (endpoint.protocol !== "https:" || endpoint.pathname !== "/" || endpoint.search || endpoint.hash || endpoint.username || endpoint.password) return null;
@@ -46,7 +48,8 @@ export async function createProductionAdmissionClient(environment: AdmissionClie
       const token = await oidc.getToken(environment.ADMISSION_OIDC_AUDIENCE!);
       const response = await request(new URL(path, endpoint), {
         method: "POST", body: toArrayBuffer(body), cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(2_000),
-        headers: { authorization: `Bearer ${token}`, "content-type": ADMISSION_RPC_CONTENT_TYPE, [ADMISSION_MAC_HEADER]: await signAdmissionRpc(path, body, key) },
+        headers: { authorization: `Bearer ${token}`, "content-type": ADMISSION_RPC_CONTENT_TYPE,
+          [ADMISSION_KEY_ID_HEADER]: environment.ADMISSION_RELEASE_KEY_ID!, [ADMISSION_MAC_HEADER]: await signAdmissionRpc(path, body, key) },
       });
       if (!response.ok) return { decision: "unavailable" };
       const text = await response.text();

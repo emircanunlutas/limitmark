@@ -9,7 +9,8 @@ const database = {
   DATABASE_URL: "postgresql://runtime:synthetic@db.example.test/app",
   DATABASE_POOL_MAX: "2",
 };
-const production = { ...database, VERCEL: "1", VERCEL_ENV: "production" };
+const production = { ...database, VERCEL: "1", VERCEL_ENV: "production", VERCEL_PROJECT_ID: "prj_shared_p",
+  VERCEL_DEPLOYMENT_ID: "dpl_shared_p", VERCEL_AUTOMATION_BYPASS_SECRET: "platform-injected-B-public" };
 
 test("admin customer-data configuration requires exact Vercel Production", async () => {
   for (const environment of [

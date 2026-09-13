@@ -1,0 +1,30 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "limitmark-admission-service-production",
+  "main": "../workers/admission-service/index.ts",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "admission-rpc.limitmark.com", "custom_domain": true }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "AUTHORITY", "class_name": "ProductionAdmissionAuthority" }
+    ]
+  },
+  "migrations": [
+    { "tag": "production-v1", "new_sqlite_classes": ["ProductionAdmissionAuthority"] }
+  ],
+  "vars": {
+    "VERCEL_OIDC_ISSUER": "__REQUIRED_TEAM_SCOPED_VERCEL_ISSUER__",
+    "VERCEL_OIDC_AUDIENCE": "__REQUIRED_ADMISSION_AUDIENCE__",
+    "VERCEL_OIDC_SUBJECT": "__REQUIRED_EXACT_PRODUCTION_SUBJECT__",
+    "VERCEL_OWNER_ID": "__REQUIRED_IMMUTABLE_OWNER_ID__",
+    "VERCEL_PROJECT_ID": "__REQUIRED_IMMUTABLE_PROJECT_ID__",
+    "AUTHORITY_OPERATOR_PUBLIC_KEY": "__REQUIRED_OPERATOR_ED25519_PUBLIC_KEY__",
+    "ADMISSION_CURRENT_RELEASE_ID": "__REQUIRED_CURRENT_RELEASE_ID__",
+    "ADMISSION_CURRENT_KEY_ID": "__REQUIRED_CURRENT_RELEASE_KEY_ID__",
+    "ADMISSION_CURRENT_ACTIVATED_AT_MS": "__REQUIRED_ACTIVATION_TIME_MS__"
+  }
+}

@@ -14,6 +14,7 @@ import {
   verifyIngressEnvelope,
   toArrayBuffer,
 } from "./ingress-protocol";
+import { importActiveIngressSigningKeys } from "./ingress-key-rollout";
 
 export type IngressVerificationPolicy = {
   audience: string;
@@ -32,14 +33,8 @@ export type VerifiedMutationIngress = {
   keyId: string;
 };
 
-export async function importIngressPublicKeys(keys: readonly { id: string; rawBase64url: string }[]): Promise<ReadonlyMap<string, CryptoKey>> {
-  if (keys.length < 1 || keys.length > 2 || new Set(keys.map((key) => key.id)).size !== keys.length) throw new Error("ingress-key-policy");
-  const imported = new Map<string, CryptoKey>();
-  for (const key of keys) {
-    if (!/^[A-Za-z0-9_-]{1,32}$/.test(key.id)) throw new Error("ingress-key-id");
-    imported.set(key.id, await crypto.subtle.importKey("raw", toArrayBuffer(decodeCanonicalBase64url(key.rawBase64url, 32)), { name: "Ed25519" }, false, ["verify"]));
-  }
-  return imported;
+export async function importIngressPublicKeys(serializedRollout: string, nowMs = Date.now()): Promise<ReadonlyMap<string, CryptoKey>> {
+  return importActiveIngressSigningKeys(serializedRollout, nowMs);
 }
 
 export async function importRequestBindingKey(rawBase64url: string): Promise<CryptoKey> {

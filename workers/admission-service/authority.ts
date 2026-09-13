@@ -9,6 +9,7 @@ export const ADMISSION_POLICY_EPOCH = "phase5c-i1-epoch-1";
 export const ADMISSION_AUTHORITY_ID = "production-public-inquiries-v1";
 export const PRE_PERMIT_LIFETIME_MS = 60_000;
 export const NONCE_RETENTION_MS = 120_000;
+export const AUTHORITY_RELEASE_RETENTION_AFTER_RETIRE_MS = 12 * 60_000;
 
 export const admissionPolicy = {
   pre: { client: { limit: 30, windowMs: 600_000 }, global: { limit: 300, windowMs: 60_000 } },
@@ -35,6 +36,7 @@ export interface DurableStorageLike {
 }
 
 type MetaRow = { authority_id: string; policy_epoch: string; last_now_ms: number };
+type ReleaseRow = { release_id: string; key_id: string; activated_ms: number; retired_ms: number | null };
 type CountRow = { count: number };
 type NonceRow = {
   release_id: string; client_id: string; request_binding: string; permit: string;
@@ -58,6 +60,83 @@ function validRelease(value: string): boolean {
   return /^[A-Za-z0-9_.:-]{1,128}$/.test(value);
 }
 
+function validKeyId(value: string): boolean { return /^[A-Za-z0-9_-]{1,64}$/u.test(value); }
+
+export function createAuthoritySchema(storage: DurableStorageLike): void {
+  storage.sql.exec("CREATE TABLE IF NOT EXISTS authority_meta (singleton INTEGER PRIMARY KEY CHECK(singleton=1), authority_id TEXT NOT NULL, policy_epoch TEXT NOT NULL, last_now_ms INTEGER NOT NULL)");
+  storage.sql.exec("CREATE TABLE IF NOT EXISTS active_releases (release_id TEXT PRIMARY KEY, key_id TEXT NOT NULL UNIQUE, activated_ms INTEGER NOT NULL, retired_ms INTEGER)");
+  storage.sql.exec("CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, release_id TEXT NOT NULL, client_id TEXT NOT NULL, request_binding TEXT NOT NULL, permit TEXT NOT NULL UNIQUE, claimed_ms INTEGER NOT NULL, permit_expires_ms INTEGER NOT NULL, retain_until_ms INTEGER NOT NULL, post_consumed INTEGER NOT NULL CHECK(post_consumed IN (0,1)))");
+  storage.sql.exec("CREATE TABLE IF NOT EXISTS observations (id TEXT PRIMARY KEY, stage TEXT NOT NULL CHECK(stage IN ('pre','post')), scope TEXT NOT NULL CHECK(scope IN ('client','global')), subject TEXT NOT NULL, observed_at_ms INTEGER NOT NULL)");
+  storage.sql.exec("CREATE INDEX IF NOT EXISTS observations_window ON observations(stage,scope,subject,observed_at_ms)");
+  storage.sql.exec("CREATE INDEX IF NOT EXISTS nonces_retention ON nonces(retain_until_ms)");
+}
+
+export type AuthorityInitialization = {
+  environment: "production" | "staging";
+  authorityId: string;
+  policyEpoch: string;
+  releaseId: string;
+  releaseKeyId: string;
+  nowMs: number;
+  confirmProduction: boolean;
+};
+
+export function initializeAuthority(storage: DurableStorageLike, specification: AuthorityInitialization): { status: "initialized" | "already-initialized" } {
+  createAuthoritySchema(storage);
+  if ((specification.environment !== "production" && specification.environment !== "staging") ||
+      specification.authorityId !== ADMISSION_AUTHORITY_ID || specification.policyEpoch !== ADMISSION_POLICY_EPOCH ||
+      !validRelease(specification.releaseId) || !validKeyId(specification.releaseKeyId) || !Number.isSafeInteger(specification.nowMs) || specification.nowMs < 0 ||
+      specification.environment === "production" && specification.confirmProduction !== true) throw new Error("initialization-policy");
+  return storage.transactionSync(() => {
+    const meta = exactlyOne<MetaRow>(storage, "SELECT authority_id,policy_epoch,last_now_ms FROM authority_meta WHERE singleton=1");
+    if (meta) {
+      const releases = rows(storage.sql.exec<ReleaseRow>("SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases ORDER BY activated_ms"));
+      if (meta.authority_id === specification.authorityId && meta.policy_epoch === specification.policyEpoch && releases.length === 1 &&
+          releases[0].release_id === specification.releaseId && releases[0].key_id === specification.releaseKeyId &&
+          releases[0].activated_ms === specification.nowMs && releases[0].retired_ms === null) return { status: "already-initialized" } as const;
+      throw new Error("authority-already-initialized");
+    }
+    storage.sql.exec("INSERT INTO authority_meta(singleton,authority_id,policy_epoch,last_now_ms) VALUES(1,?,?,?)",
+      specification.authorityId, specification.policyEpoch, specification.nowMs);
+    storage.sql.exec("INSERT INTO active_releases(release_id,key_id,activated_ms,retired_ms) VALUES(?,?,?,NULL)",
+      specification.releaseId, specification.releaseKeyId, specification.nowMs);
+    return { status: "initialized" } as const;
+  });
+}
+
+export function rotateAuthorityRelease(storage: DurableStorageLike, input: {
+  authorityId: string; policyEpoch: string; currentReleaseId: string; nextReleaseId: string; nextKeyId: string;
+  activatesAtMs: number; previousRetiresAtMs: number;
+}): { status: "rotated" | "already-rotated" } {
+  if (input.authorityId !== ADMISSION_AUTHORITY_ID || input.policyEpoch !== ADMISSION_POLICY_EPOCH || !validRelease(input.currentReleaseId) ||
+      !validRelease(input.nextReleaseId) || input.currentReleaseId === input.nextReleaseId || !validKeyId(input.nextKeyId) ||
+      !Number.isSafeInteger(input.activatesAtMs) || !Number.isSafeInteger(input.previousRetiresAtMs) || input.activatesAtMs < 0 ||
+      input.previousRetiresAtMs <= input.activatesAtMs || input.previousRetiresAtMs - input.activatesAtMs > 5 * 60_000) throw new Error("release-rotation-policy");
+  return storage.transactionSync(() => {
+    const meta = exactlyOne<MetaRow>(storage, "SELECT authority_id,policy_epoch,last_now_ms FROM authority_meta WHERE singleton=1");
+    if (!meta || meta.authority_id !== input.authorityId || meta.policy_epoch !== input.policyEpoch) throw new Error("authority-mismatch");
+    const existingNext = exactlyOne<ReleaseRow>(storage, "SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases WHERE release_id=?", input.nextReleaseId);
+    if (existingNext) {
+      const prior = exactlyOne<ReleaseRow>(storage, "SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases WHERE release_id=?", input.currentReleaseId);
+      if (existingNext.key_id === input.nextKeyId && existingNext.activated_ms === input.activatesAtMs && existingNext.retired_ms === null && prior?.retired_ms === input.previousRetiresAtMs) return { status: "already-rotated" };
+      throw new Error("release-already-exists");
+    }
+    if (meta.last_now_ms > input.activatesAtMs) throw new Error("authority-mismatch");
+    const current = exactlyOne<ReleaseRow>(storage, "SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases WHERE release_id=? AND retired_ms IS NULL", input.currentReleaseId);
+    let rowsPresent = rows(storage.sql.exec<ReleaseRow>("SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases"));
+    if (rowsPresent.length === 2) {
+      const retired = rowsPresent.find((release) => release.retired_ms !== null);
+      if (!retired || retired.retired_ms! + AUTHORITY_RELEASE_RETENTION_AFTER_RETIRE_MS > input.activatesAtMs) throw new Error("release-retention");
+      storage.sql.exec("DELETE FROM active_releases WHERE release_id=? AND retired_ms=?", retired.release_id, retired.retired_ms);
+      rowsPresent = rows(storage.sql.exec<ReleaseRow>("SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases"));
+    }
+    if (!current || rowsPresent.length !== 1) throw new Error("release-state");
+    storage.sql.exec("UPDATE active_releases SET retired_ms=? WHERE release_id=?", input.previousRetiresAtMs, input.currentReleaseId);
+    storage.sql.exec("INSERT INTO active_releases(release_id,key_id,activated_ms,retired_ms) VALUES(?,?,?,NULL)", input.nextReleaseId, input.nextKeyId, input.activatesAtMs);
+    return { status: "rotated" };
+  });
+}
+
 function validPre(input: ClaimPreInput): boolean {
   return validRelease(input.releaseId) && isOpaque(input.clientPseudonym, 32) && isOpaque(input.requestBinding, 32) &&
     isOpaque(input.nonce, 16) && Number.isSafeInteger(input.issuedAtMs) && input.issuedAtMs >= 0;
@@ -75,36 +154,16 @@ export class PublicInquiryAdmissionAuthority {
     private readonly options: { now?: () => number; expectedAuthorityId?: string; expectedPolicyEpoch?: string; faultAfterObservation?: () => void } = {},
   ) {
     this.storage = state.storage;
-    this.createSchema();
-  }
-
-  private createSchema(): void {
-    this.storage.sql.exec("CREATE TABLE IF NOT EXISTS authority_meta (singleton INTEGER PRIMARY KEY CHECK(singleton=1), authority_id TEXT NOT NULL, policy_epoch TEXT NOT NULL, last_now_ms INTEGER NOT NULL)");
-    this.storage.sql.exec("CREATE TABLE IF NOT EXISTS active_releases (release_id TEXT PRIMARY KEY, activated_ms INTEGER NOT NULL)");
-    this.storage.sql.exec("CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, release_id TEXT NOT NULL, client_id TEXT NOT NULL, request_binding TEXT NOT NULL, permit TEXT NOT NULL UNIQUE, claimed_ms INTEGER NOT NULL, permit_expires_ms INTEGER NOT NULL, retain_until_ms INTEGER NOT NULL, post_consumed INTEGER NOT NULL CHECK(post_consumed IN (0,1)))");
-    this.storage.sql.exec("CREATE TABLE IF NOT EXISTS observations (id TEXT PRIMARY KEY, stage TEXT NOT NULL CHECK(stage IN ('pre','post')), scope TEXT NOT NULL CHECK(scope IN ('client','global')), subject TEXT NOT NULL, observed_at_ms INTEGER NOT NULL)");
-    this.storage.sql.exec("CREATE INDEX IF NOT EXISTS observations_window ON observations(stage,scope,subject,observed_at_ms)");
-    this.storage.sql.exec("CREATE INDEX IF NOT EXISTS nonces_retention ON nonces(retain_until_ms)");
-  }
-
-  /** Explicit local/test seam. Production request handling exposes no initializer. */
-  initializeForLocalTest(releases: readonly string[], nowMs = 0): void {
-    if (!Number.isSafeInteger(nowMs) || nowMs < 0 || releases.length < 1 || releases.length > 8 || releases.some((release) => !validRelease(release)) || new Set(releases).size !== releases.length) throw new Error("invalid-test-initialization");
-    this.storage.transactionSync(() => {
-      if (rows(this.storage.sql.exec("SELECT singleton FROM authority_meta")).length !== 0) throw new Error("already-initialized");
-      this.storage.sql.exec("INSERT INTO authority_meta(singleton,authority_id,policy_epoch,last_now_ms) VALUES(1,?,?,?)",
-        this.options.expectedAuthorityId ?? ADMISSION_AUTHORITY_ID, this.options.expectedPolicyEpoch ?? ADMISSION_POLICY_EPOCH, nowMs);
-      for (const release of releases) this.storage.sql.exec("INSERT INTO active_releases(release_id,activated_ms) VALUES(?,?)", release, nowMs);
-    });
+    createAuthoritySchema(this.storage);
   }
 
   private authorityNow(releaseId: string): number | null {
     const meta = exactlyOne<MetaRow>(this.storage, "SELECT authority_id,policy_epoch,last_now_ms FROM authority_meta WHERE singleton=1");
     if (!meta || meta.authority_id !== (this.options.expectedAuthorityId ?? ADMISSION_AUTHORITY_ID) ||
         meta.policy_epoch !== (this.options.expectedPolicyEpoch ?? ADMISSION_POLICY_EPOCH)) return null;
-    if (!exactlyOne(this.storage, "SELECT release_id FROM active_releases WHERE release_id=?", releaseId)) return null;
     const observed = (this.options.now ?? Date.now)();
     if (!Number.isSafeInteger(observed) || observed < 0 || observed < meta.last_now_ms) return null;
+    if (!exactlyOne(this.storage, "SELECT release_id FROM active_releases WHERE release_id=? AND activated_ms<=? AND (retired_ms IS NULL OR retired_ms>?)", releaseId, observed, observed)) return null;
     this.storage.sql.exec("UPDATE authority_meta SET last_now_ms=? WHERE singleton=1", observed);
     return observed;
   }

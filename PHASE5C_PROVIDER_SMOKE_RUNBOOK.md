@@ -1,6 +1,10 @@
-# Phase 5C: later manual Upstash and ingress smoke
+# Phase 5C legacy provider investigation (superseded)
+
+This pre-architecture Upstash investigation is retained as historical evidence only. It is not the Phase 5C-I2 smoke plan and must not be executed for the selected architecture. Use `PHASE5C_I2_OPERATIONS.md` and `smoke/provider-smoke-plan.json`.
 
 Not executed. This checkout has no Upstash adapter or proxied identity implementation. These checks are a later acceptance procedure, not instructions to enable the current gates. Public persistence remains off throughout. Use no customer data, no production database and no real submission/Turnstile/origin credentials in logs.
+
+For the selected I2 topology, public and admin application routes share one immutable Production Vercel project P; the two Cloudflare gateways must resolve to that same project, while Preview project Q must have a different immutable project ID and no Production resources. Smoke must validate that independently generated B-public and B-admin both have project-wide bypass authority on P, differ in value, remain out of browser-visible material, and satisfy none of the application authorization gates. Static source/configuration checks are regressions only, not proof of runtime secrecy.
 
 ## Prerequisite: resolve the contract first
 
@@ -29,7 +33,7 @@ Likewise, require documented application-consumable authenticated visitor identi
 11. Use a harness-controlled transport fault to drop the HTTP response after the server accepts the script. Assert one network dispatch, unavailable, no Turnstile/DB continuation, and no automatic retry/refund. Read fixture state separately to verify consumption may already exist. Repeat with pre- and post-stage faults. Distinguish a caller timeout from cancellation of server execution.
 12. Test timeout, connection failure, non-2xx, invalid/missing result, truncated body and provider rejection. No response may become allowed through SDK timeout defaults, caches or fallback. Verify actual SDK/HTTP retry settings; fail the smoke if one consuming attempt can be retransmitted without proven idempotency.
 13. Inspect the provider dashboard with synthetic fixtures only. Key/value contents must obey the allowlist above. Disable identifier analytics and optional SDK telemetry; avoid MONITOR or command logs containing sensitive data. Review provider retention, backups, account access and any unavoidable service-side command/key capture. Record aggregate results only; do not export full keys.
-14. Confirm every physical key uses the correct fixed resource/environment/stage namespace. Test copied credentials in Preview/development: production adapter must not construct or send any request. Verify mismatched/absent Vercel metadata, intake mode, ingress policy, origin, Turnstile or DB gates deny. Use separate resources/ACL-scoped credentials; a namespace is not a resource-level security boundary.
+14. Confirm every physical key uses the correct fixed resource/environment/stage namespace. Verify both gateways reach the same reviewed P and the admin destination is fixed rather than caller-selected. Test copied credentials in Q/development: production adapter must not construct or send any request. Reject Q equal to P and verify mismatched/absent Vercel metadata, intake mode, ingress policy, origin, Turnstile or DB gates deny. Use separate resources/ACL-scoped credentials; a namespace is not a resource-level security boundary.
 
 ## Real ingress and complete admission (separately authorized)
 

@@ -1,0 +1,24 @@
+{
+  "version": "phase5c-i2-v1",
+  "syntheticDataOnly": true,
+  "liveExecutionAuthorized": false,
+  "redact": ["authorization", "cf-access-jwt-assertion", "cf_authorization", "x-vercel-oidc-token", "x-vercel-protection-bypass", "x-limitmark-admission-mac", "cookie", "set-cookie", "raw-ip", "client-pseudonym", "request-body"],
+  "checks": [
+    { "id": 1, "name": "real CF-Connecting-IP provenance", "requires": "authorized disposable Cloudflare route" },
+    { "id": 2, "name": "same-zone Worker exclusion", "requires": "authorized same-zone fixture Worker and rules-engine evidence" },
+    { "id": 3, "name": "cross-zone Worker behavior", "requires": "authorized cross-zone fixture Worker" },
+    { "id": 4, "name": "exact Host and SNI routing", "requires": "deployed TLS routes with no credential logging" },
+    { "id": 5, "name": "body-byte continuity", "requires": "synthetic bounded payloads through built route" },
+    { "id": 6, "name": "Vercel All Deployments direct rejection", "requires": "authorized Deployment Protection configuration" },
+    { "id": 7, "name": "B-public reaches shared Production project P without application authorization", "requires": "disposable P and independently generated B-public" },
+    { "id": 8, "name": "B-admin reaches the same P only after Access authorization", "requires": "disposable Access application and independently generated B-admin distinct from B-public" },
+    { "id": 9, "name": "no browser bypass exposure and no bypass-as-application-authorization", "requires": "browser network capture with automatic artifact redaction" },
+    { "id": 10, "name": "real Vercel OIDC and JWKS verification", "requires": "separate Production-like Vercel project and synthetic RPC" },
+    { "id": 11, "name": "Durable Object singleton concurrency", "requires": "isolated initialized namespace" },
+    { "id": 12, "name": "restart and state retention", "requires": "provider-supported restart procedure" },
+    { "id": 13, "name": "overload and fail-closed behavior", "requires": "isolated load ceiling and aggregate telemetry" },
+    { "id": 14, "name": "historical P deployment access with each project-wide bypass", "requires": "complete generated/custom/historical deployment inventory" },
+    { "id": 15, "name": "Preview Q isolation and Q != P", "requires": "separate immutable project/resource identity and copied-credential denial probes" },
+    { "id": 16, "name": "raw-IP, header, and log privacy", "requires": "restricted non-public inspection with immediate teardown" }
+  ]
+}

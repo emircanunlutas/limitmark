@@ -1,0 +1,15 @@
+[
+  {
+    "role": "current",
+    "keyId": "__REQUIRED_CURRENT_SIGNING_KEY_ID__",
+    "publicKey": "__REQUIRED_CURRENT_ED25519_PUBLIC_KEY__",
+    "activatesAtMs": "__REQUIRED_CURRENT_ACTIVATION_TIME_MS__",
+    "retiresAtMs": "__REQUIRED_RETIREMENT_TIME_WHEN_NEXT_EXISTS__"
+  },
+  {
+    "role": "next",
+    "keyId": "__OPTIONAL_NEXT_SIGNING_KEY_ID__",
+    "publicKey": "__OPTIONAL_NEXT_ED25519_PUBLIC_KEY__",
+    "activatesAtMs": "__OPTIONAL_NEXT_ACTIVATION_TIME_MS__"
+  }
+]

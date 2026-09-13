@@ -1,4 +1,4 @@
-import { PublicInquiryAdmissionAuthority, ADMISSION_AUTHORITY_ID, type DurableStorageLike } from "./admission-service/authority";
+import { PublicInquiryAdmissionAuthority, ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, initializeAuthority, type DurableStorageLike } from "./admission-service/authority";
 
 type LocalStub = { fetch(request: Request): Promise<Response> };
 type LocalNamespace = { getByName(name: string): LocalStub };
@@ -31,8 +31,9 @@ export class LocalTestAdmissionAuthority extends PublicInquiryAdmissionAuthority
       if (text.length > 2_048) return Response.json({ decision: "unavailable" }, { status: 413 });
       const body = JSON.parse(text) as Record<string, unknown>;
       if (url.pathname === "/__local/init") {
-        this.initializeForLocalTest([String(body.releaseId)], Number(body.nowMs));
-        return Response.json({ initialized: true });
+        const result = initializeAuthority(this.localStorage, { environment: "staging", authorityId: ADMISSION_AUTHORITY_ID,
+          policyEpoch: ADMISSION_POLICY_EPOCH, releaseId: String(body.releaseId), releaseKeyId: "local-release-key", nowMs: Number(body.nowMs), confirmProduction: false });
+        return Response.json(result);
       }
       if (url.pathname === "/__local/pre") return Response.json(this.claimPre(body as never));
       if (url.pathname === "/__local/post") return Response.json(this.consumePost(body as never));

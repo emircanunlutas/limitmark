@@ -1,0 +1,26 @@
+{
+  "environment": "production",
+  "deploymentEnabled": false,
+  "placeholder": "__REQUIRED_",
+  "routes": {
+    "publicSigner": ["limitmark.com/*", "www.limitmark.com/*"],
+    "adminGateway": ["admin.limitmark.com/*"],
+    "admissionService": ["admission-rpc.limitmark.com"]
+  },
+  "vercelProjects": {
+    "productionApplication": {
+      "projectRef": "P",
+      "expectedProjectId": "__REQUIRED_IMMUTABLE_PRODUCTION_VERCEL_PROJECT_ID__",
+      "applicationRoutes": ["public", "admin"],
+      "gatewayTargets": ["publicSigner", "adminGateway"]
+    },
+    "previewApplication": {
+      "projectRef": "Q",
+      "expectedProjectId": "__REQUIRED_IMMUTABLE_PREVIEW_VERCEL_PROJECT_ID__",
+      "mustDifferFromProjectRef": "P"
+    }
+  },
+  "adminGatewayUpstreamPolicy": "fixed reviewed Production P .vercel.app origin; never caller-selected",
+  "admissionServicePolicy": "service-to-service only; POST /v1/pre and /v1/post; Vercel OIDC plus release MAC",
+  "previewPolicy": "separate Vercel project, Cloudflare resources, namespace, keys, and secrets"
+}

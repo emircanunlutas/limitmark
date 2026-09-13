@@ -46,7 +46,7 @@ Disable both `workers_dev` and `preview_urls` explicitly for the production sign
 
 Current documentation says **Vercel Authentication with All Deployments is available on all plans without an additional charge**, protecting production custom domains and generated URLs. Older pricing assumptions about requiring the Advanced Deployment Protection add-on are not applicable to this method. Authentication happens before Routing Middleware. Use All Deployments, not Standard's production-domain exception. Verify actual account availability before cutover. [Deployment Protection](https://vercel.com/docs/deployment-protection)
 
-Automation bypass supports a server-to-server header. Its secrets work across a project's deployments, and one is automatically exposed as a build/runtime system variable. They bypass Deployment Protection, certain system mitigations, and Bot Protection; active attack mitigations remain. Thus this credential is powerful, and a shared production/PR-preview project is unsuitable for the selected arrangement. Never use bypass query parameters or request a bypass cookie. [Automation bypass](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation)
+Automation bypass supports a server-to-server header. Its secrets work across all deployments in one project, and one selected secret is automatically exposed as a build/runtime system variable. They bypass Deployment Protection, certain system mitigations, and Bot Protection; active attack mitigations remain. Project P therefore uses two independently generated values: system-selected B-public for the public signer and non-environment B-admin for the admin gateway. They are platform access, not route-scoped or application authorization. P is shared by public and admin routes, while unreviewed PR/Preview code belongs in separate project Q. Never use bypass query parameters or request a bypass cookie. [Automation bypass](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation)
 
 Vercel also supports original-request-header WAF rules before middleware. Framework route/action-name rules may execute later. A header deny rule is a credible alternative perimeter gate, but does not itself attest visitor identity or replace protecting old deployments. [WAF rule configuration](https://vercel.com/docs/vercel-firewall/vercel-waf/rule-configuration)
 
@@ -154,13 +154,13 @@ Use TLS with certificate verification on both hops and manual redirect handling.
 
 ### Platform and environment isolation
 
-Use a **production-only Vercel project**, with Vercel Authentication / All Deployments and a dedicated Worker-to-Vercel automation bypass secret. Put PR/branch preview builds in a separate project with separate credentials and no production persistence rights. Never run unreviewed PR code in the production project; its automatically injected bypass secret is one reason this separation is necessary.
+Use one **production-only Vercel application project P** for both public and admin routes, with Vercel Authentication / All Deployments and system variables enabled. Put PR/branch preview builds in genuinely separate project Q with separate resources and no Production credentials or persistence rights. Never run unreviewed PR code in P; its automatically injected B-public is one reason this separation is necessary.
 
-The browser never receives the bypass credential or bypass cookie. Sanitize both headers and query parameters; reject reserved bypass parameters rather than forwarding them. Maintain separate operator/CI credentials and revoke unused ones. A Vercel team login or bypass token passing the platform gate still does not satisfy application origin/signature checks.
+The browser never deliberately receives either bypass credential or a bypass cookie. Sanitize both headers and query parameters; reject reserved bypass parameters rather than forwarding them. P may possess B-public at build/runtime and may observe B-admin on an authorized request. Those facts are not application authorization: the origin/signature, Access/`requireAdmin()`, admission, Turnstile, and persistence gates remain independent. Arbitrary code execution inside trusted P is a broader application compromise outside the protection offered by these application-level gates.
 
 Preserve `x-limitmark-origin-secret` as a different credential from the platform bypass and signature key. Origin proof alone never supplies visitor identity. Preserve admin Access JWT validation/allowlist independently; the public signing key confers no admin authorization. The existing admin-hostname route needs an explicit protected forwarding path through the platform gate, not a broad exemption of the entire project. Public-intake disablement must not disable that admin path or its DB access.
 
-**Mandatory later provider-integration gate — dedicated admin gateway Worker.** Before enabling Vercel All Deployments protection on the shared Production project, add a separately reviewed gateway that serves only `admin.limitmark.com`. It must validate the Cloudflare Access JWT against fixed issuer, audience, and identity policy before adding a separately revocable Vercel automation-bypass credential. That credential must never enter browser JavaScript, a URL, cookie, redirect, response header, or browser-test `extraHTTPHeaders`. The admin gateway carries no public signer private key, IP-HMAC key, public origin bearer, admission credential, or Durable Object binding. Application-side `requireAdmin()` verification remains mandatory and independent. This gateway is provider-integration work and is not implemented in I1.
+**Mandatory provider-integration gate — dedicated admin gateway Worker.** Before enabling Vercel All Deployments protection on shared Production project P, the gateway serving only `admin.limitmark.com` validates the Cloudflare Access JWT against fixed issuer, audience, and identity policy before adding independently revocable B-admin. Its fixed reviewed upstream is P's Production `.vercel.app` target, never a caller-selected destination. B-admin must not be deliberately configured as an application environment variable, but P may observe it at request time. It must never enter browser JavaScript, a URL, cookie, redirect, response header, or browser-test `extraHTTPHeaders`. The admin gateway carries no public signer private key, IP-HMAC key, public origin bearer, admission credential, B-public, or Durable Object binding. Application-side `requireAdmin()` verification remains mandatory and independent.
 
 ### Admission service
 
@@ -352,17 +352,17 @@ This is a small justified protocol addition for replay/ambiguous execution, not 
 ## 12. Exact defense-in-depth chain
 
 ```text
-Internet (all origin addresses assumed known)
-  -> Cloudflare TLS / DDoS / WAF / risk-based edge shaping
-  -> first approved Worker: bounded request + address pseudonym + signature
-  -> Vercel platform DDoS + All Deployments authentication
-       (Worker presents separate server-side bypass credential)
+Public Internet -> Cloudflare public signer + B-public -> shared Vercel P
   -> Next.js origin-bearer check + signed-envelope/body/audience verification
   -> schema + CSRF/submission-token checks
-  -> Vercel-authenticated admission API -> ONE DO: nonce claim + PRE client/global
-  -> Vercel verifies Turnstile
-  -> same admission API -> SAME DO: POST client/global + one-use transition
+  -> Vercel-authenticated admission Worker -> ONE DO: PRE / Turnstile / POST
   -> PostgreSQL repository: validation, unique/idempotent write, constraints
+
+Admin Internet -> Cloudflare Access -> dedicated admin gateway + B-admin -> same Vercel P
+  -> application Access JWT verification + requireAdmin()
+  -> independently available admin PostgreSQL repository
+
+admission-rpc.limitmark.com -> Cloudflare admission Worker Custom Domain -> AUTHORITY
 ```
 
 | Layer | Rejects/reduces | If bypassed, next independent check | Trust/credential | Failure behavior |
@@ -407,9 +407,9 @@ P = primary; F = MemoryDB fallback with the same ingress. Comparison includes th
 | Signing private-key leak only | Attacker can fabricate identity envelopes, but still lacks platform/origin credentials; Worker overwrites supplied signatures on legitimate ingress | With all edge credentials leaked, per-client integrity is lost; no claim HMAC pseudonym key rescues it |
 | Whole Worker/edge-secret compromise | Platform/path proof and visitor integrity may all be defeated; attackers can spend global pre/post only through app Turnstile flow | C must not let an edge-signed `allowed` bypass app verification; P signer has no admission binding/credential |
 | Origin-secret leak only | Does not forge attestation or bypass platform protection | Old bearer + unsigned-header design would fail here |
-| Platform bypass-secret leak | Direct requests can invoke app, including old builds; new code still requires origin/signature | Revoke immediately; no claim of pre-app isolation during the leak |
+| Either P bypass-secret leak | Direct requests can invoke public or admin paths and old builds across P; new code still requires origin/signature or Access/`requireAdmin()` | Revoke that credential immediately; no claim of route scope or pre-app isolation during the leak |
 | Direct-origin flood, addresses known | Vercel platform handles/rejects; no valid signature/origin proof can be obtained from host knowledge | Without platform gate, B incurs application rejection work. No store stops packets reaching Vercel |
-| Old Vercel deployment | Platform protection still needed; current audience and revoked release RPC keys deny old authority access. Remove old DB-capable builds | New application checks cannot secure an old implementation that lacks them |
+| Old Vercel deployment | All Deployments protection is still needed, but either P bypass can cross it. Current audience and revoked release RPC keys deny old authority access; remove old DB-capable builds | New application checks cannot secure an old implementation that lacks them |
 | Deployment Protection disabled | Origin/signature checks still deny direct writes, but app work/cost increases. Alert; treat as perimeter incident | Signature-only B always has this resource exposure |
 | Limiter outage/overload | P DO or F MemoryDB/API failure => unavailable; no Turnstile on pre failure, no DB on post failure | D's global-only limiter also closes; in-memory fallback is forbidden |
 | Admission state loss/PITR rewind | Close, revoke permits, drain full history/replay window, reinitialize under operator control | Ordinary eventual stores cannot make lost admitted history safe simply by reconnecting |
@@ -462,9 +462,9 @@ Do not implement primary and fallback in parallel. Do not introduce a generic pl
 - Cloudflare production route with fail-closed behavior; no `passThroughOnException`; public Worker preview/dev entrypoints explicitly disabled. Cloudflare documents fail-closed route behavior for exhausted limits. [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
 - Exact public domain/origin relationship with TLS verification, no unreviewed upstream Worker/service binding, Pseudo IPv4 off, and a deployed upstream-Worker exclusion rule. Preserve narrow certificate/deployment verification behavior; no mutation exceptions.
 - Separate production signer and admission Worker permissions/secrets; only the admission service binds the production DO namespace. Separate non-production namespaces/resources and operator initialization authority.
-- Production-only Vercel project with All Deployments protection; separate Preview project and CI trust. Inventory generated, branch, custom, historical URLs, protection exceptions, share links, bypass tokens, and any old DB credentials. No origin URL secrecy assumption.
+- One shared Production Vercel application project P with All Deployments protection and exact immutable identity; separate Preview project Q and CI trust. Both gateways target P. Inventory generated, branch, custom, historical URLs, protection exceptions, share links, both bypass credentials, and any old DB credentials. Unsafe historical builds must lose effective Production access; latest code and origin URL secrecy do not protect them.
 - Resource-level production DB authorization/network restrictions and separate secret distribution remain mandatory. An application environment check cannot stop malicious Preview code that has acquired a usable production DB password and opens its own connection. Use provider-supported workload identity restrictions where available; do not claim admission OIDC also protects a separate password-authenticated DB.
-- Distinct platform bypass, application origin bearer, ingress signing, identity HMAC, release RPC, submission-token, Turnstile, database, and admin credentials. Store only where needed; never place secrets in `NEXT_PUBLIC_*`, source, build artifacts, query strings, or diagnostics.
+- Distinct B-public, B-admin, application origin bearer, ingress signing, identity HMAC, release RPC, submission-token, Turnstile, database, and admin credentials. B-public may be platform-injected into P; B-admin is not deliberately configured there but can be observed on an authorized request. Neither bypass satisfies application authorization. Never deliberately place secrets in `NEXT_PUBLIC_*`, source, query strings, diagnostics, or browser-visible output.
 - Vercel OIDC federation with exact issuer/JWKS endpoint, audience, subject, immutable owner/project checks and production environment. No token-selected issuer/JWKS fetching. Unknown-key refresh is rate-bounded; exhausted cache/network validation fails closed.
 - DO Paid plan/budget review, namespace/jurisdiction selection, migration permissions, SQL storage/retention policy, aggregate alerts, and incident ownership. No admission runtime credential may delete/reset the authority.
 - For fallback only: AWS account/VPC, authenticated API/Lambda, regional MemoryDB/ACL/TLS/no-eviction settings, restricted administrative operations, and approved regional failover testing.
@@ -502,7 +502,7 @@ No requirements above were configured or exercised against real resources in thi
 1. Verify HTTPS certificates and exact Host/SNI mapping, no redirect credential leakage, protected request-byte continuity, platform-derived deployment ID, and bounded timing.
 2. Test a normal IPv4 and IPv6 visitor through Cloudflare. Submit spoofed identity headers from an ordinary client, same-zone Worker, cross-zone Worker, alternate Worker URL, and service-binding path where configured; verify expected rejection before signing.
 3. Probe known current/historical/generated/custom origins directly with ordinary spoofed headers, correct Host/Origin where transport allows, no credentials, one credential at a time, and synthetic captured attestation. Verify whether denial occurred at platform or application, not just the status code.
-4. Verify gateway bypass never becomes a browser cookie/query/response header. Verify All Deployments, operator/CI access, admin Access path, certificate verification routes, and static assets without introducing a POST bypass.
+4. Verify both gateways target the same P, B-public and B-admin differ, and neither bypass becomes a browser cookie/query/response header. Verify each credential's project-wide behavior, All Deployments, operator/CI access, admin Access path, certificate verification routes, and static assets without treating bypass as POST authorization.
 5. Inspect origin-bound headers with synthetic addresses in a restricted temporary diagnostic; report whether raw-IP suppression is actually supported. Do not deploy an all-headers public echo endpoint.
 6. Execute actual DO storage transactions with concurrent requests through multiple Vercel instances; verify all-or-none and recorded winners, exact expiry, idle cleanup, restart/deployment continuity, delayed/lost responses, and stale-release denial. Local tests do not prove provider replication/failover.
 7. Exercise safe provider failure/latency injection and supported restart scenarios in isolated resources. Cross-region or infrastructure failover claims need provider-supported evidence, not a mock. Never reset live production history for a test.

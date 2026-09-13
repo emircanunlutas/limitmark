@@ -1,0 +1,74 @@
+{
+  "version": "phase5c-i2-shared-production-project-v3",
+  "productionApplicationProject": {
+    "projectRef": "P",
+    "expectedProjectId": "__REQUIRED_IMMUTABLE_PRODUCTION_VERCEL_PROJECT_ID__",
+    "applicationRoutes": ["public", "admin"],
+    "systemEnvironmentVariableAccess": "enabled",
+    "productionBoundary": { "VERCEL": "1", "VERCEL_ENV": "production" },
+    "deploymentProtectionScope": "all-deployments",
+    "gatewayTargets": {
+      "publicSigner": { "projectRef": "P", "target": "shared-production-application" },
+      "adminGateway": {
+        "projectRef": "P",
+        "target": "__REQUIRED_FIXED_REVIEWED_PRODUCTION_P_VERCEL_APP_ORIGIN__"
+      }
+    },
+    "bypassCredentials": {
+      "public": {
+        "contractId": "B-public",
+        "authorityScope": "project-wide-deployment-protection-bypass",
+        "applicationAuthorization": false,
+        "routeScoped": false,
+        "independentlyRevocable": true,
+        "selectedForSystemEnvironmentExposure": true,
+        "applicationEnvironmentExposure": "may-exist-at-build-and-runtime",
+        "workerDestination": "publicSigner:VERCEL_AUTOMATION_BYPASS_SECRET",
+        "browserExposure": "forbidden"
+      },
+      "admin": {
+        "contractId": "B-admin",
+        "authorityScope": "project-wide-deployment-protection-bypass",
+        "applicationAuthorization": false,
+        "routeScoped": false,
+        "independentlyRevocable": true,
+        "selectedForSystemEnvironmentExposure": false,
+        "ordinaryApplicationEnvironmentConfiguration": "forbidden",
+        "applicationRequestTimeObservation": "possible",
+        "workerDestination": "adminGateway:VERCEL_ADMIN_AUTOMATION_BYPASS_SECRET",
+        "browserExposure": "forbidden"
+      }
+    },
+    "bypassDoesNotSatisfy": [
+      "signed-ingress", "origin-bearer", "admission-oidc-mac", "turnstile",
+      "persistence-authorization", "access-jwt", "require-admin"
+    ],
+    "isolatedWorkerPrivateMaterial": [
+      "INGRESS_SIGNING_PRIVATE_KEY", "INGRESS_IDENTITY_HMAC_KEY", "AUTHORITY_OPERATOR_PRIVATE_KEY", "AUTHORITY"
+    ]
+  },
+  "previewApplicationProject": {
+    "projectRef": "Q",
+    "expectedProjectId": "__REQUIRED_IMMUTABLE_PREVIEW_VERCEL_PROJECT_ID__",
+    "mustDifferFromProjectRef": "P",
+    "forbiddenProductionConfiguration": [
+      "DATABASE_URL", "ADMISSION_RELEASE_RPC_KEY", "ADMISSION_CURRENT_RPC_KEY", "ADMISSION_PREVIOUS_RPC_KEY",
+      "VERCEL_AUTOMATION_BYPASS_SECRET", "VERCEL_ADMIN_AUTOMATION_BYPASS_SECRET",
+      "INGRESS_SIGNING_PRIVATE_KEY", "INGRESS_IDENTITY_HMAC_KEY", "PUBLIC_ORIGIN_SECRET", "INGRESS_REQUEST_BINDING_KEY",
+      "SUBMISSION_TOKEN_SECRET", "TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "RESEND_API_KEY",
+      "NOTIFICATION_FROM_EMAIL", "NOTIFICATION_TO_EMAIL", "AUTHORITY_OPERATOR_PRIVATE_KEY", "AUTHORITY"
+    ]
+  },
+  "admissionService": {
+    "hosting": "cloudflare-worker-custom-domain",
+    "vercelProjectRef": null,
+    "authorityBinding": "AUTHORITY",
+    "authorityBindingPlacement": "admission-service-only"
+  },
+  "sharedRequirements": {
+    "productionAndPreviewProjectIdsMustDiffer": true,
+    "publicAndAdminBypassCredentialsMustDiffer": true,
+    "staticChecksAreRuntimeSecrecyProof": false,
+    "realSettingsChangeAuthorized": false
+  }
+}

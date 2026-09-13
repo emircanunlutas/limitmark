@@ -1,0 +1,20 @@
+{
+  "authorityId": "production-public-inquiries-v1",
+  "policyEpoch": "phase5c-i1-epoch-1",
+  "current": {
+    "releaseId": "__REQUIRED_CURRENT_RELEASE_ID__",
+    "keyId": "__REQUIRED_CURRENT_RELEASE_KEY_ID__",
+    "rpcSecretName": "ADMISSION_CURRENT_RPC_KEY",
+    "activatedAtMs": "__REQUIRED_ACTIVATION_TIME_MS__"
+  },
+  "optionalPreviousDuringReviewedRollout": {
+    "releaseId": "__OPTIONAL_PREVIOUS_RELEASE_ID__",
+    "keyId": "__OPTIONAL_PREVIOUS_RELEASE_KEY_ID__",
+    "rpcSecretName": "ADMISSION_PREVIOUS_RPC_KEY",
+    "activatedAtMs": "__OPTIONAL_PREVIOUS_ACTIVATION_TIME_MS__",
+    "retireAtMs": "__OPTIONAL_REQUIRED_RETIREMENT_TIME_WITHIN_5_MINUTES__"
+  },
+  "maximumAcceptedReleases": 2,
+  "maximumOverlapMs": 300000,
+  "quotaHistoryResetOnRotation": false
+}
