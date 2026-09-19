@@ -16,7 +16,7 @@ const rendered = async () => {
   config.name = "limitmark-authority-operator-executor-production";
   config.main = "../workers/operator-lifecycle-executor.ts";
   config.account_id = "a".repeat(32); // synthetic only
-  config.services = [{ binding: "ADMISSION_SERVICE", service: "limitmark-admission-service-production" }];
+  config.services = [{ binding: "ADMISSION_SERVICE", service: "limitmark-admission-service-production", entrypoint: "AuthorityLifecycleOnly" }];
   config.vars = { AUTHORITY_OPERATOR_PUBLIC_KEY: encodeBase64url(new Uint8Array(32).fill(7)), OPERATOR_EXECUTOR_ENVIRONMENT: "production" };
   return config;
 };

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { validateVercelProjectContract } from "../deployment/secret-policy";
 import { validateOperatorExecutorTemplate } from "../deployment/operator-executor-contract";
+import { validateLifecycleEnvironmentGates, validateLifecycleMailboxConfig, validateLifecycleObserverConfig, validateLifecycleTransportManifest } from "../deployment/lifecycle-private-contract";
 
 async function main() {
   const root = process.cwd();
@@ -15,6 +16,13 @@ async function main() {
   const [signer, gateway, admission] = configs;
   const executor = JSON.parse(await readFile(path.join(root, "deployment", "operator-lifecycle-executor.template.jsonc"), "utf8")) as Record<string, unknown>;
   validateOperatorExecutorTemplate(executor);
+  const [mailbox, observer, transport] = await Promise.all([
+    "lifecycle-mailbox.template.jsonc", "lifecycle-observer.template.jsonc", "lifecycle-transport.production.template.json",
+  ].map(async (file) => JSON.parse(await readFile(path.join(root, "deployment", file), "utf8"))));
+  validateLifecycleMailboxConfig(mailbox);
+  validateLifecycleObserverConfig(observer);
+  validateLifecycleTransportManifest(transport);
+  validateLifecycleEnvironmentGates(JSON.parse(await readFile(path.join(root, "deployment", "lifecycle-environment-gates.json"), "utf8")));
   const patterns = configs.flatMap((config) => (config.routes as Array<{ pattern: string }>).map((route) => route.pattern));
   if (new Set(patterns).size !== patterns.length) throw new Error("overlapping-worker-routes");
   if (signer.durable_objects !== undefined || gateway.durable_objects !== undefined ||

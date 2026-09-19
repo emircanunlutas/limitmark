@@ -1,5 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { MAX_SEALED_ARTIFACT_BYTES, submitSealedLifecycleArtifact, type AdmissionLifecycleBinding } from "../operator/lifecycle-submitter";
+import { validateRuntimeSecrets } from "../deployment/secret-policy";
 
 type ExecutorEnvironment = {
   ADMISSION_SERVICE: AdmissionLifecycleBinding;
@@ -12,12 +13,12 @@ export class OperatorLifecycleExecutor extends WorkerEntrypoint<ExecutorEnvironm
   override fetch(): Response { return new Response(null, { status: 404 }); }
 
   async submitInitializationArtifact(sealedJson: string) {
-    if (this.env.OPERATOR_EXECUTOR_ENVIRONMENT !== "production") throw new Error("invalid-executor-environment");
+    if (this.env.OPERATOR_EXECUTOR_ENVIRONMENT !== "production" || !validateRuntimeSecrets("operatorExecutor", this.env as unknown as Record<string, unknown>)) throw new Error("invalid-executor-environment");
     return submitSealedLifecycleArtifact(encodeBounded(sealedJson), "initialize", this.env.ADMISSION_SERVICE, this.env.AUTHORITY_OPERATOR_PUBLIC_KEY);
   }
 
   async submitRotationArtifact(sealedJson: string) {
-    if (this.env.OPERATOR_EXECUTOR_ENVIRONMENT !== "production") throw new Error("invalid-executor-environment");
+    if (this.env.OPERATOR_EXECUTOR_ENVIRONMENT !== "production" || !validateRuntimeSecrets("operatorExecutor", this.env as unknown as Record<string, unknown>)) throw new Error("invalid-executor-environment");
     return submitSealedLifecycleArtifact(encodeBounded(sealedJson), "rotate-release", this.env.ADMISSION_SERVICE, this.env.AUTHORITY_OPERATOR_PUBLIC_KEY);
   }
 }

@@ -7,7 +7,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "services": [
-    { "binding": "ADMISSION_SERVICE", "service": "__REQUIRED_REVIEWED_ADMISSION_SERVICE_NAME__" }
+    { "binding": "ADMISSION_SERVICE", "service": "__REQUIRED_REVIEWED_ADMISSION_SERVICE_NAME__", "entrypoint": "AuthorityLifecycleOnly" }
   ],
   "vars": {
     "AUTHORITY_OPERATOR_PUBLIC_KEY": "__REQUIRED_OPERATOR_ED25519_PUBLIC_KEY__",

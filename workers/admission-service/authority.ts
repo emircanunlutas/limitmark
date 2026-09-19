@@ -4,12 +4,14 @@ import {
   decodeCanonicalBase64url,
   encodeBase64url,
 } from "../../src/lib/ingress-protocol";
+import { UNAVAILABLE_AUTHORITY_OBSERVATION } from "../../operator/lifecycle-observation";
 
 export const ADMISSION_POLICY_EPOCH = "phase5c-i1-epoch-1";
 export const ADMISSION_AUTHORITY_ID = "production-public-inquiries-v1";
 export const PRE_PERMIT_LIFETIME_MS = 60_000;
 export const NONCE_RETENTION_MS = 120_000;
 export const AUTHORITY_RELEASE_RETENTION_AFTER_RETIRE_MS = 12 * 60_000;
+export const LIFECYCLE_RECEIPT_CAPACITY = 4_096;
 
 export const admissionPolicy = {
   pre: { client: { limit: 30, windowMs: 600_000 }, global: { limit: 300, windowMs: 60_000 } },
@@ -69,6 +71,67 @@ export function createAuthoritySchema(storage: DurableStorageLike): void {
   storage.sql.exec("CREATE TABLE IF NOT EXISTS observations (id TEXT PRIMARY KEY, stage TEXT NOT NULL CHECK(stage IN ('pre','post')), scope TEXT NOT NULL CHECK(scope IN ('client','global')), subject TEXT NOT NULL, observed_at_ms INTEGER NOT NULL)");
   storage.sql.exec("CREATE INDEX IF NOT EXISTS observations_window ON observations(stage,scope,subject,observed_at_ms)");
   storage.sql.exec("CREATE INDEX IF NOT EXISTS nonces_retention ON nonces(retain_until_ms)");
+  storage.sql.exec("CREATE TABLE IF NOT EXISTS lifecycle_receipts (digest TEXT PRIMARY KEY, schema_version INTEGER NOT NULL CHECK(schema_version=1), operation TEXT NOT NULL CHECK(operation IN ('initialize','rotate-release')), environment TEXT NOT NULL, authority_id TEXT NOT NULL, policy_epoch TEXT NOT NULL, key_fingerprint TEXT NOT NULL, sequence INTEGER NOT NULL UNIQUE, applied_ms INTEGER NOT NULL, current_release_id TEXT NOT NULL, next_release_id TEXT NOT NULL, next_key_id TEXT NOT NULL, activates_ms INTEGER NOT NULL, retires_ms INTEGER)");
+  storage.sql.exec("CREATE TABLE IF NOT EXISTS lifecycle_receipt_coverage (singleton INTEGER PRIMARY KEY CHECK(singleton=1), complete INTEGER NOT NULL CHECK(complete=1))");
+}
+
+export type LifecycleReceipt = {
+  digest: string; version: 1; operation: "initialize" | "rotate-release"; environment: "production" | "staging";
+  authorityId: string; policyEpoch: string; keyFingerprint: string; sequence: number; appliedMs: number;
+  currentReleaseId: string; nextReleaseId: string; nextKeyId: string; activatesMs: number; retiresMs: number | null;
+};
+type ReceiptRow = { digest: string; schema_version: number; operation: LifecycleReceipt["operation"]; environment: LifecycleReceipt["environment"];
+  authority_id: string; policy_epoch: string; key_fingerprint: string; sequence: number; applied_ms: number;
+  current_release_id: string; next_release_id: string; next_key_id: string; activates_ms: number; retires_ms: number | null };
+function receiptFromRow(row: ReceiptRow): LifecycleReceipt {
+  if (row.schema_version !== 1) throw new Error("receipt-history");
+  return { digest: row.digest, version: 1, operation: row.operation, environment: row.environment, authorityId: row.authority_id,
+    policyEpoch: row.policy_epoch, keyFingerprint: row.key_fingerprint, sequence: row.sequence, appliedMs: row.applied_ms,
+    currentReleaseId: row.current_release_id, nextReleaseId: row.next_release_id, nextKeyId: row.next_key_id,
+    activatesMs: row.activates_ms, retiresMs: row.retires_ms };
+}
+function findReceipt(storage: DurableStorageLike, digest: string): LifecycleReceipt | null {
+  const row = exactlyOne<ReceiptRow>(storage, "SELECT digest,schema_version,operation,environment,authority_id,policy_epoch,key_fingerprint,sequence,applied_ms,current_release_id,next_release_id,next_key_id,activates_ms,retires_ms FROM lifecycle_receipts WHERE digest=?", digest);
+  return row ? receiptFromRow(row) : null;
+}
+function ensureNewReceiptCapacity(storage: DurableStorageLike): void {
+  const count = exactlyOne<CountRow>(storage, "SELECT COUNT(*) AS count FROM lifecycle_receipts")?.count;
+  if (count === undefined || count >= LIFECYCLE_RECEIPT_CAPACITY) throw new Error("receipt-capacity");
+}
+function insertReceipt(storage: DurableStorageLike, receipt: Omit<LifecycleReceipt, "sequence">): LifecycleReceipt {
+  const sequence = (exactlyOne<{ value: number }>(storage, "SELECT COALESCE(MAX(sequence),0) + 1 AS value FROM lifecycle_receipts")?.value ?? 0);
+  if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error("receipt-history");
+  storage.sql.exec("INSERT INTO lifecycle_receipts(digest,schema_version,operation,environment,authority_id,policy_epoch,key_fingerprint,sequence,applied_ms,current_release_id,next_release_id,next_key_id,activates_ms,retires_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    receipt.digest, receipt.version, receipt.operation, receipt.environment, receipt.authorityId, receipt.policyEpoch, receipt.keyFingerprint, sequence,
+    receipt.appliedMs, receipt.currentReleaseId, receipt.nextReleaseId, receipt.nextKeyId, receipt.activatesMs, receipt.retiresMs);
+  return { ...receipt, sequence };
+}
+
+/** SELECT-only, including on a DO whose schema has never been initialized. */
+export function inspectLifecycleAuthority(storage: DurableStorageLike, digest: string, nowMs = Date.now()) {
+  if (!/^[a-f0-9]{64}$/u.test(digest) || !Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error("invalid-reconciliation");
+  const table = (name: string) => exactlyOne<{ name: string }>(storage,
+    "SELECT name FROM sqlite_master WHERE type='table' AND name=?", name) !== null;
+  if (!table("authority_meta")) return { version: 1, environment: "production", authorityId: ADMISSION_AUTHORITY_ID,
+    policyEpoch: ADMISSION_POLICY_EPOCH, observedAtMs: nowMs, initialized: false, coverage: "COMPLETE", status: "NOT_FOUND", receipt: null, releases: [] } as const;
+  const meta = exactlyOne<MetaRow>(storage, "SELECT authority_id,policy_epoch,last_now_ms FROM authority_meta WHERE singleton=1");
+  if (!meta) {
+    if (table("active_releases") && rows(storage.sql.exec<ReleaseRow>("SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases LIMIT 1")).length)
+      return UNAVAILABLE_AUTHORITY_OBSERVATION;
+    return { version: 1, environment: "production", authorityId: ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH,
+      observedAtMs: nowMs, initialized: false, coverage: "COMPLETE", status: "NOT_FOUND", receipt: null, releases: [] } as const;
+  }
+  if (meta.authority_id !== ADMISSION_AUTHORITY_ID || meta.policy_epoch !== ADMISSION_POLICY_EPOCH || !table("active_releases"))
+    return UNAVAILABLE_AUTHORITY_OBSERVATION;
+  const releases = rows(storage.sql.exec<ReleaseRow>("SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases ORDER BY activated_ms")).slice(0, 3);
+  if (!table("lifecycle_receipts") || !table("lifecycle_receipt_coverage") ||
+      !exactlyOne(storage, "SELECT singleton FROM lifecycle_receipt_coverage WHERE singleton=1")) return { version: 1, environment: "production", authorityId: ADMISSION_AUTHORITY_ID,
+    policyEpoch: ADMISSION_POLICY_EPOCH, observedAtMs: nowMs, initialized: true, coverage: "INCOMPLETE", status: "HISTORY_INCOMPLETE",
+    receipt: null, releases } as const;
+  const receipt = findReceipt(storage, digest);
+  return { version: 1, environment: "production", authorityId: ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH,
+    observedAtMs: nowMs, initialized: true, coverage: "COMPLETE", status: receipt ? "EXACT_RECEIPT" : "NOT_FOUND",
+    receipt, releases } as const;
 }
 
 export type AuthorityInitialization = {
@@ -81,25 +144,36 @@ export type AuthorityInitialization = {
   confirmProduction: boolean;
 };
 
-export function initializeAuthority(storage: DurableStorageLike, specification: AuthorityInitialization): { status: "initialized" | "already-initialized" } {
+export function initializeAuthority(storage: DurableStorageLike, specification: AuthorityInitialization,
+  commandReceipt?: Omit<LifecycleReceipt, "sequence">): { status: "initialized" | "already-initialized"; receipt?: LifecycleReceipt } {
   createAuthoritySchema(storage);
   if ((specification.environment !== "production" && specification.environment !== "staging") ||
       specification.authorityId !== ADMISSION_AUTHORITY_ID || specification.policyEpoch !== ADMISSION_POLICY_EPOCH ||
       !validRelease(specification.releaseId) || !validKeyId(specification.releaseKeyId) || !Number.isSafeInteger(specification.nowMs) || specification.nowMs < 0 ||
       specification.environment === "production" && specification.confirmProduction !== true) throw new Error("initialization-policy");
   return storage.transactionSync(() => {
+    if (commandReceipt) {
+      const prior = findReceipt(storage, commandReceipt.digest);
+      if (prior) return { status: "already-initialized", receipt: prior } as const;
+    }
     const meta = exactlyOne<MetaRow>(storage, "SELECT authority_id,policy_epoch,last_now_ms FROM authority_meta WHERE singleton=1");
     if (meta) {
+      if (commandReceipt) throw new Error("authority-already-initialized");
       const releases = rows(storage.sql.exec<ReleaseRow>("SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases ORDER BY activated_ms"));
       if (meta.authority_id === specification.authorityId && meta.policy_epoch === specification.policyEpoch && releases.length === 1 &&
           releases[0].release_id === specification.releaseId && releases[0].key_id === specification.releaseKeyId &&
           releases[0].activated_ms === specification.nowMs && releases[0].retired_ms === null) return { status: "already-initialized" } as const;
       throw new Error("authority-already-initialized");
     }
+    if (commandReceipt) ensureNewReceiptCapacity(storage);
     storage.sql.exec("INSERT INTO authority_meta(singleton,authority_id,policy_epoch,last_now_ms) VALUES(1,?,?,?)",
       specification.authorityId, specification.policyEpoch, specification.nowMs);
     storage.sql.exec("INSERT INTO active_releases(release_id,key_id,activated_ms,retired_ms) VALUES(?,?,?,NULL)",
       specification.releaseId, specification.releaseKeyId, specification.nowMs);
+    if (commandReceipt) {
+      storage.sql.exec("INSERT INTO lifecycle_receipt_coverage(singleton,complete) VALUES(1,1)");
+      return { status: "initialized", receipt: insertReceipt(storage, commandReceipt) } as const;
+    }
     return { status: "initialized" } as const;
   });
 }
@@ -107,18 +181,27 @@ export function initializeAuthority(storage: DurableStorageLike, specification: 
 export function rotateAuthorityRelease(storage: DurableStorageLike, input: {
   authorityId: string; policyEpoch: string; currentReleaseId: string; nextReleaseId: string; nextKeyId: string;
   activatesAtMs: number; previousRetiresAtMs: number;
-}): { status: "rotated" | "already-rotated" } {
+}, commandReceipt?: Omit<LifecycleReceipt, "sequence">): { status: "rotated" | "already-rotated"; receipt?: LifecycleReceipt } {
+  createAuthoritySchema(storage);
   if (input.authorityId !== ADMISSION_AUTHORITY_ID || input.policyEpoch !== ADMISSION_POLICY_EPOCH || !validRelease(input.currentReleaseId) ||
       !validRelease(input.nextReleaseId) || input.currentReleaseId === input.nextReleaseId || !validKeyId(input.nextKeyId) ||
       !Number.isSafeInteger(input.activatesAtMs) || !Number.isSafeInteger(input.previousRetiresAtMs) || input.activatesAtMs < 0 ||
       input.previousRetiresAtMs <= input.activatesAtMs || input.previousRetiresAtMs - input.activatesAtMs > 5 * 60_000) throw new Error("release-rotation-policy");
   return storage.transactionSync(() => {
+    if (commandReceipt) {
+      const prior = findReceipt(storage, commandReceipt.digest);
+      if (prior) return { status: "already-rotated", receipt: prior } as const;
+    }
     const meta = exactlyOne<MetaRow>(storage, "SELECT authority_id,policy_epoch,last_now_ms FROM authority_meta WHERE singleton=1");
     if (!meta || meta.authority_id !== input.authorityId || meta.policy_epoch !== input.policyEpoch) throw new Error("authority-mismatch");
+    if (commandReceipt) {
+      if (!exactlyOne(storage, "SELECT singleton FROM lifecycle_receipt_coverage WHERE singleton=1")) throw new Error("receipt-history");
+      ensureNewReceiptCapacity(storage);
+    }
     const existingNext = exactlyOne<ReleaseRow>(storage, "SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases WHERE release_id=?", input.nextReleaseId);
     if (existingNext) {
       const prior = exactlyOne<ReleaseRow>(storage, "SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases WHERE release_id=?", input.currentReleaseId);
-      if (existingNext.key_id === input.nextKeyId && existingNext.activated_ms === input.activatesAtMs && existingNext.retired_ms === null && prior?.retired_ms === input.previousRetiresAtMs) return { status: "already-rotated" };
+      if (!commandReceipt && existingNext.key_id === input.nextKeyId && existingNext.activated_ms === input.activatesAtMs && existingNext.retired_ms === null && prior?.retired_ms === input.previousRetiresAtMs) return { status: "already-rotated" };
       throw new Error("release-already-exists");
     }
     if (meta.last_now_ms > input.activatesAtMs) throw new Error("authority-mismatch");
@@ -133,6 +216,7 @@ export function rotateAuthorityRelease(storage: DurableStorageLike, input: {
     if (!current || rowsPresent.length !== 1) throw new Error("release-state");
     storage.sql.exec("UPDATE active_releases SET retired_ms=? WHERE release_id=?", input.previousRetiresAtMs, input.currentReleaseId);
     storage.sql.exec("INSERT INTO active_releases(release_id,key_id,activated_ms,retired_ms) VALUES(?,?,?,NULL)", input.nextReleaseId, input.nextKeyId, input.activatesAtMs);
+    if (commandReceipt) return { status: "rotated", receipt: insertReceipt(storage, commandReceipt) };
     return { status: "rotated" };
   });
 }
@@ -154,7 +238,6 @@ export class PublicInquiryAdmissionAuthority {
     private readonly options: { now?: () => number; expectedAuthorityId?: string; expectedPolicyEpoch?: string; faultAfterObservation?: () => void } = {},
   ) {
     this.storage = state.storage;
-    createAuthoritySchema(this.storage);
   }
 
   private authorityNow(releaseId: string): number | null {
@@ -183,6 +266,7 @@ export class PublicInquiryAdmissionAuthority {
 
   claimPre(input: ClaimPreInput): PreDecision {
     if (!validPre(input)) return { decision: "unavailable" };
+    createAuthoritySchema(this.storage);
     const permit = encodeBase64url(crypto.getRandomValues(new Uint8Array(32)));
     const attempt = encodeBase64url(crypto.getRandomValues(new Uint8Array(16)));
     try {
@@ -210,6 +294,7 @@ export class PublicInquiryAdmissionAuthority {
 
   consumePost(input: ConsumePostInput): PostDecision {
     if (!validPost(input)) return { decision: "unavailable" };
+    createAuthoritySchema(this.storage);
     const attempt = encodeBase64url(crypto.getRandomValues(new Uint8Array(16)));
     try {
       return this.storage.transactionSync(() => {
@@ -236,6 +321,7 @@ export class PublicInquiryAdmissionAuthority {
 
   cleanup(maximumRows = 500): { deleted: number } | { unavailable: true } {
     if (!Number.isInteger(maximumRows) || maximumRows < 1 || maximumRows > 500) return { unavailable: true };
+    createAuthoritySchema(this.storage);
     try {
       return this.storage.transactionSync(() => {
         const meta = exactlyOne<MetaRow>(this.storage, "SELECT authority_id,policy_epoch,last_now_ms FROM authority_meta WHERE singleton=1");

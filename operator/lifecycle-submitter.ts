@@ -7,6 +7,7 @@ import {
   type AuthorityInitializationCommand,
   type AuthorityReleaseRotationCommand,
 } from "../workers/admission-service/operator-command";
+import type { LifecycleReceipt } from "../workers/admission-service/authority";
 
 export const MAX_SEALED_ARTIFACT_BYTES = 4_096;
 export type LifecycleOperation = "initialize" | "rotate-release";
@@ -15,13 +16,14 @@ export type SealedLifecycleArtifact = {
   signature: string;
 };
 export type LifecycleResult =
-  | { status: "initialized" | "already-initialized" | "rotated" | "already-rotated" | "refused" }
+  | { status: "initialized" | "already-initialized" | "rotated" | "already-rotated"; receipt?: LifecycleReceipt }
+  | { status: "refused" }
   | { status: "unconfirmed"; instruction: "Inspect authoritative state before any retry; the mutation may have committed." };
 
 /** Only these two calls can cross the private AdmissionServiceWorker binding. */
 export type AdmissionLifecycleBinding = {
-  initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string): Promise<{ status: "initialized" | "already-initialized" | "refused" }>;
-  rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string): Promise<{ status: "rotated" | "already-rotated" | "refused" }>;
+  initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string): Promise<{ status: "initialized" | "already-initialized"; receipt?: LifecycleReceipt } | { status: "refused" }>;
+  rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string): Promise<{ status: "rotated" | "already-rotated"; receipt?: LifecycleReceipt } | { status: "refused" }>;
 };
 
 // The sealed format is deliberately narrower than general JSON. Each object key is

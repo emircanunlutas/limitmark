@@ -109,6 +109,37 @@ test("definite policy refusal stays distinct from ambiguous transport outcome", 
   assert.equal((await submitSealedLifecycleArtifact(f.initBytes, "initialize", unexpected, f.publicKey, f.now)).status, "unconfirmed");
 });
 
+test("lifecycle adapter makes one admission call for 429, 5xx, reset, timeout, retryable and malformed outcomes", async () => {
+  const f = await fixture();
+  for (const fault of [429, 500, 503, "timeout", "connection-reset", "retryable", "malformed"] as const) {
+    let dispatches = 0;
+    const binding: AdmissionLifecycleBinding = {
+      async initializeAuthorityFromOperator() {
+        dispatches++;
+        if (fault === "retryable") return { status: "retryable" } as never;
+        if (fault === "malformed") return null as never;
+        throw Object.assign(new Error(String(fault)), { retryable: true, status: fault });
+      },
+      async rotateAuthorityReleaseFromOperator() { throw new Error("wrong operation"); },
+    };
+    const result = await submitSealedLifecycleArtifact(f.initBytes, "initialize", binding, f.publicKey, f.now);
+    assert.equal(result.status, "unconfirmed", String(fault));
+    assert.equal(dispatches, 1, String(fault));
+  }
+});
+
+test("staging rotation remains an explicit closed protocol gate", async () => {
+  const f = await fixture();
+  const staging = [...f.rotate]; (staging as unknown as string[])[2] = "staging";
+  const productionSignature = await signAuthorityReleaseRotationCommand(f.rotate, f.privateKey);
+  assert.throws(() => parseSealedLifecycleArtifact(bytes({ command: staging,
+    signature: productionSignature }), "rotate-release", f.now));
+  const gates = JSON.parse(await readFile(new URL("../deployment/lifecycle-environment-gates.json", import.meta.url), "utf8")) as
+    { staging: { rotationImplemented: boolean; provisioningOpen: boolean } };
+  assert.equal(gates.staging.rotationImplemented, false);
+  assert.equal(gates.staging.provisioningOpen, false);
+});
+
 test("CLI inspection is read-only and ordinary terminal submission fails closed", async () => {
   const f = await fixture();
   const directory = await mkdtemp(join(tmpdir(), "i3a-submitter-"));
@@ -124,7 +155,7 @@ test("CLI inspection is read-only and ordinary terminal submission fails closed"
     await writeFile(file, bytes({ command: fresh, signature }));
     const inspected = run(["--inspect"]);
     assert.equal(inspected.status, 0, inspected.stderr);
-    assert.equal(JSON.parse(inspected.stdout).status, "inspected");
+    assert.equal(JSON.parse(inspected.stdout).status, "INSPECTED");
     assert.doesNotMatch(inspected.stdout, /signature|private/u);
     const unavailable = run([]);
     assert.equal(unavailable.status, 2);
@@ -146,7 +177,8 @@ test("Production lifecycle remains absent from public fetch routing and deployme
   assert.equal(executor.routes, undefined);
   assert.equal(executor.workers_dev, false);
   assert.equal(executor.preview_urls, false);
-  assert.deepEqual(executor.services, [{ binding: "ADMISSION_SERVICE", service: "__REQUIRED_REVIEWED_ADMISSION_SERVICE_NAME__" }]);
+  assert.deepEqual(executor.services, [{ binding: "ADMISSION_SERVICE", service: "__REQUIRED_REVIEWED_ADMISSION_SERVICE_NAME__",
+    entrypoint: "AuthorityLifecycleOnly" }]);
   const executorSource = await readFile(new URL("../workers/operator-lifecycle-executor.ts", import.meta.url), "utf8");
   assert.doesNotMatch(executorSource, /getByName|env\.AUTHORITY\b|request\.url|pathname/u);
   assert.doesNotMatch(await readFile(new URL("../scripts/authority-submit.ts", import.meta.url), "utf8"), /AUTHORITY_OPERATOR_PRIVATE_KEY/u);

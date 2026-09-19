@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "production": {
+    "requestBucket": "limitmark-lifecycle-requests-production",
+    "resultBucket": "limitmark-lifecycle-results-production",
+    "mailboxWorker": "limitmark-lifecycle-mailbox-production",
+    "observerWorker": "limitmark-lifecycle-observer-production",
+    "guardObject": "production-lifecycle-dispatch-v1",
+    "executorWorker": "limitmark-authority-operator-executor-production",
+    "admissionWorker": "limitmark-admission-service-production",
+    "authorityObject": "production-public-inquiries-v1",
+    "requestObjectRetentionHours": 24,
+    "resultObjectRetentionDays": 30,
+    "retentionLiveVerified": false,
+    "requestCredentialScopeLiveVerified": false,
+    "resultCredentialScopeLiveVerified": false,
+    "provisioningOpen": false
+  },
+  "staging": {
+    "requestBucket": "limitmark-lifecycle-requests-staging",
+    "resultBucket": "limitmark-lifecycle-results-staging",
+    "mailboxWorker": "limitmark-lifecycle-mailbox-staging",
+    "observerWorker": "limitmark-lifecycle-observer-staging",
+    "guardObject": "staging-lifecycle-dispatch-v1",
+    "executorWorker": "limitmark-authority-operator-executor-staging",
+    "admissionWorker": "limitmark-admission-service-staging",
+    "authorityObject": "staging-public-inquiries-v1",
+    "requestObjectRetentionHours": 24,
+    "resultObjectRetentionDays": 30,
+    "retentionLiveVerified": false,
+    "rotationImplemented": false,
+    "requestCredentialScopeLiveVerified": false,
+    "resultCredentialScopeLiveVerified": false,
+    "provisioningOpen": false
+  },
+  "crossEnvironmentKeyReuseAllowed": false,
+  "crossEnvironmentCredentialReuseAllowed": false,
+  "crossEnvironmentNamespaceReuseAllowed": false,
+  "publicPersistenceEnabled": false
+}

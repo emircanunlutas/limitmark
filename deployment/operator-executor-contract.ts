@@ -25,7 +25,8 @@ function base(config: unknown): asserts config is Record<string, unknown> {
   if (!exactKeys(config, topLevel) || config.$schema !== schemaPath || config.compatibility_date !== "2026-09-13" ||
       config.workers_dev !== false || config.preview_urls !== false ||
       !Array.isArray(config.services) || config.services.length !== 1 ||
-      !exactKeys(config.services[0], ["binding", "service"]) || config.services[0].binding !== "ADMISSION_SERVICE" ||
+      !exactKeys(config.services[0], ["binding", "service", "entrypoint"]) || config.services[0].binding !== "ADMISSION_SERVICE" ||
+      config.services[0].entrypoint !== "AuthorityLifecycleOnly" ||
       !exactKeys(config.vars, ["AUTHORITY_OPERATOR_PUBLIC_KEY", "OPERATOR_EXECUTOR_ENVIRONMENT"])) {
     throw new Error("unsafe-private-operator-executor");
   }

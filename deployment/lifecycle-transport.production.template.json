@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "environment": "production",
+  "accountId": "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__",
+  "requestBucket": "limitmark-lifecycle-requests-production",
+  "resultBucket": "limitmark-lifecycle-results-production",
+  "authorityId": "production-public-inquiries-v1",
+  "policyEpoch": "phase5c-i1-epoch-1",
+  "operatorPublicKey": "__REQUIRED_OPERATOR_ED25519_PUBLIC_KEY__"
+}

@@ -138,8 +138,12 @@ test("signed operator initialization succeeds once, is safely idempotent, and ne
   const command: AuthorityInitializationCommand = [AUTHORITY_OPERATOR_COMMAND_VERSION, "initialize", "production", ADMISSION_AUTHORITY_ID,
     ADMISSION_POLICY_EPOCH, "dpl_current", "release-current", 1_000, true];
   const signature = await signAuthorityInitializationCommand(command, privateKey);
-  assert.deepEqual(await executeSignedAuthorityInitialization(storage, command, signature, publicKey, 1_001), { status: "initialized" });
-  assert.deepEqual(await executeSignedAuthorityInitialization(storage, command, signature, publicKey, 1_001), { status: "already-initialized" });
+  const first = await executeSignedAuthorityInitialization(storage, command, signature, publicKey, 1_001);
+  assert.equal(first.status, "initialized");
+  assert.ok(first.receipt);
+  const repeat = await executeSignedAuthorityInitialization(storage, command, signature, publicKey, 1_001);
+  assert.equal(repeat.status, "already-initialized");
+  assert.deepEqual(repeat.receipt, first.receipt);
   const changed = [...command] as unknown as AuthorityInitializationCommand;
   (changed as unknown as string[])[5] = "dpl_changed";
   const changedSignature = await signAuthorityInitializationCommand(changed, privateKey);
@@ -187,8 +191,9 @@ test("signed Production rotation is idempotent, preserves history and rejects co
   const pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
   const privateKey = encodeBase64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey)));
   const publicKey = encodeBase64url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)));
-  initializeAuthority(storage, { environment: "production", authorityId: ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH,
-    releaseId: "dpl_current", releaseKeyId: "key-current", nowMs: now.value, confirmProduction: true });
+  const init: AuthorityInitializationCommand = [AUTHORITY_OPERATOR_COMMAND_VERSION, "initialize", "production", ADMISSION_AUTHORITY_ID,
+    ADMISSION_POLICY_EPOCH, "dpl_current", "key-current", now.value, true];
+  await executeSignedAuthorityInitialization(storage, init, await signAuthorityInitializationCommand(init, privateKey), publicKey, now.value);
   const input = { releaseId: "dpl_current", clientPseudonym: encodeBase64url(new Uint8Array(32).fill(1)),
     requestBinding: encodeBase64url(new Uint8Array(32).fill(2)), nonce: encodeBase64url(new Uint8Array(16).fill(3)), issuedAtMs: now.value };
   assert.equal(authority.claimPre(input).decision, "allowed");
@@ -196,10 +201,14 @@ test("signed Production rotation is idempotent, preserves history and rejects co
   const command: AuthorityReleaseRotationCommand = [AUTHORITY_OPERATOR_COMMAND_VERSION, "rotate-release", "production", ADMISSION_AUTHORITY_ID,
     ADMISSION_POLICY_EPOCH, "dpl_current", "dpl_next", "key-next", 2_000, 3_000, 2_000, true];
   const signature = await signAuthorityReleaseRotationCommand(command, privateKey);
-  assert.deepEqual(await executeSignedAuthorityReleaseRotation(storage, command, signature, publicKey, 2_001), { status: "rotated" });
+  const rotated = await executeSignedAuthorityReleaseRotation(storage, command, signature, publicKey, 2_001);
+  assert.equal(rotated.status, "rotated");
+  assert.ok(rotated.receipt);
   now.value = 2_500;
   assert.equal(authority.claimPre({ ...input, issuedAtMs: now.value }).decision, "replay");
-  assert.deepEqual(await executeSignedAuthorityReleaseRotation(storage, command, signature, publicKey, 2_500), { status: "already-rotated" });
+  const repeated = await executeSignedAuthorityReleaseRotation(storage, command, signature, publicKey, 2_500);
+  assert.equal(repeated.status, "already-rotated");
+  assert.deepEqual(repeated.receipt, rotated.receipt);
   assert.deepEqual({ observations: storage.count("observations"), nonces: storage.count("nonces") }, before);
 
   const conflict = [...command] as unknown as AuthorityReleaseRotationCommand;

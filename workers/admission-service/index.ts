@@ -1,7 +1,7 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { importAdmissionRpcKey } from "../../src/lib/admission-protocol";
-import { ADMISSION_AUTHORITY_ID, PublicInquiryAdmissionAuthority, type DurableStorageLike } from "./authority";
+import { ADMISSION_AUTHORITY_ID, inspectLifecycleAuthority, PublicInquiryAdmissionAuthority, type DurableStorageLike } from "./authority";
 import {
   executeSignedAuthorityInitialization,
   executeSignedAuthorityReleaseRotation,
@@ -21,11 +21,12 @@ type AuthorityStub = {
   rotateReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string): Promise<{ status: "rotated" | "already-rotated" | "refused" }>;
   claimPre(input: Parameters<PublicInquiryAdmissionAuthority["claimPre"]>[0]): Promise<ReturnType<PublicInquiryAdmissionAuthority["claimPre"]>>;
   consumePost(input: Parameters<PublicInquiryAdmissionAuthority["consumePost"]>[0]): Promise<ReturnType<PublicInquiryAdmissionAuthority["consumePost"]>>;
+  inspectLifecycle(digest: string): Promise<ReturnType<typeof inspectLifecycleAuthority>>;
 };
 type AuthorityNamespace = { getByName(name: string): AuthorityStub };
 
 const lifecycleRefusals = new Set(["operator-command", "operator-signature", "operator-command-freshness", "initialization-policy",
-  "authority-already-initialized", "release-rotation-policy", "authority-mismatch", "release-already-exists", "release-retention", "release-state"]);
+  "operator-environment", "authority-already-initialized", "release-rotation-policy", "authority-mismatch", "release-already-exists", "release-retention", "release-state", "receipt-capacity", "receipt-history"]);
 
 async function withLifecycleRefusal<T>(operation: () => Promise<T>): Promise<T | { status: "refused" }> {
   try { return await operation(); }
@@ -61,11 +62,15 @@ export class ProductionAdmissionAuthority extends DurableObject<AdmissionService
   }
 
   async initializeFromOperator(command: AuthorityInitializationCommand, signature: string) {
-    return withLifecycleRefusal(() => executeSignedAuthorityInitialization(this.durableStorage, command, signature, this.operatorPublicKey, Date.now()));
+    return withLifecycleRefusal(() => executeSignedAuthorityInitialization(this.durableStorage, command, signature, this.operatorPublicKey, Date.now(), "production", Date.now));
   }
 
   async rotateReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string) {
-    return withLifecycleRefusal(() => executeSignedAuthorityReleaseRotation(this.durableStorage, command, signature, this.operatorPublicKey, Date.now()));
+    return withLifecycleRefusal(() => executeSignedAuthorityReleaseRotation(this.durableStorage, command, signature, this.operatorPublicKey, Date.now(), "production", Date.now));
+  }
+
+  async inspectLifecycle(digest: string) {
+    return inspectLifecycleAuthority(this.durableStorage, digest);
   }
 
   async claimPre(input: Parameters<PublicInquiryAdmissionAuthority["claimPre"]>[0]) {
@@ -118,6 +123,27 @@ export class AdmissionServiceWorker extends WorkerEntrypoint<AdmissionServiceEnv
   async rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string) {
     if (!validateRuntimeSecrets("admissionService", this.env as unknown as Record<string, unknown>)) throw new Error("admission-secret-policy");
     return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).rotateReleaseFromOperator(command, signature);
+  }
+}
+
+/** The executor binds only these two methods; public fetch has no dispatch path. */
+export class AuthorityLifecycleOnly extends WorkerEntrypoint<AdmissionServiceEnvironment> {
+  override fetch(): Response { return new Response(null, { status: 404 }); }
+  async initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string) {
+    if (!validateRuntimeSecrets("admissionService", this.env as unknown as Record<string, unknown>)) throw new Error("admission-secret-policy");
+    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).initializeFromOperator(command, signature);
+  }
+  async rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string) {
+    if (!validateRuntimeSecrets("admissionService", this.env as unknown as Record<string, unknown>)) throw new Error("admission-secret-policy");
+    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).rotateReleaseFromOperator(command, signature);
+  }
+}
+
+/** Narrow read capability: one fixed authority, one digest SELECT. */
+export class AuthorityLifecycleReadOnly extends WorkerEntrypoint<AdmissionServiceEnvironment> {
+  override fetch(): Response { return new Response(null, { status: 404 }); }
+  async inspectLifecycle(digest: string) {
+    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).inspectLifecycle(digest);
   }
 }
 

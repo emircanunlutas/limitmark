@@ -145,11 +145,13 @@ async function main(): Promise<void> {
     const forgedSignature = await signAuthorityInitializationCommand(initialize, forgedPrivateKey);
     assert.equal((await submit(mf, "initialize", initialize, forgedSignature)).body.error, "operator-signature");
     assert.deepEqual((await call(mf, "/direct-signature-check", { command: initialize, signature: forgedSignature })).body, { status: "refused" });
-    assert.equal((await rows(mf, "SELECT * FROM authority_meta")).length, 0);
+    assert.equal((await rows(mf, "SELECT name FROM sqlite_master WHERE type='table' AND name='authority_meta'")).length, 0);
     const staging: AuthorityInitializationCommand = [initialize[0], initialize[1], "staging", initialize[3], initialize[4],
       initialize[5], initialize[6], initialize[7], false];
     assert.equal((await submit(mf, "initialize", staging, await signAuthorityInitializationCommand(staging, privateKey))).body.error,
       "invalid-sealed-artifact");
+    assert.deepEqual((await call(mf, "/direct-signature-check", { command: staging,
+      signature: await signAuthorityInitializationCommand(staging, privateKey) })).body, { status: "refused" });
     for (const index of [3, 4]) {
       const changed = [...initialize] as unknown as Array<unknown>;
       changed[index] = "wrong";
@@ -158,8 +160,12 @@ async function main(): Promise<void> {
     const stale = [...initialize] as unknown as Array<unknown>;
     stale[7] = now - 300_001;
     assert.equal((await submit(mf, "initialize", stale, initSignature)).body.error, "invalid-sealed-artifact");
-    assert.deepEqual((await submit(mf, "initialize", initialize, initSignature)).body, { status: "initialized" });
-    assert.deepEqual((await submit(mf, "initialize", initialize, initSignature)).body, { status: "already-initialized" });
+    const initialized = (await submit(mf, "initialize", initialize, initSignature)).body;
+    assert.equal(initialized.status, "initialized");
+    assert.ok(initialized.receipt);
+    const repeatedInit = (await submit(mf, "initialize", initialize, initSignature)).body;
+    assert.equal(repeatedInit.status, "already-initialized");
+    assert.deepEqual(repeatedInit.receipt, initialized.receipt);
     const conflict: AuthorityInitializationCommand = [AUTHORITY_OPERATOR_COMMAND_VERSION, "initialize", "production", ADMISSION_AUTHORITY_ID,
       ADMISSION_POLICY_EPOCH, "executor-conflict", "executor-conflict-key", Date.now(), true];
     assert.deepEqual((await submit(mf, "initialize", conflict,
@@ -181,8 +187,12 @@ async function main(): Promise<void> {
     const rotate: AuthorityReleaseRotationCommand = [AUTHORITY_OPERATOR_COMMAND_VERSION, "rotate-release", "production", ADMISSION_AUTHORITY_ID,
       ADMISSION_POLICY_EPOCH, "executor-current", "executor-next", "executor-next-key", activatesAtMs, activatesAtMs + 30_000, Date.now(), true];
     const rotationSignature = await signAuthorityReleaseRotationCommand(rotate, privateKey);
-    assert.deepEqual((await submit(mf, "rotate", rotate, rotationSignature)).body, { status: "rotated" });
-    assert.deepEqual((await submit(mf, "rotate", rotate, rotationSignature)).body, { status: "already-rotated" });
+    const rotated = (await submit(mf, "rotate", rotate, rotationSignature)).body;
+    assert.equal(rotated.status, "rotated");
+    assert.ok(rotated.receipt);
+    const repeatedRotation = (await submit(mf, "rotate", rotate, rotationSignature)).body;
+    assert.equal(repeatedRotation.status, "already-rotated");
+    assert.deepEqual(repeatedRotation.receipt, rotated.receipt);
     const rotationConflict = [...rotate] as unknown as AuthorityReleaseRotationCommand;
     (rotationConflict as unknown as string[])[7] = "executor-other-key";
     assert.deepEqual((await submit(mf, "rotate", rotationConflict,
@@ -204,7 +214,7 @@ async function main(): Promise<void> {
     mf = await start(publicKey, join(runtimeRoot, "main-state"), false);
     assert.deepEqual(await rows(mf, "SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases ORDER BY release_id"), snapshot.releases);
     assert.equal((await rows(mf, "SELECT * FROM nonces")).length, snapshot.nonces);
-    assert.deepEqual((await submit(mf, "rotate", rotate, rotationSignature)).body, { status: "already-rotated" });
+    assert.equal((await submit(mf, "rotate", rotate, rotationSignature)).body.status, "already-rotated");
     await mf.dispose(); mf = undefined;
 
     mf = await start(publicKey, join(runtimeRoot, "ack-state"), true);
@@ -218,7 +228,7 @@ async function main(): Promise<void> {
     assert.deepEqual((await call(mf, "/dispatch-count")).body, { count: 1 });
     assert.deepEqual(await rows(mf, "SELECT authority_id,policy_epoch FROM authority_meta"),
       [{ authority_id: ADMISSION_AUTHORITY_ID, policy_epoch: ADMISSION_POLICY_EPOCH }]);
-    assert.deepEqual((await submit(mf, "initialize", ackCommand, ackSignature)).body, { status: "already-initialized" });
+    assert.equal((await submit(mf, "initialize", ackCommand, ackSignature)).body.status, "already-initialized");
     assert.deepEqual((await call(mf, "/dispatch-count")).body, { count: 2 });
     await mf.dispose(); mf = undefined;
     mf = await start(publicKey, join(runtimeRoot, "ack-state"), true);

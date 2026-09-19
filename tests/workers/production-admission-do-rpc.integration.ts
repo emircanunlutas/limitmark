@@ -156,8 +156,12 @@ async function main() {
     const unconfirmed = [...initialize] as unknown as AuthorityInitializationCommand;
     (unconfirmed as unknown as boolean[])[8] = false;
     assert.deepEqual((await call("initialize", { command: unconfirmed, signature: initializeSignature })).body, { status: "refused" });
-    assert.deepEqual((await submit("initialize", initialize, initializeSignature)).body, { status: "initialized" });
-    assert.deepEqual((await submit("initialize", initialize, initializeSignature)).body, { status: "already-initialized" });
+    const initialized = (await submit("initialize", initialize, initializeSignature)).body;
+    assert.equal(initialized.status, "initialized");
+    assert.ok(initialized.receipt);
+    const repeatedInit = (await submit("initialize", initialize, initializeSignature)).body;
+    assert.equal(repeatedInit.status, "already-initialized");
+    assert.deepEqual(repeatedInit.receipt, initialized.receipt);
 
     // Establish every persistence-sensitive state before rotation.
     const quotaClient = freshClient();
@@ -187,8 +191,12 @@ async function main() {
     const wrongRotationEpoch = [...rotate] as unknown as AuthorityReleaseRotationCommand;
     (wrongRotationEpoch as unknown as string[])[4] = "wrong-epoch";
     assert.deepEqual((await call("rotate", { command: wrongRotationEpoch, signature: rotateSignature })).body, { status: "refused" });
-    assert.deepEqual((await submit("rotate", rotate, rotateSignature)).body, { status: "rotated" });
-    assert.deepEqual((await submit("rotate", rotate, rotateSignature)).body, { status: "already-rotated" });
+    const rotated = (await submit("rotate", rotate, rotateSignature)).body;
+    assert.equal(rotated.status, "rotated");
+    assert.ok(rotated.receipt);
+    const repeatedRotation = (await submit("rotate", rotate, rotateSignature)).body;
+    assert.equal(repeatedRotation.status, "already-rotated");
+    assert.deepEqual(repeatedRotation.receipt, rotated.receipt);
 
     const conflict = [...rotate] as unknown as AuthorityReleaseRotationCommand;
     (conflict as unknown as string[])[7] = "rpc-conflict";
@@ -277,7 +285,7 @@ async function main() {
     if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
     assert.equal((await call("pre", { input: makePre(currentRelease) })).body.decision, "unavailable");
     assert.equal((await call("pre", { input: makePre(nextRelease) })).body.decision, "limited");
-    assert.deepEqual(await call("rotate", { command: rotate, signature: rotateSignature }), { status: 200, body: { status: "already-rotated" } });
+    assert.equal((await call("rotate", { command: rotate, signature: rotateSignature })).body.status, "already-rotated");
     assert.deepEqual((await call("rotate", { command: conflict, signature: conflictSignature })).body, { status: "refused" });
 
     const resetAttempt: AuthorityInitializationCommand = [AUTHORITY_OPERATOR_COMMAND_VERSION, "initialize", "production", ADMISSION_AUTHORITY_ID,
