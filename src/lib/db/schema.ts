@@ -61,6 +61,8 @@ export const inquiries = pgTable("inquiries", {
   payloadFingerprint: varchar("payload_fingerprint", { length: 64 }).notNull(),
   archivedAt: timestamp("archived_at", { withTimezone: true }),
 }, (table) => [
+  index("inquiries_created_at_id_idx").on(table.createdAt, table.id),
+  index("inquiries_status_created_at_id_idx").on(table.status, table.createdAt, table.id),
   check("inquiries_name_nonempty", sql`char_length(${table.name}) > 0`),
   check("inquiries_system_length", sql`char_length(${table.system}) between 1 and ${sql.raw(String(fieldLimits.system))}`),
   check("inquiries_objective_length", sql`char_length(${table.objective}) between 1 and ${sql.raw(String(fieldLimits.objective))}`),

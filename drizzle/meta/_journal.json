@@ -15,6 +15,13 @@
       "when": 1789204971684,
       "tag": "0001_new_nextwave",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789499608674,
+      "tag": "0002_breezy_polaris",
+      "breakpoints": true
     }
   ]
 }
