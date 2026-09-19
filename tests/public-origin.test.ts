@@ -106,7 +106,8 @@ test("proxy denial covers prefetch and actions; narrow exceptions preserve admin
   const prior = process.env.PUBLIC_ORIGIN_PROTECTION;
   process.env.PUBLIC_ORIGIN_PROTECTION = "unknown";
   try {
-    for (const path of ["/", "/test-talep-et", "/test-talep-et/tesekkurler", "/test-talep-et/fake.css", "/admin-other"]) {
+    for (const path of ["/", "/test-talep-et", "/test-talep-et/tesekkurler", "/test-talep-et/fake.css", "/admin-other",
+      "/api/cron/process-notifications/", "/api/cron/process-notifications-other", "/api/cron/process-notification"]) {
       const response = proxy(new NextRequest(`https://limitmark.com${path}`, { headers: { "next-router-prefetch": "1", rsc: "1" } }));
       assert.equal(response.status, 404);
       assert.match(response.headers.get("cache-control")!, /private.*no-store/);
@@ -114,12 +115,12 @@ test("proxy denial covers prefetch and actions; narrow exceptions preserve admin
       assert.equal(response.headers.has(publicOriginHeader), false);
     }
     assert.equal(proxy(new NextRequest("https://admin.limitmark.com/_next/static/chunk.js")).headers.get("x-middleware-next"), "1");
-    for (const path of ["/admin", "/admin/inquiries/123", "/.well-known/vercel/probe", "/.well-known/acme-challenge/probe"]) {
+    for (const path of ["/admin", "/admin/inquiries/123", "/.well-known/vercel/probe", "/.well-known/acme-challenge/probe", "/api/cron/process-notifications"]) {
       const response = proxy(new NextRequest(`https://limitmark.com${path}`));
       assert.equal(response.headers.get("x-middleware-next"), "1");
       assert.equal(response.headers.get("cdn-cache-control"), "no-store");
     }
-    for (const path of ["/test-talep-et", "/_next/static/chunk.js", "/.well-known/vercel/probe", "/.well-known/acme-challenge/probe"]) {
+    for (const path of ["/test-talep-et", "/_next/static/chunk.js", "/.well-known/vercel/probe", "/.well-known/acme-challenge/probe", "/api/cron/process-notifications"]) {
       assert.equal(proxy(new NextRequest(`https://limitmark.com${path}`, { method: "POST" })).status, 404);
     }
   } finally {

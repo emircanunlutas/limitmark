@@ -15,6 +15,8 @@ export default defineConfig({
       VERCEL: "1", VERCEL_ENV: "production",
       REQUEST_SUBMISSION_MODE: "postgres", ENABLE_PERSISTENT_SUBMISSIONS: "false",
       TURNSTILE_MODE: "disabled",
+      CRON_SECRET: "B".repeat(43),
+      DATABASE_URL: "postgresql://runtime:synthetic@db.example.test/app",
     },
   },
 });

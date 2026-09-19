@@ -2,6 +2,21 @@ import { expect, test } from "@playwright/test";
 
 const secret = "A".repeat(43);
 const trusted = { host: "limitmark.com", "x-forwarded-host": "limitmark.com", "x-limitmark-origin-secret": secret };
+const cronAuthorization = `Bearer ${"B".repeat(43)}`;
+
+test("cron route uses only authenticated GET; HEAD and POST cannot process the outbox", async ({ request }) => {
+  const path = "/api/cron/process-notifications?job=arbitrary&provider=arbitrary";
+  const unauthorized = await request.get(path);
+  expect(unauthorized.status()).toBe(404);
+  expect(await unauthorized.text()).toBe("");
+  const authorized = await request.get(path, { headers: { authorization: cronAuthorization } });
+  expect(authorized.status()).toBe(200);
+  expect(await authorized.json()).toMatchObject({ reason: "notifications-not-configured", claimed: 0 });
+  const head = await request.head(path, { headers: { ...trusted, authorization: cronAuthorization } });
+  expect(head.status()).toBe(405);
+  const post = await request.post(path, { headers: { ...trusted, authorization: cronAuthorization } });
+  expect(post.status()).toBe(405);
+});
 
 test("enabled origin boundary denies direct and spoofed requests on the built server", async ({ request }) => {
   const cases: Record<string, string>[] = [

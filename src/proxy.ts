@@ -12,12 +12,17 @@ export function proxy(request: NextRequest) {
   // Immutable bundles contain no customer data and are also needed by the
   // independently protected admin hostname, which never receives this secret.
   const staticAsset = (request.method === "GET" || request.method === "HEAD") && path.startsWith("/_next/static/");
-  const denied = !admin && !verification && !staticAsset && !isPublicOriginAllowed(request.headers, process.env);
+  // Vercel invokes Cron Jobs directly, never through the Cloudflare edge that
+  // injects this secret. Like /admin, it retains its own independent bearer
+  // authorization (CRON_SECRET) checked inside the route; no public credential
+  // is accepted here.
+  const cron = request.method === "GET" && path === "/api/cron/process-notifications";
+  const denied = !admin && !verification && !staticAsset && !cron && !isPublicOriginAllowed(request.headers, process.env);
   const response = denied
     ? new NextResponse(null, { status: 404 })
     : NextResponse.next();
 
-  if (denied || admin || verification || request.method !== "GET" && request.method !== "HEAD" ||
+  if (denied || admin || verification || cron || request.method !== "GET" && request.method !== "HEAD" ||
       path === "/test-talep-et" || path.startsWith("/test-talep-et/")) {
     response.headers.set("Cache-Control", "private, no-store, max-age=0, must-revalidate");
     response.headers.set("CDN-Cache-Control", "no-store");

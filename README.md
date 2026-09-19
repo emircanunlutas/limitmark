@@ -126,6 +126,8 @@ Delivery is intentionally **at least once**, not exactly once. If a provider del
 
 Synthetic adapters cover successful, retryable, permanent, thrown, and delayed behavior without internet calls. Phase 2A itself remains provider-neutral and deployment-neutral.
 
+`GET /api/cron/process-notifications` is the one reviewed entry point that actually invokes `processOutboxBatch()` in this deployment. It requires the exact Vercel Production runtime boundary, a valid `DATABASE_URL`, and an `Authorization: Bearer $CRON_SECRET` header matching a configured 32–256 character `CRON_SECRET` — checked with a timing-safe comparison. The route remains reachable when `ENABLE_PERSISTENT_SUBMISSIONS` closes public intake, so a backlog can drain if `ENABLE_REAL_NOTIFICATIONS` and the Resend adapter are configured. If real delivery is disabled or the adapter is incomplete, it returns a neutral `notifications-not-configured` summary without claiming or touching any outbox row. Any failed boundary or authorization check returns a bare 404. `HEAD` and other methods cannot process the outbox. Vercel Cron Jobs send the bearer header automatically once `CRON_SECRET` is set; wiring an actual `vercel.json` cron schedule (or an equivalent external scheduler) against this route remains a separate deployment decision, not made by this checkout.
+
 ### Phase 2B Resend notification provider
 
 Phase 2B adds a server-only `ResendNotificationAdapter` that can be passed to the existing `processOutboxBatch()` service. It adds provider capability only: it does not add a scheduler, cron Route Handler, worker daemon, automatic invocation, admin dashboard, or public enablement. PostgreSQL and the existing durable outbox state transitions remain the source of truth.

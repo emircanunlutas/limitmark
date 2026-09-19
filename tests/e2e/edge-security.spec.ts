@@ -9,6 +9,8 @@ test("security headers and sensitive-route cache policies survive the production
     expect(headers["x-content-type-options"]).toBe("nosniff");
     expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
     expect(headers["permissions-policy"]).toBe("camera=(), microphone=(), geolocation=()");
+    // Domain-wide HSTS requires a separate audit of every subdomain.
+    expect(headers["strict-transport-security"]).toBeUndefined();
     if (path !== "/") {
       expect(headers["cache-control"]).toContain("no-store");
       expect(headers["cdn-cache-control"]).toBe("no-store");
