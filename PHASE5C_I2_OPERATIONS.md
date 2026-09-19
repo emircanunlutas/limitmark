@@ -28,6 +28,8 @@ The JWKS resolver allows HTTPS only, manual redirects, 64 KiB, eight public RSA 
 
 ## Authority initialization
 
+The I3A sealed-artifact validator, private executor contract, local workerd proof, and remaining provider invocation gate are documented in `PHASE5C_I3A_OPERATOR_SUBMITTER.md`.
+
 Initialization is absent from public HTTP routing. `ProductionAdmissionAuthority` extends Cloudflare's official `DurableObject` base and composes the reviewed SQLite authority core. `AdmissionServiceWorker` extends `WorkerEntrypoint`; its lifecycle methods call the fixed-name DO through the `AUTHORITY` binding. Public `fetch` dispatches only the authenticated PRE/POST service API and never dispatches lifecycle operations. The signing private key remains in the operator process; the admission Worker/DO receives only the operator public key.
 
 Prepare a request only after provisioning has been separately authorized:

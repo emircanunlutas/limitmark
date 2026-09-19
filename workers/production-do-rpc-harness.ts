@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import { ADMISSION_AUTHORITY_ID } from "./admission-service/authority";
 import { ProductionAdmissionAuthority } from "./admission-service/index";
 import type { AuthorityInitializationCommand, AuthorityReleaseRotationCommand } from "./admission-service/operator-command";
+import { submitSealedLifecycleArtifact } from "../operator/lifecycle-submitter";
 
 export { AdmissionServiceWorker, ProductionAdmissionAuthority } from "./admission-service/index";
 
@@ -19,8 +20,8 @@ type HarnessEnvironment = {
   };
 };
 type OperatorEntrypoint = {
-  initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string): Promise<unknown>;
-  rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string): Promise<unknown>;
+  initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string): Promise<{ status: "initialized" | "already-initialized" | "refused" }>;
+  rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string): Promise<{ status: "rotated" | "already-rotated" | "refused" }>;
 };
 
 // Local workerd integration only. Production routing never uses this entrypoint.
@@ -49,6 +50,12 @@ const productionRpcHarness = {
       const stub = environment.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID);
       const operator = (context.exports as unknown as { AdmissionServiceWorker: OperatorEntrypoint }).AdmissionServiceWorker;
       switch (new URL(request.url).pathname) {
+        case "/__local-production-rpc/submit-initialize":
+          return Response.json(await submitSealedLifecycleArtifact(new TextEncoder().encode(text), "initialize", operator,
+            environment.AUTHORITY_OPERATOR_PUBLIC_KEY));
+        case "/__local-production-rpc/submit-rotate":
+          return Response.json(await submitSealedLifecycleArtifact(new TextEncoder().encode(text), "rotate-release", operator,
+            environment.AUTHORITY_OPERATOR_PUBLIC_KEY));
         case "/__local-production-rpc/initialize":
           return Response.json(await operator.initializeAuthorityFromOperator(body.command!, body.signature ?? ""));
         case "/__local-production-rpc/rotate":

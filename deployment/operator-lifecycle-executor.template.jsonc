@@ -1,0 +1,16 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "__REQUIRED_REVIEWED_EXECUTOR_WORKER_NAME__",
+  "main": "__REQUIRED_RENDERED_EXECUTOR_MAIN__.ts",
+  "account_id": "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "services": [
+    { "binding": "ADMISSION_SERVICE", "service": "__REQUIRED_REVIEWED_ADMISSION_SERVICE_NAME__" }
+  ],
+  "vars": {
+    "AUTHORITY_OPERATOR_PUBLIC_KEY": "__REQUIRED_OPERATOR_ED25519_PUBLIC_KEY__",
+    "OPERATOR_EXECUTOR_ENVIRONMENT": "__REQUIRED_PRODUCTION_ENVIRONMENT__"
+  }
+}

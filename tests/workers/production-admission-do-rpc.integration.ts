@@ -64,6 +64,9 @@ async function call(path: string, body: unknown): Promise<RpcResult> {
   return { status: response.status, body: text ? JSON.parse(text) as Record<string, unknown> : {} };
 }
 
+const submit = (operation: "initialize" | "rotate", command: unknown, signature: string) =>
+  call(`submit-${operation}`, { command, signature });
+
 async function assertProductionHarness(): Promise<void> {
   const response = await fetch(`${root}/health`, { signal: AbortSignal.timeout(10_000) });
   assert.equal(response.status, 200);
@@ -149,12 +152,12 @@ async function main() {
     const initializeSignature = await signAuthorityInitializationCommand(initialize, privateKey);
     const wrongEpoch = [...initialize] as unknown as AuthorityInitializationCommand;
     (wrongEpoch as unknown as string[])[4] = "wrong-epoch";
-    assert.equal((await call("initialize", { command: wrongEpoch, signature: initializeSignature })).status, 400);
+    assert.deepEqual((await call("initialize", { command: wrongEpoch, signature: initializeSignature })).body, { status: "refused" });
     const unconfirmed = [...initialize] as unknown as AuthorityInitializationCommand;
     (unconfirmed as unknown as boolean[])[8] = false;
-    assert.equal((await call("initialize", { command: unconfirmed, signature: initializeSignature })).status, 400);
-    assert.deepEqual(await call("initialize", { command: initialize, signature: initializeSignature }), { status: 200, body: { status: "initialized" } });
-    assert.deepEqual(await call("initialize", { command: initialize, signature: initializeSignature }), { status: 200, body: { status: "already-initialized" } });
+    assert.deepEqual((await call("initialize", { command: unconfirmed, signature: initializeSignature })).body, { status: "refused" });
+    assert.deepEqual((await submit("initialize", initialize, initializeSignature)).body, { status: "initialized" });
+    assert.deepEqual((await submit("initialize", initialize, initializeSignature)).body, { status: "already-initialized" });
 
     // Establish every persistence-sensitive state before rotation.
     const quotaClient = freshClient();
@@ -171,25 +174,28 @@ async function main() {
     const unusedPermit = await expectPreAllowed(unusedBeforeRotation);
     quotaClientPreCount += 1;
 
-    const activatesAtMs = Date.now();
+    // Leave a small deterministic margin above the last PRE/POST observation.
+    const activatesAtMs = Date.now() + 1_000;
     const retiresAtMs = activatesAtMs + 15_000;
     const rotate: AuthorityReleaseRotationCommand = [AUTHORITY_OPERATOR_COMMAND_VERSION, "rotate-release", "production", ADMISSION_AUTHORITY_ID,
       ADMISSION_POLICY_EPOCH, currentRelease, nextRelease, "rpc-next", activatesAtMs, retiresAtMs, activatesAtMs, true];
     const rotateSignature = await signAuthorityReleaseRotationCommand(rotate, privateKey);
     const wrongCurrent = [...rotate] as unknown as AuthorityReleaseRotationCommand;
     (wrongCurrent as unknown as string[])[5] = "dpl_wrong_current";
-    assert.equal((await call("rotate", { command: wrongCurrent,
-      signature: await signAuthorityReleaseRotationCommand(wrongCurrent, privateKey) })).status, 400);
+    assert.deepEqual((await submit("rotate", wrongCurrent,
+      await signAuthorityReleaseRotationCommand(wrongCurrent, privateKey))).body, { status: "refused" });
     const wrongRotationEpoch = [...rotate] as unknown as AuthorityReleaseRotationCommand;
     (wrongRotationEpoch as unknown as string[])[4] = "wrong-epoch";
-    assert.equal((await call("rotate", { command: wrongRotationEpoch, signature: rotateSignature })).status, 400);
-    assert.deepEqual(await call("rotate", { command: rotate, signature: rotateSignature }), { status: 200, body: { status: "rotated" } });
-    assert.deepEqual(await call("rotate", { command: rotate, signature: rotateSignature }), { status: 200, body: { status: "already-rotated" } });
+    assert.deepEqual((await call("rotate", { command: wrongRotationEpoch, signature: rotateSignature })).body, { status: "refused" });
+    assert.deepEqual((await submit("rotate", rotate, rotateSignature)).body, { status: "rotated" });
+    assert.deepEqual((await submit("rotate", rotate, rotateSignature)).body, { status: "already-rotated" });
 
     const conflict = [...rotate] as unknown as AuthorityReleaseRotationCommand;
     (conflict as unknown as string[])[7] = "rpc-conflict";
     const conflictSignature = await signAuthorityReleaseRotationCommand(conflict, privateKey);
-    assert.equal((await call("rotate", { command: conflict, signature: conflictSignature })).status, 400);
+    assert.deepEqual((await submit("rotate", conflict, conflictSignature)).body, { status: "refused" });
+    const untilActivation = Math.max(0, activatesAtMs - Date.now() + 10);
+    if (untilActivation) await new Promise((resolve) => setTimeout(resolve, untilActivation));
     await expectPreAllowed(makePre(nextRelease));
     await expectPreAllowed(makePre(currentRelease));
 
@@ -272,12 +278,12 @@ async function main() {
     assert.equal((await call("pre", { input: makePre(currentRelease) })).body.decision, "unavailable");
     assert.equal((await call("pre", { input: makePre(nextRelease) })).body.decision, "limited");
     assert.deepEqual(await call("rotate", { command: rotate, signature: rotateSignature }), { status: 200, body: { status: "already-rotated" } });
-    assert.equal((await call("rotate", { command: conflict, signature: conflictSignature })).status, 400);
+    assert.deepEqual((await call("rotate", { command: conflict, signature: conflictSignature })).body, { status: "refused" });
 
     const resetAttempt: AuthorityInitializationCommand = [AUTHORITY_OPERATOR_COMMAND_VERSION, "initialize", "production", ADMISSION_AUTHORITY_ID,
       ADMISSION_POLICY_EPOCH, "dpl_reset", "rpc-reset", Date.now(), true];
-    assert.equal((await call("initialize", { command: resetAttempt,
-      signature: await signAuthorityInitializationCommand(resetAttempt, privateKey) })).status, 400);
+    assert.deepEqual((await submit("initialize", resetAttempt,
+      await signAuthorityInitializationCommand(resetAttempt, privateKey))).body, { status: "refused" });
     assert.equal((await call("reset", {})).status, 404);
   } finally {
     try {

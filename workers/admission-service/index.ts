@@ -17,12 +17,23 @@ export { createAdmissionService } from "./service";
 export { createVercelOidcVerifier } from "./auth";
 
 type AuthorityStub = {
-  initializeFromOperator(command: AuthorityInitializationCommand, signature: string): Promise<{ status: "initialized" | "already-initialized" }>;
-  rotateReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string): Promise<{ status: "rotated" | "already-rotated" }>;
+  initializeFromOperator(command: AuthorityInitializationCommand, signature: string): Promise<{ status: "initialized" | "already-initialized" | "refused" }>;
+  rotateReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string): Promise<{ status: "rotated" | "already-rotated" | "refused" }>;
   claimPre(input: Parameters<PublicInquiryAdmissionAuthority["claimPre"]>[0]): Promise<ReturnType<PublicInquiryAdmissionAuthority["claimPre"]>>;
   consumePost(input: Parameters<PublicInquiryAdmissionAuthority["consumePost"]>[0]): Promise<ReturnType<PublicInquiryAdmissionAuthority["consumePost"]>>;
 };
 type AuthorityNamespace = { getByName(name: string): AuthorityStub };
+
+const lifecycleRefusals = new Set(["operator-command", "operator-signature", "operator-command-freshness", "initialization-policy",
+  "authority-already-initialized", "release-rotation-policy", "authority-mismatch", "release-already-exists", "release-retention", "release-state"]);
+
+async function withLifecycleRefusal<T>(operation: () => Promise<T>): Promise<T | { status: "refused" }> {
+  try { return await operation(); }
+  catch (error) {
+    if (error instanceof Error && lifecycleRefusals.has(error.message)) return { status: "refused" };
+    throw error;
+  }
+}
 
 export type AdmissionServiceEnvironment = {
   AUTHORITY: AuthorityNamespace;
@@ -50,11 +61,11 @@ export class ProductionAdmissionAuthority extends DurableObject<AdmissionService
   }
 
   async initializeFromOperator(command: AuthorityInitializationCommand, signature: string) {
-    return executeSignedAuthorityInitialization(this.durableStorage, command, signature, this.operatorPublicKey, Date.now());
+    return withLifecycleRefusal(() => executeSignedAuthorityInitialization(this.durableStorage, command, signature, this.operatorPublicKey, Date.now()));
   }
 
   async rotateReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string) {
-    return executeSignedAuthorityReleaseRotation(this.durableStorage, command, signature, this.operatorPublicKey, Date.now());
+    return withLifecycleRefusal(() => executeSignedAuthorityReleaseRotation(this.durableStorage, command, signature, this.operatorPublicKey, Date.now()));
   }
 
   async claimPre(input: Parameters<PublicInquiryAdmissionAuthority["claimPre"]>[0]) {

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { validateVercelProjectContract } from "../deployment/secret-policy";
+import { validateOperatorExecutorTemplate } from "../deployment/operator-executor-contract";
 
 async function main() {
   const root = process.cwd();
@@ -12,6 +13,8 @@ async function main() {
     if (!JSON.stringify(config).includes("__REQUIRED_")) throw new Error("template-must-remain-blocked");
   }
   const [signer, gateway, admission] = configs;
+  const executor = JSON.parse(await readFile(path.join(root, "deployment", "operator-lifecycle-executor.template.jsonc"), "utf8")) as Record<string, unknown>;
+  validateOperatorExecutorTemplate(executor);
   const patterns = configs.flatMap((config) => (config.routes as Array<{ pattern: string }>).map((route) => route.pattern));
   if (new Set(patterns).size !== patterns.length) throw new Error("overlapping-worker-routes");
   if (signer.durable_objects !== undefined || gateway.durable_objects !== undefined ||
@@ -23,6 +26,6 @@ async function main() {
   const target = ((production.gatewayTargets as Record<string, Record<string, unknown>>).adminGateway).target;
   if ((gateway.vars as Record<string, unknown>).VERCEL_ADMIN_UPSTREAM_ORIGIN !== target) throw new Error("admin-upstream-not-shared-production-project");
   if (process.argv.includes("--production")) throw new Error("Production validation refuses unresolved template placeholders; render an independently reviewed config first");
-  process.stdout.write("Worker deployment templates are structurally valid and intentionally non-deployable.\n");
+  process.stdout.write("Worker deployment templates retain unresolved values; the private executor requires separate rendered preflight.\n");
 }
 main().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "worker-contract-validation"}\n`); process.exitCode = 1; });

@@ -34,7 +34,7 @@ export type AuthorityReleaseRotationCommand = readonly [
   issuedAtMs: number,
   confirmProduction: true,
 ];
-type AuthorityOperatorCommand = AuthorityInitializationCommand | AuthorityReleaseRotationCommand;
+export type AuthorityOperatorCommand = AuthorityInitializationCommand | AuthorityReleaseRotationCommand;
 
 const validRelease = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_.:-]{1,128}$/u.test(value);
 const validKeyId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/u.test(value);
@@ -57,6 +57,11 @@ function encode(command: AuthorityOperatorCommand): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(command));
 }
 
+/** The same schema and canonical bytes used by signing and authority verification. */
+export function validateAuthorityOperatorCommand(command: AuthorityOperatorCommand): void {
+  encode(command);
+}
+
 export async function signAuthorityInitializationCommand(command: AuthorityInitializationCommand, privateKeyPkcs8: string): Promise<string> {
   const key = await crypto.subtle.importKey("pkcs8", toArrayBuffer(decodeCanonicalBase64url(privateKeyPkcs8)), { name: "Ed25519" }, false, ["sign"]);
   return encodeBase64url(new Uint8Array(await crypto.subtle.sign("Ed25519", key, toArrayBuffer(encode(command)))));
@@ -67,7 +72,7 @@ export async function signAuthorityReleaseRotationCommand(command: AuthorityRele
   return encodeBase64url(new Uint8Array(await crypto.subtle.sign("Ed25519", key, toArrayBuffer(encode(command)))));
 }
 
-async function verifyOperatorCommand(command: AuthorityOperatorCommand, signature: string, operatorPublicKey: string): Promise<void> {
+export async function verifyOperatorCommand(command: AuthorityOperatorCommand, signature: string, operatorPublicKey: string): Promise<void> {
   const key = await crypto.subtle.importKey("raw", toArrayBuffer(decodeCanonicalBase64url(operatorPublicKey, 32)), { name: "Ed25519" }, false, ["verify"]);
   const valid = await crypto.subtle.verify("Ed25519", key, toArrayBuffer(decodeCanonicalBase64url(signature, 64)), toArrayBuffer(encode(command)));
   if (!valid) throw new Error("operator-signature");
