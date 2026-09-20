@@ -161,3 +161,47 @@ export function validateLifecycleEnvironmentGates(value: unknown): void {
       production.resultObjectRetentionDays !== 30 || staging.resultObjectRetentionDays !== 30)
     throw new Error("unsafe-lifecycle-environments");
 }
+
+// ---------------------------------------------------------------------------
+// Gate 4 staging capability: the staging admission Worker's own deployment
+// config (the host of StagingAdmissionAuthority, StagingAuthorityLifecycleOnly
+// and StagingAuthorityLifecycleReadOnly). Structurally independent of every
+// validator above: the exact top-level key allowlist below has no "routes"
+// member at all, so a Production-shaped config (which carries one) is
+// rejected before any field is even compared, and every literal value pinned
+// here (Worker name, DO class, migration tag, key placeholder) is the
+// staging-only identity, never the Production one. Gate 4 deploys this
+// Worker and proves its read-only entrypoint; it must never initialize the
+// authority (Gate 7) or expose a public route/workers_dev/preview surface.
+// ---------------------------------------------------------------------------
+
+const stagingAdmissionServiceKeys = ["$schema", "name", "main", "compatibility_date", "workers_dev", "preview_urls", "durable_objects", "migrations", "vars"];
+const stagingAdmissionServiceBinding = { name: "AUTHORITY", class_name: "StagingAdmissionAuthority" };
+const stagingAdmissionServiceMigration = { tag: "staging-admission-v1", new_sqlite_classes: ["StagingAdmissionAuthority"] };
+
+/** Validates a rendered/template staging admission-service config. Rejects any
+ * key outside the exact allowlist (in particular "routes"/"route"/
+ * "custom_domains", any R2/service/queue/workflow/asset/browser/dispatch
+ * binding, and Cron triggers, none of which are members of the allowlist),
+ * the wrong Worker name/main/compatibility date, any exposure flag other than
+ * false, the wrong DO binding/class (including a second binding), the wrong
+ * or missing migration/class, a Production or malformed public-key value, and
+ * any extra/unknown vars member. */
+export function validateStagingAdmissionServiceConfig(value: unknown, template = true): void {
+  if (!exact(value, stagingAdmissionServiceKeys)) throw new Error("unsafe-staging-admission-config");
+  if (value.$schema !== "../node_modules/wrangler/config-schema.json" ||
+      value.name !== "limitmark-admission-service-staging" ||
+      value.main !== "../workers/admission-service/index.ts" ||
+      value.compatibility_date !== "2026-09-13" ||
+      value.workers_dev !== false || value.preview_urls !== false)
+    throw new Error("unsafe-staging-admission-config");
+  if (JSON.stringify(value.durable_objects) !== JSON.stringify({ bindings: [stagingAdmissionServiceBinding] }))
+    throw new Error("unsafe-staging-admission-binding");
+  if (JSON.stringify(value.migrations) !== JSON.stringify([stagingAdmissionServiceMigration]))
+    throw new Error("unsafe-staging-admission-migration");
+  if (!exact(value.vars, ["AUTHORITY_OPERATOR_PUBLIC_KEY"])) throw new Error("unsafe-staging-admission-vars");
+  const key = (value.vars as Record<string, unknown>).AUTHORITY_OPERATOR_PUBLIC_KEY;
+  if (template ? key !== "__REQUIRED_STAGING_OPERATOR_ED25519_PUBLIC_KEY__" : typeof key !== "string" || key.startsWith("__REQUIRED_"))
+    throw new Error("unsafe-staging-admission-key");
+  if (!template) decodeCanonicalBase64url(key as string, 32);
+}

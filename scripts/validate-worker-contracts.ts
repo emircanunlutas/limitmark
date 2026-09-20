@@ -4,6 +4,7 @@ import { validateVercelProjectContract } from "../deployment/secret-policy";
 import { validateOperatorExecutorTemplate, validateStagingOperatorExecutorTemplate } from "../deployment/operator-executor-contract";
 import {
   validateLifecycleEnvironmentGates, validateLifecycleMailboxConfig, validateLifecycleObserverConfig, validateLifecycleTransportManifest,
+  validateStagingAdmissionServiceConfig,
   validateStagingLifecycleMailboxConfig, validateStagingLifecycleObserverConfig, validateStagingLifecycleTransportManifest,
 } from "../deployment/lifecycle-private-contract";
 
@@ -39,6 +40,14 @@ async function main() {
   validateStagingLifecycleTransportManifest(stagingTransport);
   if (mailboxScheduleState !== "STAGING_DEPLOYMENT_INACTIVE" || observerScheduleState !== "STAGING_DEPLOYMENT_INACTIVE")
     throw new Error("staging-schedule-must-render-inactive");
+  // Gate 4 staging capability: the staging admission Worker's own deployment
+  // config carries no route/custom-domain member at all (unlike Production's
+  // admission-service.template.jsonc, checked above), so it cannot become a
+  // public lifecycle endpoint merely by being rendered and deployed.
+  const stagingAdmission = JSON.parse(await readFile(path.join(root, "deployment", "admission-service.staging.template.jsonc"), "utf8")) as Record<string, unknown>;
+  validateStagingAdmissionServiceConfig(stagingAdmission);
+  if (Object.hasOwn(stagingAdmission, "routes") || Object.hasOwn(stagingAdmission, "route") || Object.hasOwn(stagingAdmission, "custom_domains"))
+    throw new Error("staging-admission-must-not-be-routable");
   const patterns = configs.flatMap((config) => (config.routes as Array<{ pattern: string }>).map((route) => route.pattern));
   if (new Set(patterns).size !== patterns.length) throw new Error("overlapping-worker-routes");
   if (signer.durable_objects !== undefined || gateway.durable_objects !== undefined ||

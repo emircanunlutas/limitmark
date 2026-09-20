@@ -1,0 +1,19 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "limitmark-admission-service-staging",
+  "main": "../workers/admission-service/index.ts",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      { "name": "AUTHORITY", "class_name": "StagingAdmissionAuthority" }
+    ]
+  },
+  "migrations": [
+    { "tag": "staging-admission-v1", "new_sqlite_classes": ["StagingAdmissionAuthority"] }
+  ],
+  "vars": {
+    "AUTHORITY_OPERATOR_PUBLIC_KEY": "__REQUIRED_STAGING_OPERATOR_ED25519_PUBLIC_KEY__"
+  }
+}

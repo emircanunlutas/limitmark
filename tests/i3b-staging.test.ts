@@ -16,7 +16,7 @@ import {
   type AuthorityInitializationCommand,
 } from "../workers/admission-service/operator-command";
 import {
-  validateLifecycleTransportManifest,
+  validateLifecycleTransportManifest, validateStagingAdmissionServiceConfig,
   validateStagingLifecycleMailboxConfig, validateStagingLifecycleObserverConfig, validateStagingLifecycleTransportManifest,
 } from "../deployment/lifecycle-private-contract";
 import { validateRenderedOperatorExecutorConfig, validateRenderedStagingOperatorExecutorConfig } from "../deployment/operator-executor-contract";
@@ -303,6 +303,85 @@ test("environment gates JSON records distinct staging identities for every Gate 
   assert.equal(gates.staging.rotationImplemented, false);
   assert.equal(gates.staging.provisioningOpen, false);
   assert.equal(gates.crossEnvironmentNamespaceReuseAllowed, false);
+});
+
+// -- Q/R/S/T: Gate 4 staging admission-service deployment contract ----------
+test("Q: the committed staging admission-service template pins the exact staging identity and no route", async () => {
+  const admission = JSON.parse(await readFile(join(root, "deployment", "admission-service.staging.template.jsonc"), "utf8"));
+  validateStagingAdmissionServiceConfig(admission);
+  assert.equal(admission.name, "limitmark-admission-service-staging");
+  assert.equal(admission.main, "../workers/admission-service/index.ts");
+  assert.deepEqual(admission.durable_objects, { bindings: [{ name: "AUTHORITY", class_name: "StagingAdmissionAuthority" }] });
+  assert.deepEqual(admission.migrations, [{ tag: "staging-admission-v1", new_sqlite_classes: ["StagingAdmissionAuthority"] }]);
+  assert.equal(Object.hasOwn(admission, "routes"), false);
+  assert.equal(Object.hasOwn(admission, "route"), false);
+  assert.equal(Object.hasOwn(admission, "custom_domains"), false);
+  assert.equal(Object.hasOwn(admission, "services"), false, "the admission Worker declares no outbound service bindings of its own");
+  assert.equal(Object.hasOwn(admission, "triggers"), false, "the admission Worker is never schedule-driven");
+});
+
+test("R: the staging admission-service contract rejects the Production shape and any injected public surface", async () => {
+  const stagingAdmission = JSON.parse(await readFile(join(root, "deployment", "admission-service.staging.template.jsonc"), "utf8"));
+  const prodAdmission = JSON.parse(await readFile(join(root, "deployment", "admission-service.template.jsonc"), "utf8"));
+  assert.throws(() => validateStagingAdmissionServiceConfig(prodAdmission), /unsafe-staging-admission/u);
+  for (const mutate of [
+    (x: Record<string, unknown>) => { x.routes = [{ pattern: "admission-rpc.limitmark.com", custom_domain: true }]; },
+    (x: Record<string, unknown>) => { x.route = "limitmark.com/*"; },
+    (x: Record<string, unknown>) => { x.custom_domains = ["admission-rpc.limitmark.com"]; },
+    (x: Record<string, unknown>) => { x.workers_dev = true; },
+    (x: Record<string, unknown>) => { x.preview_urls = true; },
+    (x: Record<string, unknown>) => { x.name = "limitmark-admission-service-production"; },
+    (x: Record<string, unknown>) => { (x.durable_objects as { bindings: unknown[] }).bindings = [{ name: "AUTHORITY", class_name: "ProductionAdmissionAuthority" }]; },
+    (x: Record<string, unknown>) => { (x.durable_objects as { bindings: unknown[] }).bindings.push({ name: "SECOND", class_name: "StagingAdmissionAuthority" }); },
+    (x: Record<string, unknown>) => { x.migrations = [{ tag: "production-v1", new_sqlite_classes: ["StagingAdmissionAuthority"] }]; },
+    (x: Record<string, unknown>) => { x.migrations = [{ tag: "staging-admission-v1", new_sqlite_classes: ["StagingAdmissionAuthority", "ExtraClass"] }]; },
+    (x: Record<string, unknown>) => { (x.vars as Record<string, unknown>).AUTHORITY_OPERATOR_PUBLIC_KEY = "__REQUIRED_OPERATOR_ED25519_PUBLIC_KEY__"; },
+    (x: Record<string, unknown>) => { (x.vars as Record<string, unknown>).EXTRA = "x"; },
+    (x: Record<string, unknown>) => { x.services = [{ binding: "ADMISSION_SERVICE", service: "limitmark-admission-service-staging", entrypoint: "StagingAuthorityLifecycleOnly" }]; },
+    (x: Record<string, unknown>) => { x.triggers = { crons: [] }; },
+    (x: Record<string, unknown>) => { x.r2_buckets = [{ binding: "REQUEST_BUCKET", bucket_name: "limitmark-lifecycle-requests-staging" }]; },
+  ]) {
+    const copy = structuredClone(stagingAdmission);
+    mutate(copy);
+    assert.throws(() => validateStagingAdmissionServiceConfig(copy), /unsafe-staging-admission/u);
+  }
+  // A rendered (non-template) copy with a real-shaped key passes (this contract has
+  // no account_id field at all); the Production public-key placeholder specifically
+  // is rejected even in rendered mode.
+  const rendered = structuredClone(stagingAdmission);
+  rendered.vars.AUTHORITY_OPERATOR_PUBLIC_KEY = encodeBase64url(new Uint8Array(32).fill(7));
+  assert.doesNotThrow(() => validateStagingAdmissionServiceConfig(rendered, false));
+  const renderedWithProdKeyPlaceholder = structuredClone(stagingAdmission);
+  renderedWithProdKeyPlaceholder.vars.AUTHORITY_OPERATOR_PUBLIC_KEY = "__REQUIRED_OPERATOR_ED25519_PUBLIC_KEY__";
+  assert.throws(() => validateStagingAdmissionServiceConfig(renderedWithProdKeyPlaceholder, false), /unsafe-staging-admission-key/u);
+});
+
+test("S: the staging admission migration/class identity is distinct from Production, and the validator is pure/idempotent", async () => {
+  const stagingAdmission = JSON.parse(await readFile(join(root, "deployment", "admission-service.staging.template.jsonc"), "utf8"));
+  const prodAdmission = JSON.parse(await readFile(join(root, "deployment", "admission-service.template.jsonc"), "utf8"));
+  assert.notEqual(stagingAdmission.migrations[0].tag, prodAdmission.migrations[0].tag);
+  assert.notEqual(stagingAdmission.durable_objects.bindings[0].class_name, prodAdmission.durable_objects.bindings[0].class_name);
+  assert.deepEqual(stagingAdmission.migrations[0].new_sqlite_classes, ["StagingAdmissionAuthority"]);
+  // Calling the validator repeatedly against the same immutable object must
+  // remain PASS every time and never mutate the input (config-perspective
+  // redeploy idempotency; live provider migration idempotency itself is a
+  // separate, provider-verified property -- see PHASE5C_I3_PROVISIONING_RUNBOOK.md).
+  const before = JSON.stringify(stagingAdmission);
+  validateStagingAdmissionServiceConfig(stagingAdmission);
+  validateStagingAdmissionServiceConfig(stagingAdmission);
+  validateStagingAdmissionServiceConfig(stagingAdmission);
+  assert.equal(JSON.stringify(stagingAdmission), before);
+});
+
+test("T: no currently committed Gate 2 staging template binds a service to the lifecycle-only write entrypoint except the staging executor itself", async () => {
+  const mailbox = JSON.parse(await readFile(join(root, "deployment", "lifecycle-mailbox.staging.template.jsonc"), "utf8"));
+  const observer = JSON.parse(await readFile(join(root, "deployment", "lifecycle-observer.staging.template.jsonc"), "utf8"));
+  const admission = JSON.parse(await readFile(join(root, "deployment", "admission-service.staging.template.jsonc"), "utf8"));
+  for (const config of [mailbox, observer]) {
+    const entrypoints = (config.services as Array<{ entrypoint: string }>).map((service) => service.entrypoint);
+    assert.equal(entrypoints.includes("StagingAuthorityLifecycleOnly"), false);
+  }
+  assert.equal(Object.hasOwn(admission, "services"), false);
 });
 
 test("staging initialize() rejects a Production-shaped specification and vice versa", () => {
