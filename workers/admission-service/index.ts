@@ -1,7 +1,7 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { importAdmissionRpcKey } from "../../src/lib/admission-protocol";
-import { ADMISSION_AUTHORITY_ID, inspectLifecycleAuthority, PublicInquiryAdmissionAuthority, type DurableStorageLike } from "./authority";
+import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID, inspectLifecycleAuthority, PublicInquiryAdmissionAuthority, type DurableStorageLike } from "./authority";
 import {
   executeSignedAuthorityInitialization,
   executeSignedAuthorityReleaseRotation,
@@ -144,6 +144,66 @@ export class AuthorityLifecycleReadOnly extends WorkerEntrypoint<AdmissionServic
   override fetch(): Response { return new Response(null, { status: 404 }); }
   async inspectLifecycle(digest: string) {
     return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).inspectLifecycle(digest);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Gate 2 staging capability. This is a physically separate Durable Object
+// identity (STAGING_ADMISSION_AUTHORITY_ID), deployed as a separate rendered
+// staging admission Worker binding a separate AUTHORITY namespace/object. It
+// is never reachable from the Production entrypoints above and vice versa:
+// AuthorityLifecycleOnly always resolves ADMISSION_AUTHORITY_ID, never the
+// staging identity, and this DO's initializeFromOperator always requires
+// expectedEnvironment "staging" (rejecting a Production-flagged artifact).
+// Staging rotation is intentionally NOT IMPLEMENTED (Gate 9 — CLOSED): the
+// rotate method below never parses, verifies or dispatches anything.
+// ---------------------------------------------------------------------------
+
+/** Staging RPC adapter, structurally identical to ProductionAdmissionAuthority
+ * except for its pinned authority identity and permanently closed rotation. */
+export class StagingAdmissionAuthority extends DurableObject<AdmissionServiceEnvironment> {
+  private readonly operatorPublicKey: string;
+  private readonly durableStorage: DurableStorageLike;
+  constructor(state: DurableObjectState, environment: AdmissionServiceEnvironment) {
+    super(state, environment);
+    this.durableStorage = state.storage as unknown as DurableStorageLike;
+    this.operatorPublicKey = environment.AUTHORITY_OPERATOR_PUBLIC_KEY;
+  }
+
+  async initializeFromOperator(command: AuthorityInitializationCommand, signature: string) {
+    return withLifecycleRefusal(() => executeSignedAuthorityInitialization(this.durableStorage, command, signature, this.operatorPublicKey, Date.now(), "staging", Date.now));
+  }
+
+  /** STAGING ROTATION — NOT IMPLEMENTED / GATE 9 — CLOSED. No parsing, signature
+   * verification or storage access occurs; every call fails closed. */
+  async rotateReleaseFromOperator(): Promise<{ status: "refused" }> {
+    return { status: "refused" };
+  }
+
+  async inspectLifecycle(digest: string) {
+    return inspectLifecycleAuthority(this.durableStorage, digest, Date.now(), STAGING_ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH);
+  }
+}
+
+/** Staging executor binds only this entrypoint; it exposes the same lifecycle-only
+ * surface as AuthorityLifecycleOnly, pinned to the distinct staging authority. */
+export class StagingAuthorityLifecycleOnly extends WorkerEntrypoint<AdmissionServiceEnvironment> {
+  override fetch(): Response { return new Response(null, { status: 404 }); }
+  async initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string) {
+    if (!validateRuntimeSecrets("admissionService", this.env as unknown as Record<string, unknown>)) throw new Error("admission-secret-policy");
+    return this.env.AUTHORITY.getByName(STAGING_ADMISSION_AUTHORITY_ID).initializeFromOperator(command, signature);
+  }
+  /** STAGING ROTATION — NOT IMPLEMENTED / GATE 9 — CLOSED. */
+  async rotateAuthorityReleaseFromOperator(): Promise<{ status: "refused" }> {
+    return { status: "refused" };
+  }
+}
+
+/** Narrow staging read capability: one fixed staging authority, one digest SELECT. */
+export class StagingAuthorityLifecycleReadOnly extends WorkerEntrypoint<AdmissionServiceEnvironment> {
+  override fetch(): Response { return new Response(null, { status: 404 }); }
+  async inspectLifecycle(digest: string) {
+    return this.env.AUTHORITY.getByName(STAGING_ADMISSION_AUTHORITY_ID).inspectLifecycle(digest);
   }
 }
 

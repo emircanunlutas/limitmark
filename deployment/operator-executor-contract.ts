@@ -21,12 +21,12 @@ function exactKeys(value: unknown, expected: readonly string[]): value is Record
   return record(value) && Object.keys(value).length === expected.length && expected.every((key) => Object.hasOwn(value, key));
 }
 
-function base(config: unknown): asserts config is Record<string, unknown> {
+function base(config: unknown, expectedEntrypoint: string = "AuthorityLifecycleOnly"): asserts config is Record<string, unknown> {
   if (!exactKeys(config, topLevel) || config.$schema !== schemaPath || config.compatibility_date !== "2026-09-13" ||
       config.workers_dev !== false || config.preview_urls !== false ||
       !Array.isArray(config.services) || config.services.length !== 1 ||
       !exactKeys(config.services[0], ["binding", "service", "entrypoint"]) || config.services[0].binding !== "ADMISSION_SERVICE" ||
-      config.services[0].entrypoint !== "AuthorityLifecycleOnly" ||
+      config.services[0].entrypoint !== expectedEntrypoint ||
       !exactKeys(config.vars, ["AUTHORITY_OPERATOR_PUBLIC_KEY", "OPERATOR_EXECUTOR_ENVIRONMENT"])) {
     throw new Error("unsafe-private-operator-executor");
   }
@@ -53,6 +53,47 @@ export function validateRenderedOperatorExecutorConfig(config: unknown): void {
       typeof account !== "string" || !/^[a-f0-9]{32}$/u.test(account) || /^0{32}$/u.test(account) ||
       (config.services as Array<Record<string, unknown>>)[0].service !== ADMISSION_SERVICE_NAME ||
       (config.vars as Record<string, unknown>).OPERATOR_EXECUTOR_ENVIRONMENT !== "production" ||
+      typeof key !== "string" || key.startsWith("__REQUIRED_")) throw new Error("incomplete-private-operator-executor");
+  try { decodeCanonicalBase64url(key, 32); }
+  catch { throw new Error("invalid-operator-public-key"); }
+}
+
+// ---------------------------------------------------------------------------
+// Gate 2 staging capability. Distinct pinned identities; a staging config can
+// never satisfy validateRenderedOperatorExecutorConfig above (wrong name/main/
+// service/entrypoint/environment) and vice versa.
+// ---------------------------------------------------------------------------
+export const STAGING_EXECUTOR_NAME = "limitmark-authority-operator-executor-staging";
+export const STAGING_ADMISSION_SERVICE_NAME = "limitmark-admission-service-staging";
+export const STAGING_EXECUTOR_MAIN = "../workers/staging-operator-lifecycle-executor.ts";
+export const STAGING_EXECUTOR_TEMPLATE_MAIN = "__REQUIRED_RENDERED_STAGING_EXECUTOR_MAIN__.ts";
+export const STAGING_EXECUTOR_TEMPLATE_ACCOUNT = "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__";
+export const STAGING_EXECUTOR_TEMPLATE_NAME = "__REQUIRED_REVIEWED_STAGING_EXECUTOR_WORKER_NAME__";
+export const STAGING_EXECUTOR_TEMPLATE_SERVICE = "__REQUIRED_REVIEWED_STAGING_ADMISSION_SERVICE_NAME__";
+export const STAGING_EXECUTOR_TEMPLATE_KEY = "__REQUIRED_STAGING_OPERATOR_ED25519_PUBLIC_KEY__";
+export const STAGING_EXECUTOR_TEMPLATE_ENV = "__REQUIRED_STAGING_ENVIRONMENT__";
+
+/** The only raw staging-template shape. Not deployable: `main` does not exist. */
+export function validateStagingOperatorExecutorTemplate(config: unknown): void {
+  base(config, "StagingAuthorityLifecycleOnly");
+  if (config.name !== STAGING_EXECUTOR_TEMPLATE_NAME || config.main !== STAGING_EXECUTOR_TEMPLATE_MAIN ||
+      config.account_id !== STAGING_EXECUTOR_TEMPLATE_ACCOUNT ||
+      (config.services as Array<Record<string, unknown>>)[0].service !== STAGING_EXECUTOR_TEMPLATE_SERVICE ||
+      (config.vars as Record<string, unknown>).AUTHORITY_OPERATOR_PUBLIC_KEY !== STAGING_EXECUTOR_TEMPLATE_KEY ||
+      (config.vars as Record<string, unknown>).OPERATOR_EXECUTOR_ENVIRONMENT !== STAGING_EXECUTOR_TEMPLATE_ENV) {
+    throw new Error("unsafe-private-operator-executor-template");
+  }
+}
+
+/** Mandatory local preflight for a rendered, reviewed staging executor config. */
+export function validateRenderedStagingOperatorExecutorConfig(config: unknown): void {
+  base(config, "StagingAuthorityLifecycleOnly");
+  const account = config.account_id;
+  const key = (config.vars as Record<string, unknown>).AUTHORITY_OPERATOR_PUBLIC_KEY;
+  if (config.name !== STAGING_EXECUTOR_NAME || config.main !== STAGING_EXECUTOR_MAIN ||
+      typeof account !== "string" || !/^[a-f0-9]{32}$/u.test(account) || /^0{32}$/u.test(account) ||
+      (config.services as Array<Record<string, unknown>>)[0].service !== STAGING_ADMISSION_SERVICE_NAME ||
+      (config.vars as Record<string, unknown>).OPERATOR_EXECUTOR_ENVIRONMENT !== "staging" ||
       typeof key !== "string" || key.startsWith("__REQUIRED_")) throw new Error("incomplete-private-operator-executor");
   try { decodeCanonicalBase64url(key, 32); }
   catch { throw new Error("invalid-operator-public-key"); }

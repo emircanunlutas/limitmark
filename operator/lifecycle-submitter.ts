@@ -1,5 +1,5 @@
 import { decodeCanonicalBase64url } from "../src/lib/ingress-protocol";
-import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH } from "../workers/admission-service/authority";
+import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID } from "../workers/admission-service/authority";
 import {
   AUTHORITY_OPERATOR_COMMAND_VERSION,
   validateAuthorityOperatorCommand,
@@ -78,7 +78,8 @@ export function parseStrictJson(source: string): unknown {
   return result;
 }
 
-export function parseSealedLifecycleArtifact(bytes: Uint8Array, operation: LifecycleOperation, nowMs = Date.now()): SealedLifecycleArtifact {
+export function parseSealedLifecycleArtifact(bytes: Uint8Array, operation: LifecycleOperation, nowMs = Date.now(),
+  expectedEnvironment: "production" | "staging" = "production"): SealedLifecycleArtifact {
   if (!bytes.length || bytes.byteLength > MAX_SEALED_ARTIFACT_BYTES || !Number.isSafeInteger(nowMs)) throw new Error("invalid-sealed-artifact");
   let value: unknown;
   try {
@@ -91,8 +92,9 @@ export function parseSealedLifecycleArtifact(bytes: Uint8Array, operation: Lifec
   if (Object.keys(record).length !== 2 || !Object.hasOwn(record, "command") || !Object.hasOwn(record, "signature") ||
       !Array.isArray(record.command) || typeof record.signature !== "string") throw new Error("invalid-sealed-artifact");
   const command = record.command as unknown as SealedLifecycleArtifact["command"];
-  if (command[0] !== AUTHORITY_OPERATOR_COMMAND_VERSION || command[1] !== operation || command[2] !== "production" ||
-      command[3] !== ADMISSION_AUTHORITY_ID || command[4] !== ADMISSION_POLICY_EPOCH) throw new Error("invalid-sealed-artifact");
+  const expectedAuthorityId = expectedEnvironment === "staging" ? STAGING_ADMISSION_AUTHORITY_ID : ADMISSION_AUTHORITY_ID;
+  if (command[0] !== AUTHORITY_OPERATOR_COMMAND_VERSION || command[1] !== operation || command[2] !== expectedEnvironment ||
+      command[3] !== expectedAuthorityId || command[4] !== ADMISSION_POLICY_EPOCH) throw new Error("invalid-sealed-artifact");
   try {
     validateAuthorityOperatorCommand(command);
     decodeCanonicalBase64url(record.signature, 64);
@@ -105,8 +107,9 @@ export function parseSealedLifecycleArtifact(bytes: Uint8Array, operation: Lifec
 
 /** A provider-owned private executor supplies the pinned binding and public key. */
 export async function submitSealedLifecycleArtifact(bytes: Uint8Array, operation: LifecycleOperation,
-  admission: AdmissionLifecycleBinding, operatorPublicKey: string, nowMs = Date.now()): Promise<LifecycleResult> {
-  const artifact = parseSealedLifecycleArtifact(bytes, operation, nowMs);
+  admission: AdmissionLifecycleBinding, operatorPublicKey: string, nowMs = Date.now(),
+  expectedEnvironment: "production" | "staging" = "production"): Promise<LifecycleResult> {
+  const artifact = parseSealedLifecycleArtifact(bytes, operation, nowMs, expectedEnvironment);
   await verifyOperatorCommand(artifact.command, artifact.signature, operatorPublicKey);
   try {
     const response = operation === "initialize"

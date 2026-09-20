@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "environment": "staging",
+  "accountId": "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__",
+  "requestBucket": "limitmark-lifecycle-requests-staging",
+  "resultBucket": "limitmark-lifecycle-results-staging",
+  "authorityId": "staging-public-inquiries-v1",
+  "policyEpoch": "phase5c-i1-epoch-1",
+  "operatorPublicKey": "__REQUIRED_STAGING_OPERATOR_ED25519_PUBLIC_KEY__"
+}

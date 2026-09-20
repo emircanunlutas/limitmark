@@ -1,8 +1,11 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { validateVercelProjectContract } from "../deployment/secret-policy";
-import { validateOperatorExecutorTemplate } from "../deployment/operator-executor-contract";
-import { validateLifecycleEnvironmentGates, validateLifecycleMailboxConfig, validateLifecycleObserverConfig, validateLifecycleTransportManifest } from "../deployment/lifecycle-private-contract";
+import { validateOperatorExecutorTemplate, validateStagingOperatorExecutorTemplate } from "../deployment/operator-executor-contract";
+import {
+  validateLifecycleEnvironmentGates, validateLifecycleMailboxConfig, validateLifecycleObserverConfig, validateLifecycleTransportManifest,
+  validateStagingLifecycleMailboxConfig, validateStagingLifecycleObserverConfig, validateStagingLifecycleTransportManifest,
+} from "../deployment/lifecycle-private-contract";
 
 async function main() {
   const root = process.cwd();
@@ -23,6 +26,19 @@ async function main() {
   validateLifecycleObserverConfig(observer);
   validateLifecycleTransportManifest(transport);
   validateLifecycleEnvironmentGates(JSON.parse(await readFile(path.join(root, "deployment", "lifecycle-environment-gates.json"), "utf8")));
+  // Gate 2 staging capability: the initial rendered staging templates must be
+  // schedule-inactive (no active Cron trigger can process lifecycle objects
+  // before bindings/IAM/route inspection).
+  const stagingExecutor = JSON.parse(await readFile(path.join(root, "deployment", "operator-lifecycle-executor.staging.template.jsonc"), "utf8")) as Record<string, unknown>;
+  validateStagingOperatorExecutorTemplate(stagingExecutor);
+  const [stagingMailbox, stagingObserver, stagingTransport] = await Promise.all([
+    "lifecycle-mailbox.staging.template.jsonc", "lifecycle-observer.staging.template.jsonc", "lifecycle-transport.staging.template.json",
+  ].map(async (file) => JSON.parse(await readFile(path.join(root, "deployment", file), "utf8"))));
+  const mailboxScheduleState = validateStagingLifecycleMailboxConfig(stagingMailbox, true, "STAGING_DEPLOYMENT_INACTIVE");
+  const observerScheduleState = validateStagingLifecycleObserverConfig(stagingObserver, true, "STAGING_DEPLOYMENT_INACTIVE");
+  validateStagingLifecycleTransportManifest(stagingTransport);
+  if (mailboxScheduleState !== "STAGING_DEPLOYMENT_INACTIVE" || observerScheduleState !== "STAGING_DEPLOYMENT_INACTIVE")
+    throw new Error("staging-schedule-must-render-inactive");
   const patterns = configs.flatMap((config) => (config.routes as Array<{ pattern: string }>).map((route) => route.pattern));
   if (new Set(patterns).size !== patterns.length) throw new Error("overlapping-worker-routes");
   if (signer.durable_objects !== undefined || gateway.durable_objects !== undefined ||

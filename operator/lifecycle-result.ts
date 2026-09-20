@@ -10,19 +10,24 @@ function exact(value: unknown, required: readonly string[], optional: readonly s
   return required.every((key) => keys.includes(key)) && keys.every((key) => required.includes(key) || optional.includes(key));
 }
 function safeTime(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
-function receipt(value: unknown, digest: string): value is Record<string, unknown> {
+function receipt(value: unknown, digest: string, expectedEnvironment: "production" | "staging", expectedAuthorityId: string): value is Record<string, unknown> {
   if (!exact(value, ["digest", "version", "operation", "environment", "authorityId", "policyEpoch", "keyFingerprint", "sequence", "appliedMs",
     "currentReleaseId", "nextReleaseId", "nextKeyId", "activatesMs", "retiresMs"])) return false;
-  return value.digest === digest && value.version === 1 && ["initialize", "rotate-release"].includes(String(value.operation)) && value.environment === "production" &&
-    value.authorityId === "production-public-inquiries-v1" && value.policyEpoch === "phase5c-i1-epoch-1" &&
+  return value.digest === digest && value.version === 1 && ["initialize", "rotate-release"].includes(String(value.operation)) && value.environment === expectedEnvironment &&
+    value.authorityId === expectedAuthorityId && value.policyEpoch === "phase5c-i1-epoch-1" &&
     typeof value.keyFingerprint === "string" && digestPattern.test(value.keyFingerprint) &&
     Number.isSafeInteger(value.sequence) && (value.sequence as number) >= 1 && (value.sequence as number) <= 4_096 &&
     safeTime(value.appliedMs) && safeTime(value.activatesMs) && (value.retiresMs === null || safeTime(value.retiresMs)) &&
     [value.currentReleaseId, value.nextReleaseId, value.nextKeyId].every((field) => typeof field === "string" && field.length <= 128);
 }
 
-/** Result objects are untrusted transport data until target, nonce, schema and receipt match. */
-export function verifyLifecycleResult(bytes: Uint8Array, kind: ResultKind, expected: { digest?: string; nonce?: string }, nowMs = Date.now()) {
+/** Result objects are untrusted transport data until target, nonce, schema and receipt match.
+ * `expectedEnvironment`/`expectedAuthorityId` default to Production so every existing
+ * (Production) call site is byte-for-byte unchanged; a staging caller passes the
+ * distinct staging identity explicitly. */
+export function verifyLifecycleResult(bytes: Uint8Array, kind: ResultKind, expected: { digest?: string; nonce?: string }, nowMs = Date.now(),
+  expectedEnvironment: "production" | "staging" = "production",
+  expectedAuthorityId: string = "production-public-inquiries-v1") {
   if (!bytes.length || bytes.byteLength > 8_192) throw new Error("result-size");
   const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   if (source.charCodeAt(0) === 0xfeff) throw new Error("result-bom");
@@ -33,7 +38,7 @@ export function verifyLifecycleResult(bytes: Uint8Array, kind: ResultKind, expec
     kind === "reconciliation" ? unavailableReconciliation ? exact(value, [...base, "nonce", "status"]) :
       exact(value, [...base, "nonce", "status", "initialized", "coverage", "receipt", "releases"]) :
     exact(value, [...base, "nonce", "settled"]);
-  if (!shape || value.version !== 1 || value.environment !== "production" || value.authorityId !== "production-public-inquiries-v1" ||
+  if (!shape || value.version !== 1 || value.environment !== expectedEnvironment || value.authorityId !== expectedAuthorityId ||
       value.policyEpoch !== "phase5c-i1-epoch-1" || typeof value.digest !== "string" || !digestPattern.test(value.digest) ||
       expected.digest !== undefined && value.digest !== expected.digest || kind !== "lifecycle" &&
       (typeof value.nonce !== "string" || !noncePattern.test(value.nonce) || value.nonce !== expected.nonce) ||
@@ -53,7 +58,7 @@ export function verifyLifecycleResult(bytes: Uint8Array, kind: ResultKind, expec
         !Array.isArray(value.releases) || value.releases.length > 3) throw new Error("result-contract");
   } else if (!["SUCCESS", "ALREADY_APPLIED", "REFUSED", "UNAVAILABLE", "UNCONFIRMED"].includes(String(value.status)) ||
       value.reason !== undefined && (typeof value.reason !== "string" || value.reason.length > 64)) throw new Error("result-contract");
-  if (value.receipt !== undefined && value.receipt !== null && !receipt(value.receipt, value.digest)) throw new Error("result-contract");
+  if (value.receipt !== undefined && value.receipt !== null && !receipt(value.receipt, value.digest, expectedEnvironment, expectedAuthorityId)) throw new Error("result-contract");
   if (kind === "reconciliation" && (value.status === "EXACT_RECEIPT") !== (value.receipt !== null) ||
       kind === "lifecycle" && ["SUCCESS", "ALREADY_APPLIED"].includes(String(value.status)) && !value.receipt)
     throw new Error("result-integrity");

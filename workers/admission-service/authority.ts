@@ -8,6 +8,10 @@ import { UNAVAILABLE_AUTHORITY_OBSERVATION } from "../../operator/lifecycle-obse
 
 export const ADMISSION_POLICY_EPOCH = "phase5c-i1-epoch-1";
 export const ADMISSION_AUTHORITY_ID = "production-public-inquiries-v1";
+/** Distinct staging authority identity. Never shared with Production; see
+ * PHASE5C_I3_PROVISIONING_RUNBOOK.md Gate 2. Same policy epoch is intentional:
+ * the epoch names the reviewed policy generation, not the environment. */
+export const STAGING_ADMISSION_AUTHORITY_ID = "staging-public-inquiries-v1";
 export const PRE_PERMIT_LIFETIME_MS = 60_000;
 export const NONCE_RETENTION_MS = 120_000;
 export const AUTHORITY_RELEASE_RETENTION_AFTER_RETIRE_MS = 12 * 60_000;
@@ -107,29 +111,34 @@ function insertReceipt(storage: DurableStorageLike, receipt: Omit<LifecycleRecei
   return { ...receipt, sequence };
 }
 
-/** SELECT-only, including on a DO whose schema has never been initialized. */
-export function inspectLifecycleAuthority(storage: DurableStorageLike, digest: string, nowMs = Date.now()) {
+/** SELECT-only, including on a DO whose schema has never been initialized.
+ * `expectedAuthorityId`/`expectedPolicyEpoch` default to the Production identity so
+ * every existing (Production) call site is byte-for-byte unchanged; a staging reader
+ * passes the distinct staging identity explicitly. */
+export function inspectLifecycleAuthority(storage: DurableStorageLike, digest: string, nowMs = Date.now(),
+  expectedAuthorityId: string = ADMISSION_AUTHORITY_ID, expectedPolicyEpoch: string = ADMISSION_POLICY_EPOCH) {
   if (!/^[a-f0-9]{64}$/u.test(digest) || !Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error("invalid-reconciliation");
+  const environment = expectedAuthorityId === STAGING_ADMISSION_AUTHORITY_ID ? "staging" as const : "production" as const;
   const table = (name: string) => exactlyOne<{ name: string }>(storage,
     "SELECT name FROM sqlite_master WHERE type='table' AND name=?", name) !== null;
-  if (!table("authority_meta")) return { version: 1, environment: "production", authorityId: ADMISSION_AUTHORITY_ID,
-    policyEpoch: ADMISSION_POLICY_EPOCH, observedAtMs: nowMs, initialized: false, coverage: "COMPLETE", status: "NOT_FOUND", receipt: null, releases: [] } as const;
+  if (!table("authority_meta")) return { version: 1, environment, authorityId: expectedAuthorityId,
+    policyEpoch: expectedPolicyEpoch, observedAtMs: nowMs, initialized: false, coverage: "COMPLETE", status: "NOT_FOUND", receipt: null, releases: [] } as const;
   const meta = exactlyOne<MetaRow>(storage, "SELECT authority_id,policy_epoch,last_now_ms FROM authority_meta WHERE singleton=1");
   if (!meta) {
     if (table("active_releases") && rows(storage.sql.exec<ReleaseRow>("SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases LIMIT 1")).length)
       return UNAVAILABLE_AUTHORITY_OBSERVATION;
-    return { version: 1, environment: "production", authorityId: ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH,
+    return { version: 1, environment, authorityId: expectedAuthorityId, policyEpoch: expectedPolicyEpoch,
       observedAtMs: nowMs, initialized: false, coverage: "COMPLETE", status: "NOT_FOUND", receipt: null, releases: [] } as const;
   }
-  if (meta.authority_id !== ADMISSION_AUTHORITY_ID || meta.policy_epoch !== ADMISSION_POLICY_EPOCH || !table("active_releases"))
+  if (meta.authority_id !== expectedAuthorityId || meta.policy_epoch !== expectedPolicyEpoch || !table("active_releases"))
     return UNAVAILABLE_AUTHORITY_OBSERVATION;
   const releases = rows(storage.sql.exec<ReleaseRow>("SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases ORDER BY activated_ms")).slice(0, 3);
   if (!table("lifecycle_receipts") || !table("lifecycle_receipt_coverage") ||
-      !exactlyOne(storage, "SELECT singleton FROM lifecycle_receipt_coverage WHERE singleton=1")) return { version: 1, environment: "production", authorityId: ADMISSION_AUTHORITY_ID,
-    policyEpoch: ADMISSION_POLICY_EPOCH, observedAtMs: nowMs, initialized: true, coverage: "INCOMPLETE", status: "HISTORY_INCOMPLETE",
+      !exactlyOne(storage, "SELECT singleton FROM lifecycle_receipt_coverage WHERE singleton=1")) return { version: 1, environment, authorityId: expectedAuthorityId,
+    policyEpoch: expectedPolicyEpoch, observedAtMs: nowMs, initialized: true, coverage: "INCOMPLETE", status: "HISTORY_INCOMPLETE",
     receipt: null, releases } as const;
   const receipt = findReceipt(storage, digest);
-  return { version: 1, environment: "production", authorityId: ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH,
+  return { version: 1, environment, authorityId: expectedAuthorityId, policyEpoch: expectedPolicyEpoch,
     observedAtMs: nowMs, initialized: true, coverage: "COMPLETE", status: receipt ? "EXACT_RECEIPT" : "NOT_FOUND",
     receipt, releases } as const;
 }
@@ -145,10 +154,13 @@ export type AuthorityInitialization = {
 };
 
 export function initializeAuthority(storage: DurableStorageLike, specification: AuthorityInitialization,
-  commandReceipt?: Omit<LifecycleReceipt, "sequence">): { status: "initialized" | "already-initialized"; receipt?: LifecycleReceipt } {
+  commandReceipt?: Omit<LifecycleReceipt, "sequence">,
+  options: { expectedAuthorityId?: string; expectedPolicyEpoch?: string } = {}): { status: "initialized" | "already-initialized"; receipt?: LifecycleReceipt } {
+  const expectedAuthorityId = options.expectedAuthorityId ?? ADMISSION_AUTHORITY_ID;
+  const expectedPolicyEpoch = options.expectedPolicyEpoch ?? ADMISSION_POLICY_EPOCH;
   createAuthoritySchema(storage);
   if ((specification.environment !== "production" && specification.environment !== "staging") ||
-      specification.authorityId !== ADMISSION_AUTHORITY_ID || specification.policyEpoch !== ADMISSION_POLICY_EPOCH ||
+      specification.authorityId !== expectedAuthorityId || specification.policyEpoch !== expectedPolicyEpoch ||
       !validRelease(specification.releaseId) || !validKeyId(specification.releaseKeyId) || !Number.isSafeInteger(specification.nowMs) || specification.nowMs < 0 ||
       specification.environment === "production" && specification.confirmProduction !== true) throw new Error("initialization-policy");
   return storage.transactionSync(() => {

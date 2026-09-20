@@ -6,7 +6,7 @@ import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { build, type Plugin } from "esbuild";
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare, type V4MiniflareOptions } from "miniflare";
 import { encodeBase64url } from "../../src/lib/ingress-protocol";
-import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH } from "../../workers/admission-service/authority";
+import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID } from "../../workers/admission-service/authority";
 import {
   AUTHORITY_OPERATOR_COMMAND_VERSION,
   signAuthorityInitializationCommand,
@@ -146,7 +146,9 @@ async function main(): Promise<void> {
     assert.equal((await submit(mf, "initialize", initialize, forgedSignature)).body.error, "operator-signature");
     assert.deepEqual((await call(mf, "/direct-signature-check", { command: initialize, signature: forgedSignature })).body, { status: "refused" });
     assert.equal((await rows(mf, "SELECT name FROM sqlite_master WHERE type='table' AND name='authority_meta'")).length, 0);
-    const staging: AuthorityInitializationCommand = [initialize[0], initialize[1], "staging", initialize[3], initialize[4],
+    // A staging-flagged command must carry the distinct staging authority
+    // identity (Gate 2); it is still refused by this Production executor.
+    const staging: AuthorityInitializationCommand = [initialize[0], initialize[1], "staging", STAGING_ADMISSION_AUTHORITY_ID, initialize[4],
       initialize[5], initialize[6], initialize[7], false];
     assert.equal((await submit(mf, "initialize", staging, await signAuthorityInitializationCommand(staging, privateKey))).body.error,
       "invalid-sealed-artifact");

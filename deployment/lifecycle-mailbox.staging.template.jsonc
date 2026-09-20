@@ -1,0 +1,24 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "limitmark-lifecycle-mailbox-staging",
+  "main": "__REQUIRED_RENDERED_STAGING_MAILBOX_MAIN__.ts",
+  "account_id": "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "triggers": { "crons": [] },
+  "r2_buckets": [
+    { "binding": "REQUEST_BUCKET", "bucket_name": "limitmark-lifecycle-requests-staging" },
+    { "binding": "RESULT_BUCKET", "bucket_name": "limitmark-lifecycle-results-staging" }
+  ],
+  "durable_objects": { "bindings": [{ "name": "DISPATCH_GUARD", "class_name": "StagingLifecycleDispatchGuard" }] },
+  "migrations": [{ "tag": "i3b-staging-guard-v1", "new_sqlite_classes": ["StagingLifecycleDispatchGuard"] }],
+  "services": [
+    { "binding": "LIFECYCLE_EXECUTOR", "service": "limitmark-authority-operator-executor-staging", "entrypoint": "StagingOperatorLifecycleExecutor" },
+    { "binding": "LIFECYCLE_READER", "service": "limitmark-admission-service-staging", "entrypoint": "StagingAuthorityLifecycleReadOnly" }
+  ],
+  "vars": {
+    "AUTHORITY_OPERATOR_PUBLIC_KEY": "__REQUIRED_STAGING_OPERATOR_ED25519_PUBLIC_KEY__",
+    "LIFECYCLE_ENVIRONMENT": "staging"
+  }
+}
