@@ -11,3 +11,9 @@ artifacts/
 .env*
 !.env.example
 *.log
+
+# Gate 4B: the rendered staging admission-service config carries a real
+# staging public-key value and must never be committed. Only this exact
+# filename is ignored; deployment/admission-service.staging.template.jsonc
+# (the placeholder template) stays tracked.
+deployment/admission-service.staging.jsonc

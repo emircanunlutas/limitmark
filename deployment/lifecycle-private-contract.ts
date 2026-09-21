@@ -205,3 +205,61 @@ export function validateStagingAdmissionServiceConfig(value: unknown, template =
     throw new Error("unsafe-staging-admission-key");
   if (!template) decodeCanonicalBase64url(key as string, 32);
 }
+
+// ---------------------------------------------------------------------------
+// Gate 4B: the local-only live-read-only-proof harness and its verifier
+// contract. This Worker is never deployed (see
+// wrangler.staging-admission-live-readonly.local.jsonc) and its `main` lives
+// outside deployment/ like the other *.local.jsonc harnesses; it holds only a
+// single `remote: true` service binding to the already-deployed
+// limitmark-admission-service-staging Worker's StagingAuthorityLifecycleReadOnly
+// entrypoint, so `wrangler dev` (default mode -- never --remote, never
+// --local) proxies only that one call to the live authority while the harness
+// itself stays local and unpublished. Structurally independent of every
+// validator above: the allowlist has no durable_objects/migrations/vars/
+// r2_buckets/triggers/account_id member, so neither a Production nor a
+// staging admission config can satisfy it.
+// ---------------------------------------------------------------------------
+
+const liveReadonlyHarnessKeys = ["$schema", "name", "main", "compatibility_date", "workers_dev", "preview_urls", "services"];
+const liveReadonlyHarnessService = { binding: "LIFECYCLE_READER", service: "limitmark-admission-service-staging", entrypoint: "StagingAuthorityLifecycleReadOnly", remote: true };
+
+/** Validates the local-only Gate 4B live-read-only-proof harness config.
+ * Rejects any key outside the exact allowlist (in particular "routes"/
+ * "account_id"/"durable_objects"/"r2_buckets"/"triggers", none of which are
+ * members), the wrong Worker name/main/compatibility date, any exposure flag
+ * other than false, and any services array other than the exact single
+ * remote-bound read-only reader binding. */
+export function validateStagingLiveReadonlyHarnessConfig(value: unknown): void {
+  if (!exact(value, liveReadonlyHarnessKeys)) throw new Error("unsafe-live-readonly-harness-config");
+  if (value.$schema !== "./node_modules/wrangler/config-schema.json" ||
+      value.name !== "limitmark-phase5c-staging-admission-live-readonly-harness" ||
+      value.main !== "workers/staging-admission-live-readonly-harness.ts" ||
+      value.compatibility_date !== "2026-09-13" ||
+      value.workers_dev !== false || value.preview_urls !== false)
+    throw new Error("unsafe-live-readonly-harness-config");
+  if (JSON.stringify(value.services) !== JSON.stringify([liveReadonlyHarnessService]))
+    throw new Error("unsafe-live-readonly-harness-services");
+}
+
+const neverInitializedStagingSnapshotKeys = ["version", "environment", "authorityId", "policyEpoch", "observedAtMs", "initialized", "coverage", "status", "receipt", "releases"];
+/** Bound on how stale `observedAtMs` may be relative to the caller's local
+ * clock; matches the +/-300000ms freshness window already used for operator
+ * command validation elsewhere in this file. */
+export const LIVE_READONLY_OBSERVATION_FRESHNESS_MS = 300_000;
+
+/** The exact never-initialized staging shape the Gate 4 live-read-only proof
+ * must observe against a freshly deployed, never-initialized authority (see
+ * inspectLifecycleAuthority's own never-initialized branches). Rejects any
+ * mismatch outright: it never repairs, retries, initializes, resets, deletes
+ * or falls back to a broader entrypoint. */
+export function validateNeverInitializedStagingLifecycleSnapshot(value: unknown, nowMs: number = Date.now()): void {
+  if (!exact(value, neverInitializedStagingSnapshotKeys)) throw new Error("unsafe-live-readonly-snapshot");
+  if (value.version !== 1 || value.environment !== "staging" || value.authorityId !== "staging-public-inquiries-v1" ||
+      value.policyEpoch !== "phase5c-i1-epoch-1" || value.initialized !== false || value.coverage !== "COMPLETE" ||
+      value.status !== "NOT_FOUND" || value.receipt !== null || !Array.isArray(value.releases) || value.releases.length !== 0)
+    throw new Error("unsafe-live-readonly-snapshot");
+  if (typeof value.observedAtMs !== "number" || !Number.isSafeInteger(value.observedAtMs) || value.observedAtMs < 0 ||
+      Math.abs(nowMs - value.observedAtMs) > LIVE_READONLY_OBSERVATION_FRESHNESS_MS)
+    throw new Error("unsafe-live-readonly-observation-freshness");
+}

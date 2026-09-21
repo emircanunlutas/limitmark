@@ -1,5 +1,5 @@
+import { basename, dirname, join, resolve } from "node:path";
 import { open, realpath } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
 import { validateStagingAdmissionServiceConfig } from "../deployment/lifecycle-private-contract";
 import { parseStrictJson } from "../operator/lifecycle-submitter";
 
@@ -10,13 +10,19 @@ import { parseStrictJson } from "../operator/lifecycle-submitter";
  * file; a Production-rendered config, or one carrying any route/custom-domain
  * member, cannot pass this preflight. Never deploys, never contacts
  * Cloudflare, never touches the authority (no initialize/rotate path is
- * reachable from this script). */
+ * reachable from this script). Gate 4B: accepts only the one rendered
+ * filename the .gitignore rule and runbook name
+ * (deployment/admission-service.staging.jsonc) -- the exact same invariant
+ * scripts/authority-staging-admission-deploy.ts enforces, so this standalone
+ * preflight can never PASS a filename the deploy wrapper would refuse. */
+const exactRenderedConfigName = "admission-service.staging.jsonc";
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.length !== 2 || args[0] !== "--config" || !args[1] || args[1].startsWith("--")) throw new Error("explicit-rendered-config-required");
   const root = process.cwd();
   const configPath = await realpath(resolve(args[1]));
-  if (dirname(configPath) !== await realpath(join(root, "deployment"))) throw new Error("rendered-config-must-be-in-deployment-directory");
+  if (dirname(configPath) !== await realpath(join(root, "deployment")) || basename(configPath) !== exactRenderedConfigName)
+    throw new Error("exact-staging-admission-rendered-config-required");
   const file = await open(configPath, "r");
   let data: Uint8Array;
   try {

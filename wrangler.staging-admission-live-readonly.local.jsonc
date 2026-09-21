@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "limitmark-phase5c-staging-admission-live-readonly-harness",
+  "main": "workers/staging-admission-live-readonly-harness.ts",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "services": [
+    { "binding": "LIFECYCLE_READER", "service": "limitmark-admission-service-staging", "entrypoint": "StagingAuthorityLifecycleReadOnly", "remote": true }
+  ]
+}
