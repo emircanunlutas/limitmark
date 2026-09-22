@@ -26,3 +26,15 @@ deployment/admission-service.staging.jsonc
 deployment/operator-lifecycle-executor.staging.jsonc
 deployment/lifecycle-mailbox.staging.jsonc
 deployment/lifecycle-observer.staging.jsonc
+
+# Gate 6A: the rendered staging lifecycle-transport manifest carries a real
+# accountId and staging environment identity (no secret access key) and must
+# never be committed. Only this exact filename is ignored;
+# deployment/lifecycle-transport.staging.template.json (the placeholder
+# template) stays tracked. This is a hygiene backstop only -- the primary
+# safety boundary is the exact-filename invariant enforced by the staging
+# preflight/submit tooling itself, not this glob. Gate 6 local R2 credential
+# capture files (accessKeyId/secretAccessKey) are never written under this
+# repository at all -- scripts/gate6-credential-capture.ts refuses any
+# repo-contained output path outright, so no glob for them is needed here.
+deployment/lifecycle-transport.staging.json

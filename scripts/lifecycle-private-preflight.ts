@@ -7,13 +7,15 @@ import {
 } from "../deployment/lifecycle-private-contract";
 
 const modes = ["mailbox", "observer", "transport", "staging-mailbox", "staging-observer", "staging-transport"] as const;
-// Gate 5A: the two reviewed Gate 5 rendered filenames. Production modes and
-// staging-transport are unchanged -- this repository has no reviewed
-// deployment plan for them yet, so only directory placement is enforced for
-// those, exactly as before.
+// Gate 5A closed the two reviewed Gate 5 rendered filenames. Gate 6A closes
+// the third: staging-transport now also accepts only the exact reviewed
+// rendered filename. Production modes (mailbox/observer/transport) are still
+// unchanged -- this repository has no reviewed deployment plan for them yet,
+// so only directory placement is enforced for those.
 const exactStagingRenderedConfigName: Partial<Record<(typeof modes)[number], string>> = {
   "staging-mailbox": "lifecycle-mailbox.staging.jsonc",
   "staging-observer": "lifecycle-observer.staging.jsonc",
+  "staging-transport": "lifecycle-transport.staging.json",
 };
 
 async function main(): Promise<void> {

@@ -45,6 +45,8 @@
     "authority:staging:mailbox:deploy": "tsx scripts/authority-staging-gate5-deploy.ts mailbox deploy",
     "authority:staging:observer:deploy:preflight": "tsx scripts/authority-staging-gate5-deploy.ts observer preflight",
     "authority:staging:observer:deploy": "tsx scripts/authority-staging-gate5-deploy.ts observer deploy",
+    "gate6:credential:capture": "tsx scripts/gate6-credential-capture.ts",
+    "gate6:credential:verify": "tsx scripts/gate6-credential-verify.ts",
     "validate:worker-config": "tsx scripts/validate-worker-contracts.ts",
     "test:e2e": "playwright test",
     "test:persistence-guard": "playwright test --config=playwright.persistence-guard.config.ts",
