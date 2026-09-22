@@ -18,10 +18,10 @@ function valid(target: R2Target, credential: R2Credential, key: string): void {
 }
 
 /** One path-style SigV4 request. Native HTTPS has no middleware retry or redirect following. */
-export async function oneR2Request(method: "PUT" | "GET", target: R2Target, credential: R2Credential,
+export async function oneR2Request(method: "PUT" | "GET" | "DELETE", target: R2Target, credential: R2Credential,
   key: string, body?: Uint8Array, maximumResponseBytes = 8_192, now = new Date(), send: R2Sender = nativeSend): Promise<R2Response> {
   valid(target, credential, key);
-  if (method === "PUT" && !body || method === "GET" && body) throw new Error("invalid-r2-method");
+  if (method === "PUT" ? !body : Boolean(body)) throw new Error("invalid-r2-method");
   const hostname = `${target.accountId}.r2.cloudflarestorage.com`;
   const path = `/${target.bucket}/${key.split("/").map(encodeURIComponent).join("/")}`;
   const stamp = now.toISOString().replace(/[-:]|\.\d{3}/gu, "").replace("Z", "Z");

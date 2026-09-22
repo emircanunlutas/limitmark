@@ -20,7 +20,7 @@ import { readMaskedField } from "./gate6-secure-input";
 const roles = ["request-write", "result-read"] as const;
 type Role = (typeof roles)[number];
 const roleLabel: Record<Role, string> = {
-  "request-write": "REQUEST-WRITE (intended scope: request-bucket object PUT only)",
+  "request-write": "REQUEST-WRITE (scoped to the staging request bucket; this pipeline only ever calls PUT -- any coarser same-bucket read/list/delete right the provider preset also grants is not relied upon)",
   "result-read": "RESULT-READ (intended scope: result-bucket object GET only)",
 };
 const MAX_FIELD_BYTES = 256;

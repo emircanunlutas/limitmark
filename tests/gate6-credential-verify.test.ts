@@ -71,6 +71,91 @@ test("result-read: request writes, request reads, result writes and cross-enviro
   }
 });
 
+// Gate 6C: deny-result-delete proves the result-read credential cannot
+// DeleteObject on its own result bucket. Same closed-table operation as
+// every other probe above -- no operator-suppliable method, bucket or key.
+
+test("result-read: deny-result-delete resolves to the staging result bucket, a fresh Gate 6 IAM-test key and DELETE, with zero network calls in preflight", async () => {
+  const result = await harness.run(["--role", "result-read", "--operation", "deny-result-delete",
+    "--credentials", harness.credentialsPath, "--mode", "preflight"]);
+  assert.equal(result.exitCode, 0, result.stdout + result.stderr);
+  const line = JSON.parse(result.stdout);
+  assert.equal(line.status, "PASS");
+  assert.equal(line.providerContact, "none");
+  assert.equal(line.method, "DELETE");
+  assert.equal(line.bucket, RESULT_BUCKET);
+  assert.equal(line.expect, "DENY");
+  assert.match(line.key, /^gate6-iam-test\/[a-f0-9]{32}\.json$/u);
+  assert.equal(result.traceLines.length, 0, "preflight must never invoke the transport");
+});
+
+test("result-read: deny-result-delete never targets the positive read-result-fixture key", async () => {
+  const nonce = "c".repeat(32);
+  const fixture = await harness.run(["--role", "result-read", "--operation", "read-result-fixture",
+    "--credentials", harness.credentialsPath, "--mode", "preflight", "--fixture-nonce", nonce]);
+  const deleteProbe = await harness.run(["--role", "result-read", "--operation", "deny-result-delete",
+    "--credentials", harness.credentialsPath, "--mode", "preflight"]);
+  assert.equal(JSON.parse(fixture.stdout).key, `gate6-iam-test/${nonce}.json`);
+  assert.notEqual(JSON.parse(deleteProbe.stdout).key, JSON.parse(fixture.stdout).key,
+    "the DELETE probe must never reuse the operator-supplied positive fixture key");
+});
+
+test("result-read: deny-result-delete performs exactly one bounded DELETE call and reports MATCH/DENIED on 403", async () => {
+  const result = await harness.run(["--role", "result-read", "--operation", "deny-result-delete",
+    "--credentials", harness.credentialsPath, "--mode", "run"], []);
+  assert.equal(result.exitCode, 0, result.stdout + result.stderr);
+  const line = JSON.parse(result.stdout);
+  assert.equal(line.status, "MATCH");
+  assert.equal(line.observed, "DENIED");
+  assert.equal(line.httpStatus, 403);
+  assert.equal(result.traceLines.length, 1);
+  assert.match(result.traceLines[0], new RegExp(`^DELETE ${RESULT_BUCKET} gate6-iam-test/[a-f0-9]{32}\\.json$`));
+});
+
+test("result-read: deny-result-delete reports MISMATCH/GRANTED, never a silent pass, on an overprivileged 2xx", async () => {
+  const result = await harness.run(["--role", "result-read", "--operation", "deny-result-delete",
+    "--credentials", harness.credentialsPath, "--mode", "run"], [`DELETE ${RESULT_BUCKET}`]);
+  const line = JSON.parse(result.stdout);
+  assert.equal(line.status, "MISMATCH");
+  assert.equal(line.observed, "GRANTED");
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.traceLines.length, 1, "an overprivileged DELETE probe must still touch only the one synthetic key");
+});
+
+test("result-read: deny-result-delete reports AMBIGUOUS, not PASS, on 404/400/401/405/409/429/5xx -- never treated as denial", async () => {
+  for (const status of [404, 400, 401, 405, 409, 429, 500, 503]) {
+    const result = await harness.run(["--role", "result-read", "--operation", "deny-result-delete",
+      "--credentials", harness.credentialsPath, "--mode", "run"], [], { status });
+    const line = JSON.parse(result.stdout);
+    assert.equal(line.status, "AMBIGUOUS", `status ${status}: ${result.stdout}`);
+    assert.equal(line.observed, "AMBIGUOUS");
+    assert.equal(result.exitCode, 1);
+  }
+});
+
+test("result-read: deny-result-delete reports UNAVAILABLE on a transport exception, with no retry", async () => {
+  const result = await harness.run(["--role", "result-read", "--operation", "deny-result-delete",
+    "--credentials", harness.credentialsPath, "--mode", "run"], [], { fail: true });
+  const line = JSON.parse(result.stdout);
+  assert.equal(line.status, "UNAVAILABLE");
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.traceLines.length, 1, "exactly one attempted call, even though it failed -- no internal retry");
+});
+
+test("request-write cannot invoke deny-result-delete: it is not in that role's table", async () => {
+  const result = await harness.run(["--role", "request-write", "--operation", "deny-result-delete",
+    "--credentials", harness.credentialsPath, "--mode", "run"]);
+  assert.notEqual(result.exitCode, 0);
+  assert.equal(result.traceLines.length, 0, "an operation from the other role's table must be refused before any transport call");
+});
+
+test("no arbitrary method reaches the transport: an unrecognized flag such as --method is refused by the closed argument allowlist", async () => {
+  const result = await harness.run(["--role", "result-read", "--operation", "deny-result-delete",
+    "--credentials", harness.credentialsPath, "--mode", "run", "--method", "DELETE"]);
+  assert.notEqual(result.exitCode, 0);
+  assert.equal(result.traceLines.length, 0);
+});
+
 test("role separation: an operation from the other role's table is refused before any manifest load or transport call", async () => {
   const result = await harness.run(["--role", "request-write", "--operation", "read-result-fixture",
     "--credentials", harness.credentialsPath, "--mode", "run"]);

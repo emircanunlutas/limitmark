@@ -25,6 +25,8 @@ const files: Plugin = { name: "gate6-verify-test", setup(api) {
     import { appendFileSync } from "node:fs";
     export async function oneR2Request(method, target, credential, key) {
       appendFileSync(process.env.GATE6_TEST_TRACE, method + " " + target.bucket + " " + key + "\\n");
+      if (process.env.GATE6_TEST_FAIL === "1") throw new Error("synthetic-r2-transport-failure");
+      if (process.env.GATE6_TEST_STATUS) return { statusCode: Number(process.env.GATE6_TEST_STATUS), body: new Uint8Array() };
       const allowed = new Set(JSON.parse(process.env.GATE6_TEST_ALLOWED || "[]"));
       const granted = allowed.has(method + " " + target.bucket);
       return { statusCode: granted ? 200 : 403, body: new Uint8Array() };
@@ -62,10 +64,11 @@ export async function createGate6VerifyHarness() {
     await writeFile(cli, bundle.outputFiles[0].contents);
     return {
       trace,
-      async run(args: string[], allowed: string[] = []) {
+      async run(args: string[], allowed: string[] = [], fault: { status?: number; fail?: boolean } = {}) {
         await writeFile(trace, "");
         const result = spawnSync(process.execPath, [cli, ...args], { cwd: directory, encoding: "utf8", timeout: 5_000,
-          env: { ...process.env, GATE6_TEST_ALLOWED: JSON.stringify(allowed), GATE6_TEST_TRACE: trace } });
+          env: { ...process.env, GATE6_TEST_ALLOWED: JSON.stringify(allowed), GATE6_TEST_TRACE: trace,
+            GATE6_TEST_STATUS: fault.status === undefined ? "" : String(fault.status), GATE6_TEST_FAIL: fault.fail ? "1" : "" } });
         const traceLines = (await readFile(trace, "utf8")).split("\n").filter(Boolean);
         return { exitCode: result.status, stdout: result.stdout, stderr: result.stderr, traceLines };
       },

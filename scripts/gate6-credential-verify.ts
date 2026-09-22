@@ -20,12 +20,20 @@ import { GATE6_IAM_TEST_KEY_PATTERN, gate6IamTestFixtureBody, gate6IamTestKey, g
 // creates or revokes a credential, and neither mode is reachable for a
 // Production bucket name except as the deliberate, expected-DENY
 // cross-environment probe below.
+//
+// Gate 6C: `deny-result-delete` (result-read role) proves the result-read
+// credential cannot DeleteObject on its own result bucket, using the same
+// closed-table shape as every other operation -- no operator-suppliable
+// method, bucket or key. It always targets a freshly generated Gate 6
+// IAM-test key (never the F8 positive fixture, which only a fixture-nonce
+// operation ever touches), so a mismatched GRANTED result deletes nothing
+// of value.
 
 const roles = ["request-write", "result-read"] as const;
 type Role = (typeof roles)[number];
 type Expectation = "ALLOW" | "DENY";
 type BucketRef = "request" | "result" | "production-request" | "production-result";
-type OperationSpec = { method: "PUT" | "GET"; bucket: BucketRef; expect: Expectation; needsFixtureNonce?: boolean };
+type OperationSpec = { method: "PUT" | "GET" | "DELETE"; bucket: BucketRef; expect: Expectation; needsFixtureNonce?: boolean };
 
 // These literal Production bucket names exist only so the deliberate
 // cross-environment probes below have a fixed, reviewed target to prove
@@ -53,6 +61,7 @@ const operationsByRole: Record<Role, Record<string, OperationSpec>> = {
   "result-read": {
     "read-result-fixture": { method: "GET", bucket: "result", expect: "ALLOW", needsFixtureNonce: true },
     "deny-result-write": { method: "PUT", bucket: "result", expect: "DENY" },
+    "deny-result-delete": { method: "DELETE", bucket: "result", expect: "DENY" },
     "deny-request-write": { method: "PUT", bucket: "request", expect: "DENY" },
     "deny-request-read": { method: "GET", bucket: "request", expect: "DENY" },
     "deny-cross-environment-read": { method: "GET", bucket: "production-result", expect: "DENY" },
