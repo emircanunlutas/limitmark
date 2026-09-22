@@ -12,6 +12,11 @@ artifacts/
 !.env.example
 *.log
 
+# Local AI/development-agent instruction files are generated or machine-facing
+# development scaffolding, not part of the public project surface.
+AGENTS.md
+CLAUDE.md
+
 # Gate 4B: the rendered staging admission-service config carries a real
 # staging public-key value and must never be committed. Only this exact
 # filename is ignored; deployment/admission-service.staging.template.jsonc
