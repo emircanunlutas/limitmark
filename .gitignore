@@ -17,3 +17,12 @@ artifacts/
 # filename is ignored; deployment/admission-service.staging.template.jsonc
 # (the placeholder template) stays tracked.
 deployment/admission-service.staging.jsonc
+
+# Gate 5A: the three reviewed rendered Gate 5 staging configs carry real
+# account/public-key values and must never be committed. Only these exact
+# filenames are ignored; their .template.jsonc sources stay tracked. This is
+# a hygiene backstop only -- the primary safety boundary is the exact-filename
+# invariant enforced by the preflight/deploy tooling itself, not this glob.
+deployment/operator-lifecycle-executor.staging.jsonc
+deployment/lifecycle-mailbox.staging.jsonc
+deployment/lifecycle-observer.staging.jsonc
