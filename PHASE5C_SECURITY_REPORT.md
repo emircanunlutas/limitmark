@@ -171,9 +171,9 @@ The first sandboxed browser attempt reported 81 passed / 45 failed plus a teardo
 Reproduce the complete run in PowerShell with the repository's installed browsers:
 
 ```powershell
-$env:PLAYWRIGHT_BROWSERS_PATH = 'C:\Users\Emir\Desktop\pentest-website\.playwright'
+$env:PLAYWRIGHT_BROWSERS_PATH = "$PWD\.playwright"
 $env:QA_CROSS_BROWSER = 'true'
-$env:PLAYWRIGHT_JSON_OUTPUT_FILE = 'C:\Users\Emir\Desktop\pentest-website\artifacts\phase5c-e2e.json'
+$env:PLAYWRIGHT_JSON_OUTPUT_FILE = "$PWD\artifacts\phase5c-e2e.json"
 npm.cmd run test:e2e -- --global-timeout=600000 --output=artifacts/phase5c-e2e-results --reporter=list,json
 ```
 

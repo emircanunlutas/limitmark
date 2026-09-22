@@ -13,6 +13,8 @@ npm run dev
 
 Open **http://127.0.0.1:3000**. On PowerShell, use `npm.cmd` if local policy prevents executing `npm.ps1`; no execution-policy changes are needed. npm's cache is kept in the ignored `.npm-cache/` directory inside the repository.
 
+Provider credentials, private signing keys, and rendered deployment configuration are not included in this repository.
+
 ## Stack and structure
 
 - Next.js App Router, React, strict TypeScript.
