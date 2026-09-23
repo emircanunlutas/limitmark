@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { encodeBase64url } from "../src/lib/ingress-protocol";
+import { withAbsentFixturePaths } from "./support/rendered-artifact-guard";
 import { withSharedStagingConfigLock } from "./support/shared-staging-config-lock";
 
 // Gate 5A: proves the standalone preflight scripts (used independently of the
@@ -18,6 +19,14 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const validKey = encodeBase64url(new Uint8Array(32).fill(7));
 const reader = { binding: "LIFECYCLE_READER", service: "limitmark-admission-service-staging", entrypoint: "StagingAuthorityLifecycleReadOnly" };
 
+// Gate 7B: every path a test below writes is first proven absent under the
+// shared lock; a real operator-rendered artifact at any of them skips the test
+// without touching it (tests/support/rendered-artifact-guard.ts).
+function guardedTest(name: string, paths: readonly string[], fn: () => Promise<void>) {
+  test(name, (t) => withSharedStagingConfigLock(root, "shared-staging-render", () => withAbsentFixturePaths(t, root, paths, fn)));
+}
+const deploymentPaths = (...names: string[]) => names.map((name) => join(root, "deployment", name));
+
 function runExecutorPreflight(args: string[]) {
   return spawnSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "scripts/authority-staging-executor-preflight.ts", ...args],
     { cwd: root, encoding: "utf8" });
@@ -27,8 +36,8 @@ function runLifecyclePreflight(args: string[]) {
     { cwd: root, encoding: "utf8" });
 }
 
-test("standalone staging executor preflight accepts only the exact rendered filename", () =>
-  withSharedStagingConfigLock(root, "shared-staging-render", async () => {
+guardedTest("standalone staging executor preflight accepts only the exact rendered filename",
+  deploymentPaths("operator-lifecycle-executor.staging.jsonc", "operator-lifecycle-executor.staging.custom.jsonc"), async () => {
   const exactPath = join(root, "deployment", "operator-lifecycle-executor.staging.jsonc");
   const altPath = join(root, "deployment", "operator-lifecycle-executor.staging.custom.jsonc");
   const config = {
@@ -45,10 +54,10 @@ test("standalone staging executor preflight accepts only the exact rendered file
     assert.notEqual(runExecutorPreflight(["--config", "deployment/operator-lifecycle-executor.staging.custom.jsonc"]).status, 0, "alternate filename must be refused");
     assert.notEqual(runExecutorPreflight(["--config", "deployment/operator-lifecycle-executor.staging.template.jsonc"]).status, 0, "raw template must be refused");
   } finally { await rm(exactPath, { force: true }); await rm(altPath, { force: true }); }
-}));
+});
 
-test("standalone lifecycle preflight: staging-mailbox accepts only the exact filename and requires STAGING_DEPLOYMENT_INACTIVE", () =>
-  withSharedStagingConfigLock(root, "shared-staging-render", async () => {
+guardedTest("standalone lifecycle preflight: staging-mailbox accepts only the exact filename and requires STAGING_DEPLOYMENT_INACTIVE",
+  deploymentPaths("lifecycle-mailbox.staging.jsonc", "lifecycle-mailbox.staging.custom.jsonc"), async () => {
   const exactPath = join(root, "deployment", "lifecycle-mailbox.staging.jsonc");
   const altPath = join(root, "deployment", "lifecycle-mailbox.staging.custom.jsonc");
   const base = {
@@ -81,10 +90,10 @@ test("standalone lifecycle preflight: staging-mailbox accepts only the exact fil
   await writeFile(exactPath, JSON.stringify(garbled));
   try { assert.notEqual(runLifecyclePreflight(["staging-mailbox", "--config", "deployment/lifecycle-mailbox.staging.jsonc"]).status, 0, "malformed schedule must be refused"); }
   finally { await rm(exactPath, { force: true }); }
-}));
+});
 
-test("standalone lifecycle preflight: staging-observer accepts only the exact filename and requires STAGING_DEPLOYMENT_INACTIVE", () =>
-  withSharedStagingConfigLock(root, "shared-staging-render", async () => {
+guardedTest("standalone lifecycle preflight: staging-observer accepts only the exact filename and requires STAGING_DEPLOYMENT_INACTIVE",
+  deploymentPaths("lifecycle-observer.staging.jsonc", "lifecycle-observer.staging.custom.jsonc"), async () => {
   const exactPath = join(root, "deployment", "lifecycle-observer.staging.jsonc");
   const altPath = join(root, "deployment", "lifecycle-observer.staging.custom.jsonc");
   const base = {
@@ -109,7 +118,7 @@ test("standalone lifecycle preflight: staging-observer accepts only the exact fi
   await writeFile(exactPath, JSON.stringify(active));
   try { assert.notEqual(runLifecyclePreflight(["staging-observer", "--config", "deployment/lifecycle-observer.staging.jsonc"]).status, 0, "active Cron must be refused"); }
   finally { await rm(exactPath, { force: true }); }
-}));
+});
 
 test("Production lifecycle preflight modes are unaffected by the Gate 5A staging changes", async () => {
   const mailboxTemplate = JSON.parse(await (await import("node:fs/promises")).readFile(join(root, "deployment", "lifecycle-mailbox.template.jsonc"), "utf8"));

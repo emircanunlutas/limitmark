@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { encodeBase64url } from "../src/lib/ingress-protocol";
+import { withAbsentFixturePaths } from "./support/rendered-artifact-guard";
 import { withSharedStagingConfigLock } from "./support/shared-staging-config-lock";
 
 // Gate 7A: proves the standalone lifecycle-private-preflight.ts "-arm" modes
@@ -50,12 +51,16 @@ const resources = [
 // inactivePath/armedPath are filenames shared with tests/gate5-*-preflight.test.ts
 // and tests/gate7-arm-render.test.ts -- lockedTest serializes access across
 // processes/files; see tests/support/shared-staging-config-lock.ts.
-function lockedTest(name: string, fn: () => Promise<void>) {
-  test(name, () => withSharedStagingConfigLock(root, "shared-staging-render", fn));
+// Gate 7B: every path a test writes is first proven absent under the lock; a
+// real operator-rendered artifact at any of them skips the test without
+// touching it (tests/support/rendered-artifact-guard.ts).
+function lockedTest(name: string, paths: readonly string[], fn: () => Promise<void>) {
+  test(name, (t) => withSharedStagingConfigLock(root, "shared-staging-render", () => withAbsentFixturePaths(t, root, paths, fn)));
 }
 
 for (const resource of resources) {
-  lockedTest(`gate7 arm preflight (${resource.mode}): the full inactive/armed x inactive-mode/arm-mode matrix`, async () => {
+  lockedTest(`gate7 arm preflight (${resource.mode}): the full inactive/armed x inactive-mode/arm-mode matrix`,
+    [join(root, resource.inactivePath), join(root, resource.armedPath)], async () => {
     const inactiveAbs = join(root, resource.inactivePath);
     const armedAbs = join(root, resource.armedPath);
     const armMode = `staging-${resource.mode}-arm`;
@@ -88,7 +93,7 @@ for (const resource of resources) {
     } finally { await rm(inactiveAbs, { force: true }); await rm(armedAbs, { force: true }); }
   });
 
-  lockedTest(`gate7 arm preflight (${resource.mode}): arbitrary cron is refused in arm mode too`, async () => {
+  lockedTest(`gate7 arm preflight (${resource.mode}): arbitrary cron is refused in arm mode too`, [join(root, resource.armedPath)], async () => {
     const armedAbs = join(root, resource.armedPath);
     const armMode = `staging-${resource.mode}-arm`;
     await writeFile(armedAbs, JSON.stringify({ ...resource.base, triggers: { crons: ["*/5 * * * *"] } }));
@@ -100,7 +105,8 @@ for (const resource of resources) {
     finally { await rm(armedAbs, { force: true }); }
   });
 
-  lockedTest(`gate7 arm preflight (${resource.mode}): the arm mode accepts only its own exact armed filename, never the Gate 5 inactive one`, async () => {
+  lockedTest(`gate7 arm preflight (${resource.mode}): the arm mode accepts only its own exact armed filename, never the Gate 5 inactive one`,
+    [join(root, resource.inactivePath)], async () => {
     const inactiveAbs = join(root, resource.inactivePath);
     const armMode = `staging-${resource.mode}-arm`;
     await writeFile(inactiveAbs, JSON.stringify({ ...resource.base, triggers: { crons: ["* * * * *"] } }));

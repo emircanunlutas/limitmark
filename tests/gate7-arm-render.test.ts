@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { encodeBase64url } from "../src/lib/ingress-protocol";
+import { withAbsentFixturePaths } from "./support/rendered-artifact-guard";
 import { withSharedStagingConfigLock } from "./support/shared-staging-config-lock";
 
 // Gate 7A: proves the local, deterministic INACTIVE-to-ARMED render (used
@@ -67,12 +68,15 @@ async function cleanup(fixture: Fixture) {
 // shared with other test files (Gate 5's own tests, and the Gate 7A deploy
 // wrapper's tests) -- lockedTest serializes access to them across processes;
 // see tests/support/shared-staging-config-lock.ts.
-function lockedTest(name: string, fn: () => Promise<void>) {
-  test(name, () => withSharedStagingConfigLock(root, "shared-staging-render", fn));
+// Gate 7B: every path a test writes is first proven absent under the lock; a
+// real operator-rendered artifact at any of them skips the test without
+// touching it (tests/support/rendered-artifact-guard.ts).
+function lockedTest(name: string, paths: readonly string[], fn: () => Promise<void>) {
+  test(name, (t) => withSharedStagingConfigLock(root, "shared-staging-render", () => withAbsentFixturePaths(t, root, paths, fn)));
 }
 
 for (const fixture of fixtures) {
-  lockedTest(`gate7 arm render (${fixture.resource}): produces the exact armed config, changing only triggers`, async () => {
+  lockedTest(`gate7 arm render (${fixture.resource}): produces the exact armed config, changing only triggers`, [fixture.sourcePath, fixture.destPath], async () => {
     await writeFile(fixture.sourcePath, JSON.stringify(fixture.config()));
     try {
       const result = run([fixture.resource]);
@@ -91,7 +95,7 @@ for (const fixture of fixtures) {
     } finally { await cleanup(fixture); }
   });
 
-  lockedTest(`gate7 arm render (${fixture.resource}): refuses to overwrite an existing armed file`, async () => {
+  lockedTest(`gate7 arm render (${fixture.resource}): refuses to overwrite an existing armed file`, [fixture.sourcePath, fixture.destPath], async () => {
     await writeFile(fixture.sourcePath, JSON.stringify(fixture.config()));
     await writeFile(fixture.destPath, JSON.stringify({ ...fixture.config(), triggers: { crons: ["* * * * *"] } }));
     try {
@@ -101,7 +105,7 @@ for (const fixture of fixtures) {
     } finally { await cleanup(fixture); }
   });
 
-  lockedTest(`gate7 arm render (${fixture.resource}): refuses an already-armed or garbled source`, async () => {
+  lockedTest(`gate7 arm render (${fixture.resource}): refuses an already-armed or garbled source`, [fixture.sourcePath, fixture.destPath], async () => {
     const armedSource = { ...fixture.config(), triggers: { crons: ["* * * * *"] } };
     await writeFile(fixture.sourcePath, JSON.stringify(armedSource));
     try { assert.notEqual(run([fixture.resource]).status, 0, "already-armed source must be refused"); }
@@ -118,7 +122,7 @@ for (const fixture of fixtures) {
     finally { await cleanup(fixture); }
   });
 
-  lockedTest(`gate7 arm render (${fixture.resource}): refuses account-pin mismatch and missing/malformed pin`, async () => {
+  lockedTest(`gate7 arm render (${fixture.resource}): refuses account-pin mismatch and missing/malformed pin`, [fixture.sourcePath, fixture.destPath], async () => {
     await writeFile(fixture.sourcePath, JSON.stringify(fixture.config()));
     try {
       assert.notEqual(run([fixture.resource], { CLOUDFLARE_ACCOUNT_ID: "b".repeat(32) }).status, 0, "mismatched account pin must be refused");
@@ -129,18 +133,18 @@ for (const fixture of fixtures) {
     } finally { await cleanup(fixture); }
   });
 
-  lockedTest(`gate7 arm render (${fixture.resource}): refuses when only the tracked template exists (no rendered source yet)`, async () => {
+  lockedTest(`gate7 arm render (${fixture.resource}): refuses when only the tracked template exists (no rendered source yet)`, [fixture.sourcePath, fixture.destPath], async () => {
     assert.notEqual(run([fixture.resource]).status, 0, "missing rendered source must be refused");
   });
 
-  lockedTest(`gate7 arm render (${fixture.resource}): refuses Production-shaped source`, async () => {
+  lockedTest(`gate7 arm render (${fixture.resource}): refuses Production-shaped source`, [fixture.sourcePath, fixture.destPath], async () => {
     const prodShaped = { ...fixture.config(), name: (fixture.config().name as string).replace("-staging", "-production") };
     await writeFile(fixture.sourcePath, JSON.stringify(prodShaped));
     try { assert.notEqual(run([fixture.resource]).status, 0, "Production-shaped name must be refused"); }
     finally { await cleanup(fixture); }
   });
 
-  lockedTest(`gate7 arm render (${fixture.resource}): no CLI-provided cron surface exists`, async () => {
+  lockedTest(`gate7 arm render (${fixture.resource}): no CLI-provided cron surface exists`, [fixture.sourcePath, fixture.destPath], async () => {
     await writeFile(fixture.sourcePath, JSON.stringify(fixture.config()));
     try {
       assert.notEqual(run([fixture.resource, "--cron", "*/5 * * * *"]).status, 0, "extra --cron argument must be refused");

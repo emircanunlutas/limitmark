@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { encodeBase64url } from "../src/lib/ingress-protocol";
+import { withAbsentFixturePaths } from "./support/rendered-artifact-guard";
+import { withSharedStagingConfigLock } from "./support/shared-staging-config-lock";
 
 // Gate 6A / F1: proves the standalone lifecycle preflight's staging-transport
 // mode now enforces the same exact-rendered-filename invariant (directory
@@ -15,6 +17,14 @@ import { encodeBase64url } from "../src/lib/ingress-protocol";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const validKey = encodeBase64url(new Uint8Array(32).fill(7));
+
+// Gate 7B: every path a test below writes is first proven absent under the
+// shared lock; a real operator-rendered artifact at any of them skips the test
+// without touching it (tests/support/rendered-artifact-guard.ts).
+function guardedTest(name: string, paths: readonly string[], fn: () => Promise<void>) {
+  test(name, (t) => withSharedStagingConfigLock(root, "shared-staging-render", () => withAbsentFixturePaths(t, root, paths, fn)));
+}
+const exactManifestPath = join(root, "deployment", "lifecycle-transport.staging.json");
 
 function runLifecyclePreflight(args: string[]) {
   return spawnSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "scripts/lifecycle-private-preflight.ts", ...args],
@@ -27,7 +37,8 @@ const stagingManifest = {
   authorityId: "staging-public-inquiries-v1", policyEpoch: "phase5c-i1-epoch-1", operatorPublicKey: validKey,
 };
 
-test("standalone staging-transport preflight accepts only the exact rendered filename", async () => {
+guardedTest("standalone staging-transport preflight accepts only the exact rendered filename",
+  [exactManifestPath, join(root, "deployment", "lifecycle-transport.staging.custom.json")], async () => {
   const exactPath = join(root, "deployment", "lifecycle-transport.staging.json");
   const altPath = join(root, "deployment", "lifecycle-transport.staging.custom.json");
   await writeFile(exactPath, JSON.stringify(stagingManifest));
@@ -45,7 +56,7 @@ test("standalone staging-transport preflight refuses the raw unresolved template
     "the raw template carries __REQUIRED_ placeholders and must fail content validation");
 });
 
-test("standalone staging-transport preflight refuses a Production-shaped manifest rendered at the staging path", async () => {
+guardedTest("standalone staging-transport preflight refuses a Production-shaped manifest rendered at the staging path", [exactManifestPath], async () => {
   const exactPath = join(root, "deployment", "lifecycle-transport.staging.json");
   const productionShaped = {
     version: 1, environment: "production", accountId: "a".repeat(32),
@@ -59,7 +70,8 @@ test("standalone staging-transport preflight refuses a Production-shaped manifes
   } finally { await rm(exactPath, { force: true }); }
 });
 
-test("standalone staging-transport preflight refuses a config placed outside deployment/", async () => {
+guardedTest("standalone staging-transport preflight refuses a config placed outside deployment/",
+  [join(root, "lifecycle-transport.staging.json")], async () => {
   const outsidePath = join(root, "lifecycle-transport.staging.json");
   await writeFile(outsidePath, JSON.stringify(stagingManifest));
   try {

@@ -18,10 +18,13 @@ import { parseStrictJson } from "../operator/lifecycle-submitter";
 // config can never reach a spawn either). It never adds account_id to any
 // config; it requires CLOUDFLARE_ACCOUNT_ID in the process environment (never
 // a CLI flag, never logged -- only a one-way SHA-256 fingerprint, truncated
-// to 16 hex characters, is ever printed) and lets Wrangler consume it
-// directly. Mode "preflight" performs every non-provider check and prints the
-// exact command that would run without spawning Wrangler; mode "deploy"
-// performs the identical checks and then, only then, spawns the
+// to 16 hex characters, is ever printed). Gate 7B: all three rendered
+// configs carry their own account_id, which the pinned Wrangler resolves
+// BEFORE CLOUDFLARE_ACCOUNT_ID, so the config's account_id must equal the
+// environment pin; a mismatch is refused before any preflight PASS or
+// Wrangler spawn. Mode "preflight" performs every non-provider check and prints the exact command
+// that would run without spawning Wrangler; mode "deploy" performs the
+// identical checks and then, only then, spawns the
 // repository-pinned local Wrangler binary with exactly
 // `deploy --config <path>` -- no --env, --route, --var, binding/domain
 // override, alternate name or alternate config is constructible. Refusal
@@ -108,6 +111,7 @@ async function main(): Promise<void> {
   const configPath = await renderedConfigPath(root, spec, args[1]);
   const config = await readBoundedConfig(configPath);
   spec.validate(config);
+  if ((config as Record<string, unknown>).account_id !== pin) throw new Error("gate5-account-pin-mismatch");
   const expectedMain = await realpath(join(root, ...spec.mainSegments));
   const resolvedMain = await realpath(resolve(dirname(configPath), "..", ...spec.mainSegments));
   if (resolvedMain !== expectedMain) throw new Error("gate5-main-mismatch");

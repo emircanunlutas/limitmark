@@ -1,19 +1,23 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { rm, writeFile } from "node:fs/promises";
+import { realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { encodeBase64url } from "../src/lib/ingress-protocol";
+import { withAbsentFixturePaths } from "./support/rendered-artifact-guard";
 import { withSharedStagingConfigLock } from "./support/shared-staging-config-lock";
+import { withWranglerSandbox } from "./support/wrangler-sandbox";
 
 // Gate 5A: proves the generalized Gate 5 deploy wrapper (one Worker per
 // invocation, closed resource set) refuses every unsafe input -- including
 // every alternate rendered filename and every active-schedule config --
 // before it could ever spawn Wrangler, and that its preflight mode reaches
-// PASS without contacting Cloudflare, for all three resources. "deploy" mode
-// is exercised only on refusal paths; a successful "deploy" would spawn the
-// real Wrangler binary.
+// PASS without contacting Cloudflare, for all three resources. Gate 7B:
+// "deploy" mode runs only inside the test-only Wrangler sandbox
+// (tests/support/wrangler-sandbox.ts), where the wrapper's pinned Wrangler
+// path resolves to a self-tested fake recorder -- the real Wrangler binary is
+// never reachable from any test here.
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const validAccount = "a".repeat(32);
@@ -66,6 +70,13 @@ const fixtures: Fixture[] = [
   },
 ];
 
+// Gate 7B: every path a test below writes is first proven absent under the
+// shared lock; a real operator-rendered artifact at any of them skips the test
+// without touching it (tests/support/rendered-artifact-guard.ts).
+function guardedTest(name: string, paths: readonly string[], fn: () => Promise<void>) {
+  test(name, (t) => withSharedStagingConfigLock(root, "shared-staging-render", () => withAbsentFixturePaths(t, root, paths, fn)));
+}
+
 function run(args: string[], overrides: Record<string, string | undefined> = { CLOUDFLARE_ACCOUNT_ID: validAccount }) {
   const env: Record<string, string | undefined> = { ...process.env, ...overrides };
   for (const [key, value] of Object.entries(env)) if (value === undefined) delete env[key];
@@ -74,8 +85,8 @@ function run(args: string[], overrides: Record<string, string | undefined> = { C
 }
 
 for (const fixture of fixtures) {
-  test(`gate5 deploy wrapper (${fixture.resource}): preflight PASSes at the exact rendered filename without contacting Cloudflare`, () =>
-    withSharedStagingConfigLock(root, "shared-staging-render", async () => {
+  guardedTest(`gate5 deploy wrapper (${fixture.resource}): preflight PASSes at the exact rendered filename without contacting Cloudflare`,
+    [fixture.exactAbsPath], async () => {
     await writeFile(fixture.exactAbsPath, JSON.stringify(fixture.config()));
     try {
       const result = run([fixture.resource, "preflight", "--config", fixture.exactRelPath]);
@@ -89,10 +100,11 @@ for (const fixture of fixtures) {
       assert.ok(!result.stdout.includes(validAccount) && !result.stderr.includes(validAccount), "raw account id must never be printed");
       assert.deepEqual(parsed.plannedCommand, ["wrangler", "deploy", "--config", fixture.exactAbsPath]);
     } finally { await rm(fixture.exactAbsPath, { force: true }); }
-  }));
+  });
 
-  test(`gate5 deploy wrapper (${fixture.resource}): refuses alternate filenames, account-pin defects and extra argv`, () =>
-    withSharedStagingConfigLock(root, "shared-staging-render", async () => {
+  guardedTest(`gate5 deploy wrapper (${fixture.resource}): refuses alternate filenames, account-pin defects and extra argv`,
+    [fixture.exactAbsPath, join(root, "deployment", `gate5-${fixture.resource}-alt.staging.jsonc`),
+      join(root, `${fixture.resource}.staging-outside.jsonc`)], async () => {
     await writeFile(fixture.exactAbsPath, JSON.stringify(fixture.config()));
     const altPath = join(root, "deployment", `gate5-${fixture.resource}-alt.staging.jsonc`);
     await writeFile(altPath, JSON.stringify(fixture.config()));
@@ -111,9 +123,8 @@ for (const fixture of fixtures) {
       assert.notEqual(run([fixture.resource, "preflight", "--config", fixture.exactRelPath, "--var", "X=1"]).status, 0, "extra --var");
       assert.notEqual(run(["render", "preflight", "--config", fixture.exactRelPath]).status, 0, "unknown resource");
       assert.notEqual(run([fixture.resource, "apply", "--config", fixture.exactRelPath]).status, 0, "unknown mode");
-      assert.notEqual(run([fixture.resource, "deploy", "--config", fixture.exactRelPath], { CLOUDFLARE_ACCOUNT_ID: undefined }).status, 0, "deploy mode still requires account pin");
     } finally { await rm(fixture.exactAbsPath, { force: true }); await rm(altPath, { force: true }); }
-  }));
+  });
 }
 
 test("gate5 deploy wrapper has no 'deploy all' mode: only the three exact resource names are accepted", () => {
@@ -132,8 +143,8 @@ test("gate5 deploy wrapper refuses raw templates for every resource", () => {
     assert.notEqual(run([resource, "preflight", "--config", templatePath]).status, 0, `${resource} raw template must be refused`);
 });
 
-test("gate5 deploy wrapper refuses an active-schedule mailbox/observer config even with an otherwise-valid, correctly-named file", () =>
-  withSharedStagingConfigLock(root, "shared-staging-render", async () => {
+guardedTest("gate5 deploy wrapper refuses an active-schedule mailbox/observer config even with an otherwise-valid, correctly-named file",
+  [fixtures[1].exactAbsPath, fixtures[2].exactAbsPath], async () => {
   for (const resource of ["mailbox", "observer"] as const) {
     const fixture = fixtures.find((f) => f.resource === resource)!;
     const active = fixture.config();
@@ -147,10 +158,10 @@ test("gate5 deploy wrapper refuses an active-schedule mailbox/observer config ev
     try { assert.notEqual(run([resource, "preflight", "--config", fixture.exactRelPath]).status, 0, `${resource} malformed schedule must be refused`); }
     finally { await rm(fixture.exactAbsPath, { force: true }); }
   }
-}));
+});
 
-test("gate5 deploy wrapper refuses cross-environment/Production substitutions", () =>
-  withSharedStagingConfigLock(root, "shared-staging-render", async () => {
+guardedTest("gate5 deploy wrapper refuses cross-environment/Production substitutions",
+  fixtures.map((fixture) => fixture.exactAbsPath), async () => {
   const executor = fixtures[0];
   const prodShaped = executor.config();
   prodShaped.services = [{ binding: "ADMISSION_SERVICE", service: "limitmark-admission-service-production", entrypoint: "AuthorityLifecycleOnly" }];
@@ -172,4 +183,46 @@ test("gate5 deploy wrapper refuses cross-environment/Production substitutions", 
   await writeFile(observer.exactAbsPath, JSON.stringify(unknownField));
   try { assert.notEqual(run(["observer", "preflight", "--config", observer.exactRelPath]).status, 0, "unknown future capability field must be refused"); }
   finally { await rm(observer.exactAbsPath, { force: true }); }
-}));
+});
+
+// Gate 7B: deploy mode, only ever inside the Wrangler sandbox. Every Gate 5
+// rendered config carries its own account_id, which the pinned Wrangler
+// resolves before CLOUDFLARE_ACCOUNT_ID, so a config whose account_id differs
+// from the environment pin must be refused before any preflight PASS and
+// before any Wrangler spawn.
+const deployScript = "scripts/authority-staging-gate5-deploy.ts";
+const configName = (fixture: Fixture) => fixture.exactRelPath.slice("deployment/".length);
+
+for (const fixture of fixtures) {
+  test(`gate5 deploy wrapper (${fixture.resource}): deploy mode still requires the account pin and never starts Wrangler`, () =>
+    withWranglerSandbox(async (sandbox) => {
+      await sandbox.writeDeploymentFile(configName(fixture), JSON.stringify(fixture.config()));
+      const { result, wrangler } = await sandbox.runWrapper(deployScript, [fixture.resource, "deploy", "--config", fixture.exactRelPath], { CLOUDFLARE_ACCOUNT_ID: undefined });
+      assert.notEqual(result.status, 0, "deploy mode still requires account pin");
+      assert.equal(wrangler, null, "no Wrangler process may be started");
+    }));
+
+  test(`gate5 deploy wrapper (${fixture.resource}): config account_id differing from the environment pin is refused before PASS or spawn`, () =>
+    withWranglerSandbox(async (sandbox) => {
+      await sandbox.writeDeploymentFile(configName(fixture), JSON.stringify(fixture.config()));
+      const otherAccount = "c".repeat(32);
+      const preflight = await sandbox.runWrapper(deployScript, [fixture.resource, "preflight", "--config", fixture.exactRelPath], { CLOUDFLARE_ACCOUNT_ID: otherAccount });
+      assert.equal(preflight.result.status, 2, "account-pin mismatch must be refused in preflight");
+      assert.equal(preflight.result.stdout, "", "no PASS evidence may be printed on refusal");
+      const { result, wrangler } = await sandbox.runWrapper(deployScript, [fixture.resource, "deploy", "--config", fixture.exactRelPath], { CLOUDFLARE_ACCOUNT_ID: otherAccount });
+      assert.equal(wrangler, null, "no Wrangler process may be started on an account-pin mismatch");
+      assert.equal(result.status, 2, result.stderr);
+      assert.ok(!result.stderr.includes("invoking pinned Wrangler"));
+      for (const output of [preflight.result.stdout, preflight.result.stderr, result.stdout, result.stderr])
+        assert.ok(!output.includes(validAccount) && !output.includes(otherAccount), "raw account ids must never be printed");
+    }));
+
+  test(`gate5 deploy wrapper (${fixture.resource}): deploy mode invokes exactly the planned argv on the (sandboxed, fake) pinned Wrangler`, () =>
+    withWranglerSandbox(async (sandbox) => {
+      const config = await sandbox.writeDeploymentFile(configName(fixture), JSON.stringify(fixture.config()));
+      const { result, wrangler } = await sandbox.runWrapper(deployScript, [fixture.resource, "deploy", "--config", fixture.exactRelPath], { CLOUDFLARE_ACCOUNT_ID: validAccount });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(wrangler, { argv: ["deploy", "--config", await realpath(config)] });
+      assert.ok(!result.stdout.includes(validAccount) && !result.stderr.includes(validAccount), "raw account id must never be printed");
+    }));
+}
