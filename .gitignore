@@ -43,3 +43,13 @@ deployment/lifecycle-observer.staging.jsonc
 # repository at all -- scripts/gate6-credential-capture.ts refuses any
 # repo-contained output path outright, so no glob for them is needed here.
 deployment/lifecycle-transport.staging.json
+
+# Gate 7A: the two rendered STAGING_SCHEDULE_ARMED staging configs carry the
+# same real account/public-key values as their Gate 5 inactive counterparts
+# and must never be committed. Only these exact filenames are ignored;
+# produced only by scripts/authority-staging-gate7-arm.ts, never hand-edited.
+# This is a hygiene backstop only -- the primary safety boundary is the
+# exact-filename/exact-schedule-state invariant enforced by the arm/preflight/
+# deploy tooling itself, not this glob.
+deployment/lifecycle-mailbox.staging.armed.jsonc
+deployment/lifecycle-observer.staging.armed.jsonc

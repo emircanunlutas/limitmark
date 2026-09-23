@@ -6,16 +6,27 @@ import {
   validateStagingLifecycleMailboxConfig, validateStagingLifecycleObserverConfig, validateStagingLifecycleTransportManifest,
 } from "../deployment/lifecycle-private-contract";
 
-const modes = ["mailbox", "observer", "transport", "staging-mailbox", "staging-observer", "staging-transport"] as const;
+const modes = ["mailbox", "observer", "transport", "staging-mailbox", "staging-observer", "staging-transport",
+  "staging-mailbox-arm", "staging-observer-arm"] as const;
 // Gate 5A closed the two reviewed Gate 5 rendered filenames. Gate 6A closes
 // the third: staging-transport now also accepts only the exact reviewed
-// rendered filename. Production modes (mailbox/observer/transport) are still
-// unchanged -- this repository has no reviewed deployment plan for them yet,
-// so only directory placement is enforced for those.
+// rendered filename. Gate 7A adds the two ARMED modes: a distinct exact
+// rendered filename per resource (produced only by
+// scripts/authority-staging-gate7-arm.ts), requiring STAGING_SCHEDULE_ARMED
+// rather than STAGING_DEPLOYMENT_INACTIVE. The existing staging-mailbox/
+// staging-observer modes are unchanged by this addition -- they still require
+// STAGING_DEPLOYMENT_INACTIVE and still refuse an armed config outright (see
+// below), so an operator cannot satisfy Gate 5's inactive preflight with a
+// Gate 7A armed file or vice versa. Production modes (mailbox/observer/
+// transport) are still unchanged -- this repository has no reviewed
+// deployment plan for them yet, so only directory placement is enforced for
+// those.
 const exactStagingRenderedConfigName: Partial<Record<(typeof modes)[number], string>> = {
   "staging-mailbox": "lifecycle-mailbox.staging.jsonc",
   "staging-observer": "lifecycle-observer.staging.jsonc",
   "staging-transport": "lifecycle-transport.staging.json",
+  "staging-mailbox-arm": "lifecycle-mailbox.staging.armed.jsonc",
+  "staging-observer-arm": "lifecycle-observer.staging.armed.jsonc",
 };
 
 async function main(): Promise<void> {
@@ -41,9 +52,12 @@ async function main(): Promise<void> {
     // Gate 5A: Gate 5 deployment must only ever render/preflight the inactive
     // schedule state; a rendered config carrying an active Cron, or any
     // other `triggers` shape, is refused here rather than merely reported.
-    if (mode === "staging-mailbox") validateStagingLifecycleMailboxConfig(config, false, "STAGING_DEPLOYMENT_INACTIVE");
-    else validateStagingLifecycleObserverConfig(config, false, "STAGING_DEPLOYMENT_INACTIVE");
-    process.stdout.write("Private lifecycle contract preflight: PASS (local validation only). Schedule state: STAGING_DEPLOYMENT_INACTIVE\n");
+    // Gate 7A: the two "-arm" modes are the mirror image -- they require
+    // STAGING_SCHEDULE_ARMED and refuse an inactive (or any other) shape.
+    const requireScheduleState = mode.endsWith("-arm") ? "STAGING_SCHEDULE_ARMED" : "STAGING_DEPLOYMENT_INACTIVE";
+    if (mode === "staging-mailbox" || mode === "staging-mailbox-arm") validateStagingLifecycleMailboxConfig(config, false, requireScheduleState);
+    else validateStagingLifecycleObserverConfig(config, false, requireScheduleState);
+    process.stdout.write(`Private lifecycle contract preflight: PASS (local validation only). Schedule state: ${requireScheduleState}\n`);
     return;
   }
   process.stdout.write("Private lifecycle contract preflight: PASS (local validation only).\n");

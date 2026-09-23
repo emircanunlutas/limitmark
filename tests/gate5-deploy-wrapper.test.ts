@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { encodeBase64url } from "../src/lib/ingress-protocol";
+import { withSharedStagingConfigLock } from "./support/shared-staging-config-lock";
 
 // Gate 5A: proves the generalized Gate 5 deploy wrapper (one Worker per
 // invocation, closed resource set) refuses every unsafe input -- including
@@ -73,7 +74,8 @@ function run(args: string[], overrides: Record<string, string | undefined> = { C
 }
 
 for (const fixture of fixtures) {
-  test(`gate5 deploy wrapper (${fixture.resource}): preflight PASSes at the exact rendered filename without contacting Cloudflare`, async () => {
+  test(`gate5 deploy wrapper (${fixture.resource}): preflight PASSes at the exact rendered filename without contacting Cloudflare`, () =>
+    withSharedStagingConfigLock(root, "shared-staging-render", async () => {
     await writeFile(fixture.exactAbsPath, JSON.stringify(fixture.config()));
     try {
       const result = run([fixture.resource, "preflight", "--config", fixture.exactRelPath]);
@@ -87,9 +89,10 @@ for (const fixture of fixtures) {
       assert.ok(!result.stdout.includes(validAccount) && !result.stderr.includes(validAccount), "raw account id must never be printed");
       assert.deepEqual(parsed.plannedCommand, ["wrangler", "deploy", "--config", fixture.exactAbsPath]);
     } finally { await rm(fixture.exactAbsPath, { force: true }); }
-  });
+  }));
 
-  test(`gate5 deploy wrapper (${fixture.resource}): refuses alternate filenames, account-pin defects and extra argv`, async () => {
+  test(`gate5 deploy wrapper (${fixture.resource}): refuses alternate filenames, account-pin defects and extra argv`, () =>
+    withSharedStagingConfigLock(root, "shared-staging-render", async () => {
     await writeFile(fixture.exactAbsPath, JSON.stringify(fixture.config()));
     const altPath = join(root, "deployment", `gate5-${fixture.resource}-alt.staging.jsonc`);
     await writeFile(altPath, JSON.stringify(fixture.config()));
@@ -110,7 +113,7 @@ for (const fixture of fixtures) {
       assert.notEqual(run([fixture.resource, "apply", "--config", fixture.exactRelPath]).status, 0, "unknown mode");
       assert.notEqual(run([fixture.resource, "deploy", "--config", fixture.exactRelPath], { CLOUDFLARE_ACCOUNT_ID: undefined }).status, 0, "deploy mode still requires account pin");
     } finally { await rm(fixture.exactAbsPath, { force: true }); await rm(altPath, { force: true }); }
-  });
+  }));
 }
 
 test("gate5 deploy wrapper has no 'deploy all' mode: only the three exact resource names are accepted", () => {
@@ -129,7 +132,8 @@ test("gate5 deploy wrapper refuses raw templates for every resource", () => {
     assert.notEqual(run([resource, "preflight", "--config", templatePath]).status, 0, `${resource} raw template must be refused`);
 });
 
-test("gate5 deploy wrapper refuses an active-schedule mailbox/observer config even with an otherwise-valid, correctly-named file", async () => {
+test("gate5 deploy wrapper refuses an active-schedule mailbox/observer config even with an otherwise-valid, correctly-named file", () =>
+  withSharedStagingConfigLock(root, "shared-staging-render", async () => {
   for (const resource of ["mailbox", "observer"] as const) {
     const fixture = fixtures.find((f) => f.resource === resource)!;
     const active = fixture.config();
@@ -143,9 +147,10 @@ test("gate5 deploy wrapper refuses an active-schedule mailbox/observer config ev
     try { assert.notEqual(run([resource, "preflight", "--config", fixture.exactRelPath]).status, 0, `${resource} malformed schedule must be refused`); }
     finally { await rm(fixture.exactAbsPath, { force: true }); }
   }
-});
+}));
 
-test("gate5 deploy wrapper refuses cross-environment/Production substitutions", async () => {
+test("gate5 deploy wrapper refuses cross-environment/Production substitutions", () =>
+  withSharedStagingConfigLock(root, "shared-staging-render", async () => {
   const executor = fixtures[0];
   const prodShaped = executor.config();
   prodShaped.services = [{ binding: "ADMISSION_SERVICE", service: "limitmark-admission-service-production", entrypoint: "AuthorityLifecycleOnly" }];
@@ -167,4 +172,4 @@ test("gate5 deploy wrapper refuses cross-environment/Production substitutions", 
   await writeFile(observer.exactAbsPath, JSON.stringify(unknownField));
   try { assert.notEqual(run(["observer", "preflight", "--config", observer.exactRelPath]).status, 0, "unknown future capability field must be refused"); }
   finally { await rm(observer.exactAbsPath, { force: true }); }
-});
+}));

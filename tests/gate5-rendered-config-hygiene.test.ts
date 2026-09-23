@@ -32,3 +32,10 @@ test("alternate rendered filenames are not made safe by the ignore glob (no broa
     "deployment/lifecycle-mailbox.staging.custom.jsonc", "deployment/lifecycle-observer.staging.custom.jsonc"];
   for (const path of alternates) assert.equal(ignored(path), false, `${path} must not be silently ignored by a broad glob`);
 });
+
+test("Gate 7A rendered armed staging configs are ignored; no broad pattern hides an alternate name", () => {
+  const armed = ["deployment/lifecycle-mailbox.staging.armed.jsonc", "deployment/lifecycle-observer.staging.armed.jsonc"];
+  for (const path of armed) assert.equal(ignored(path), true, `${path} must be gitignored`);
+  const alternates = ["deployment/lifecycle-mailbox.staging.custom.armed.jsonc", "deployment/lifecycle-observer.staging.custom.armed.jsonc"];
+  for (const path of alternates) assert.equal(ignored(path), false, `${path} must not be silently ignored by a broad glob`);
+});
