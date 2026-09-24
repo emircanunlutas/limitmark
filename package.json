@@ -36,6 +36,7 @@
     "authority:staging:reconcile": "tsx scripts/authority-staging-submit.ts reconcile",
     "authority:staging:result": "tsx scripts/authority-staging-submit.ts read-result",
     "authority:staging:settle": "tsx scripts/authority-staging-submit.ts settle",
+    "authority:staging:continuity:verify": "tsx scripts/authority-staging-continuity-verify.ts",
     "authority:staging:executor:preflight": "tsx scripts/authority-staging-executor-preflight.ts",
     "authority:staging:admission:preflight": "tsx scripts/authority-staging-admission-preflight.ts",
     "authority:staging:admission:deploy:preflight": "tsx scripts/authority-staging-admission-deploy.ts preflight",

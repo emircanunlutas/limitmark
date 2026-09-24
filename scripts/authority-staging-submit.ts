@@ -6,6 +6,7 @@ import { boundedFile, loadStagingLifecycleTransportManifest, readStagingR2Creden
 import { parseControl } from "../workers/lifecycle-mailbox/wire";
 import { verifyLifecycleResult } from "../operator/lifecycle-result";
 import { refuseClosedStagingInitialization } from "../operator/staging-initialization-lock";
+import { STAGING_GATE7_KEY_FINGERPRINT } from "../operator/staging-gate7-continuity";
 
 // Gate 2 staging capability. Structurally mirrors scripts/authority-submit.ts
 // (Production) but is a separate, explicitly self-identifying tool: its only
@@ -16,7 +17,10 @@ import { refuseClosedStagingInitialization } from "../operator/staging-initializ
 // file exposes, so it fails at argument dispatch, before any transport call.
 // Since Gate 8 Phase 0 the `initialize` action itself is permanently refused
 // (operator/staging-initialization-lock.ts); submitInitialize is retained as
-// the historical Gate 7 implementation and is never reached.
+// the historical Gate 7 implementation and is never reached. Since Gate 8
+// Phase 1A, read-result pins every receipt to the exact full Gate 7 operator
+// public-key fingerprint (operator/staging-gate7-continuity.ts); result objects
+// are untrusted transport data and settlements carry no receipt.
 
 const digestPattern = /^[a-f0-9]{64}$/u;
 const noncePattern = /^[a-f0-9]{32}$/u;
@@ -104,7 +108,7 @@ async function readResult(): Promise<void> {
   try {
     verified = verifyLifecycleResult(result.body, kind as "lifecycle" | "reconciliation" | "settlement",
       kind === "lifecycle" ? { digest: digest as string } : { digest: digest as string, nonce: nonce as string }, Date.now(),
-      "staging", "staging-public-inquiries-v1");
+      "staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT);
   } catch {
     terminal("UNCONFIRMED", { kind });
     return;
