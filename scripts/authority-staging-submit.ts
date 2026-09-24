@@ -5,6 +5,7 @@ import { oneR2Request } from "../operator/r2-transport";
 import { boundedFile, loadStagingLifecycleTransportManifest, readStagingR2Credential } from "../operator/staging-credential-io";
 import { parseControl } from "../workers/lifecycle-mailbox/wire";
 import { verifyLifecycleResult } from "../operator/lifecycle-result";
+import { refuseClosedStagingInitialization } from "../operator/staging-initialization-lock";
 
 // Gate 2 staging capability. Structurally mirrors scripts/authority-submit.ts
 // (Production) but is a separate, explicitly self-identifying tool: its only
@@ -13,6 +14,9 @@ import { verifyLifecycleResult } from "../operator/lifecycle-result";
 // manifest. There is no "rotate-release" action here at all (STAGING ROTATION
 // — NOT IMPLEMENTED / GATE 9 — CLOSED): attempting it is not a code path this
 // file exposes, so it fails at argument dispatch, before any transport call.
+// Since Gate 8 Phase 0 the `initialize` action itself is permanently refused
+// (operator/staging-initialization-lock.ts); submitInitialize is retained as
+// the historical Gate 7 implementation and is never reached.
 
 const digestPattern = /^[a-f0-9]{64}$/u;
 const noncePattern = /^[a-f0-9]{32}$/u;
@@ -111,7 +115,10 @@ async function readResult(): Promise<void> {
 }
 async function main(): Promise<void> {
   const action = process.argv[2];
-  if (action === "initialize") await submitInitialize();
+  // Gate 8 Phase 0: staging initialization is permanently closed after Gate 7.
+  // Refused unconditionally (including --inspect) before any argument, artifact,
+  // manifest, credential or transport access. reconcile/settle/read-result stay open.
+  if (action === "initialize") { refuseClosedStagingInitialization(); await submitInitialize(); }
   else if (action === "reconcile" || action === "settle") await control(action);
   else if (action === "read-result") await readResult();
   else fail();

@@ -1,5 +1,6 @@
 import { STAGING_ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH } from "../workers/admission-service/authority";
 import { AUTHORITY_OPERATOR_COMMAND_VERSION, signAuthorityInitializationCommand, type AuthorityInitializationCommand } from "../workers/admission-service/operator-command";
+import { refuseClosedStagingInitialization } from "../operator/staging-initialization-lock";
 
 // Gate 2 staging capability. Unlike scripts/authority-initialize.ts this script
 // has no `--environment` flag at all: it can only ever prepare a staging
@@ -14,6 +15,16 @@ function argument(name: string): string | undefined {
 }
 
 async function main() {
+  // Gate 8 Phase 0: the staging authority was permanently initialized at Gate 7.
+  // This refusal is unconditional and precedes argument parsing, key access and
+  // signing; the historical Gate 7 preparation below is never reached.
+  refuseClosedStagingInitialization();
+  await historicalGate7Preparation();
+}
+
+/** The pre-lockout Gate 7 preparation body, byte-identical at revision 2216dcb,
+ * retained for reproducibility only. main() refuses before this can run. */
+async function historicalGate7Preparation() {
   const releaseId = argument("release-id") ?? "";
   const releaseKeyId = argument("release-key-id") ?? "";
   const expectedAuthority = argument("authority-id");
