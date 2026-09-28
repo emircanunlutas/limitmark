@@ -117,7 +117,7 @@ Future coding agents must not run these commands without explicit authorization:
 - `drizzle-kit migrate` / `db:migrate`
 - commands that contact Cloudflare, Vercel, Turnstile, Resend, or GitHub
 
-This includes `authority:staging:admission:live-verify`, which is explicitly obsolete/provider-contacting in the current repository state and not safe to run casually.
+This includes `authority:staging:admission:live-verify`, which is a retired/closed entry point: it now refuses unconditionally before any Wrangler launch or provider transport, and must not be used for live verification or as a health check. The retained harness config `wrangler.staging-admission-live-readonly.local.jsonc` can still be run manually with `wrangler dev`, which uses a provider-contacting preview transport and falls under the Wrangler rule above; do not run it.
 
 ## Safe command examples
 Use the supported repo scripts only when relevant and authorized:
