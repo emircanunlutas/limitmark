@@ -226,7 +226,45 @@ async function main() {
 
     await expectPreAllowed(makePre(nextRelease));
 
-    // The pre-rotation POST-client observation must supply one of the five retained charges.
+    // The two pre-rotation PRE grants leave one burst slot shared with the next release.
+    const thirdQuotaInput = makePre(nextRelease, quotaClient);
+    const thirdQuotaPermit = await expectPreAllowed(thirdQuotaInput);
+    quotaClientPreCount += 1;
+    await expectPostAllowed(thirdQuotaInput, thirdQuotaPermit);
+    quotaClientPostCount += 1;
+    assert.equal(quotaClientPreCount, admissionPolicy.pre.clientBurst.limit);
+    assert.equal((await call("pre", { input: makePre(nextRelease, quotaClient) })).body.decision, "limited");
+
+    // A different client still passes both budgets.
+    const independentPostInput = makePre(nextRelease);
+    const independentPostPermit = await expectPreAllowed(independentPostInput);
+    await expectPostAllowed(independentPostInput, independentPostPermit);
+
+    // Probe POST global before the minute expires: the pre-rotation charge must survive restart.
+    const retainedPostGlobalCandidates = Array.from({ length: admissionPolicy.post.global.limit - postAllowedCount + 1 },
+      () => makePre(nextRelease));
+    const retainedPostPreResults = await inBatches(retainedPostGlobalCandidates, 25, (input) => call("pre", { input }));
+    for (const result of retainedPostPreResults) assert.equal(result.body.decision, "allowed");
+    preAllowedCount += retainedPostPreResults.length;
+    const retainedPostPermits = retainedPostPreResults.map((result) => String(result.body.permit));
+    const retainedPostAllowedResults = await inBatches(retainedPostGlobalCandidates.slice(0, -1), 25,
+      (input) => {
+        const index = retainedPostGlobalCandidates.indexOf(input);
+        return call("post", { input: { ...input, permit: retainedPostPermits[index] } });
+      });
+    for (const result of retainedPostAllowedResults) assert.equal(result.body.decision, "allowed");
+    postAllowedCount += retainedPostAllowedResults.length;
+    assert.equal(postAllowedCount, admissionPolicy.post.global.limit);
+    assert.equal((await call("post", { input: { ...retainedPostGlobalCandidates.at(-1)!,
+      permit: retainedPostPermits.at(-1)! } })).body.decision, "limited");
+
+    // Let the first burst expire while retaining all ten-minute POST-client history.
+    const burstClearAtMs = Date.now() + admissionPolicy.pre.clientBurst.windowMs + 10;
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, burstClearAtMs - Date.now())));
+    preAllowedCount = 0;
+    postAllowedCount = 0;
+
+    // Pre-rotation POST-client observations still supply two of the five retained charges.
     const clientPostPermits: Array<{ input: PreInput; permit: string }> = [];
     while (clientPostPermits.length < admissionPolicy.post.client.limit - quotaClientPostCount + 1) {
       const input = makePre(nextRelease, quotaClient);
@@ -241,20 +279,11 @@ async function main() {
     assert.equal((await call("post", { input: { ...clientPostPermits.at(-1)!.input,
       permit: clientPostPermits.at(-1)!.permit } })).body.decision, "limited");
 
-    // A different client is still allowed, proving the prior denial was client rather than global history.
-    const independentPostInput = makePre(nextRelease);
-    const independentPostPermit = await expectPreAllowed(independentPostInput);
-    await expectPostAllowed(independentPostInput, independentPostPermit);
-
-    // The pre-rotation PRE-client observations must likewise supply two of the thirty retained charges.
-    while (quotaClientPreCount < admissionPolicy.pre.client.limit) {
-      await expectPreAllowed(makePre(nextRelease, quotaClient));
-      quotaClientPreCount += 1;
-    }
+    // The second burst has three grants; old ten-minute history was never reset.
     assert.equal((await call("pre", { input: makePre(nextRelease, quotaClient) })).body.decision, "limited");
     await expectPreAllowed(makePre(nextRelease)); // proves PRE global was not the saturated rule
 
-    // Fill POST global to exactly its limit. If any pre-restart/rotation charge vanished, the probe is allowed.
+    // Fill the new POST global window to its limit; earlier global rows have expired.
     const postGlobalCandidates = Array.from({ length: admissionPolicy.post.global.limit - postAllowedCount + 1 },
       () => makePre(nextRelease));
     const postGlobalPreResults = await inBatches(postGlobalCandidates, 25, (input) => call("pre", { input }));
@@ -271,7 +300,7 @@ async function main() {
     assert.equal(postAllowedCount, admissionPolicy.post.global.limit);
     assert.equal((await call("post", { input: { ...postGlobalCandidates.at(-1)!, permit: postGlobalPermits.at(-1)! } })).body.decision, "limited");
 
-    // Fill PRE global to exactly its limit with distinct clients, independent of the saturated quota client.
+    // Fill the new PRE global window with distinct clients, independent of the saturated quota client.
     const remainingPre = admissionPolicy.pre.global.limit - preAllowedCount;
     assert.ok(remainingPre > 0);
     const preGlobalFill = Array.from({ length: remainingPre }, () => makePre(nextRelease));
@@ -300,7 +329,7 @@ async function main() {
       await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     }
   }
-  console.log("Production Durable Object RPC integration: PASS (actual Production class/RPC, pre-rotation PRE/POST state, independent quota scopes, permit/nonce replay, rotation, retirement and persisted restart)");
+  console.log("Production Durable Object RPC integration: PASS (actual Production class/RPC, pre-rotation client history and POST-global charge across restart, current-window global limits, permit/nonce replay, rotation and retirement)");
 }
 
 void main();

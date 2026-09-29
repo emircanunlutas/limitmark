@@ -18,7 +18,7 @@ export const AUTHORITY_RELEASE_RETENTION_AFTER_RETIRE_MS = 12 * 60_000;
 export const LIFECYCLE_RECEIPT_CAPACITY = 4_096;
 
 export const admissionPolicy = {
-  pre: { client: { limit: 30, windowMs: 600_000 }, global: { limit: 300, windowMs: 60_000 } },
+  pre: { client: { limit: 30, windowMs: 600_000 }, clientBurst: { limit: 3, windowMs: 60_000 }, global: { limit: 300, windowMs: 60_000 } },
   post: { client: { limit: 5, windowMs: 600_000 }, global: { limit: 100, windowMs: 60_000 } },
 } as const;
 
@@ -288,9 +288,12 @@ export class PublicInquiryAdmissionAuthority {
         try { assertIngressFresh(input.issuedAtMs, nowMs); } catch { return { decision: "unavailable" } as const; }
         this.prune(nowMs);
         if (exactlyOne(this.storage, "SELECT nonce FROM nonces WHERE nonce=?", input.nonce)) return { decision: "replay" } as const;
+        // Shape bursts per address pseudonym; this does not identify people or guarantee fairness or DDoS protection.
+        const clientBurstCount = this.count("pre", "client", input.clientPseudonym, nowMs - admissionPolicy.pre.clientBurst.windowMs, nowMs);
         const clientCount = this.count("pre", "client", input.clientPseudonym, nowMs - admissionPolicy.pre.client.windowMs, nowMs);
         const globalCount = this.count("pre", "global", "*", nowMs - admissionPolicy.pre.global.windowMs, nowMs);
-        if (clientCount >= admissionPolicy.pre.client.limit || globalCount >= admissionPolicy.pre.global.limit) return { decision: "limited" } as const;
+        if (clientBurstCount >= admissionPolicy.pre.clientBurst.limit || clientCount >= admissionPolicy.pre.client.limit ||
+            globalCount >= admissionPolicy.pre.global.limit) return { decision: "limited" } as const;
         this.storage.sql.exec("INSERT INTO observations(id,stage,scope,subject,observed_at_ms) VALUES(?,'pre','client',?,?)", `${attempt}:c`, input.clientPseudonym, nowMs);
         this.options.faultAfterObservation?.();
         this.storage.sql.exec("INSERT INTO observations(id,stage,scope,subject,observed_at_ms) VALUES(?,'pre','global','*',?)", `${attempt}:g`, nowMs);

@@ -95,12 +95,14 @@ Existing order remains: schema and submission-token validation → identity → 
 
 | Stage | Client | Global | Purpose |
 | --- | --- | --- | --- |
-| Pre | 30 / 10 minutes | 300 / minute | Bound admissions to expensive verification. |
+| Pre | 3 / rolling 60 seconds (burst) and 30 / 10 minutes | 300 / minute | Bound admissions to expensive verification. |
 | Post | 5 / 10 minutes | 100 / minute | Bound verified admissions to business writes. |
 
 These remain conservative, inactive defaults, not measured capacity estimates. There is no supplied inquiry-volume, latency, cost or shared-office distribution to justify raising them. Five requests per shared IP can be unfair to offices/CGNAT. IPv6 rotation/distributed clients can evade client fairness buckets; those keys identify network addresses, not people. Raising client/global ceilings would buy capacity at additional cost, not eliminate starvation.
 
 The audit attack reproduces deterministically: 10 clients × 30 rejected attempts at time zero exhaust all 300 pre admissions. New clients get no Siteverify call until observations begin expiring at 60,000 ms. Denied attempts do not refresh the window. Original attacking clients remain client-limited until 600,000 ms. With more clients, an attacker can compete for every reopened global slot indefinitely; recovery after attack cessation is bounded by the last accepted observations, not the last denial. Client exhaustion can last ten minutes.
+
+*PRE-BURST-01 update (local remediation; the analysis above records the pre-remediation policy).* The authority now also caps each client pseudonym at 3 accepted pre grants per rolling 60 seconds, in the same atomic transaction as the unchanged 30/10-minute client and 300/minute global ceilings. At time zero the 10-client attack above therefore obtains 30 pre admissions, not 300; exhausting global pre now needs at least 100 distinct pseudonyms. Distributed anonymous starvation remains possible. The 3/60-second value is not capacity-calibrated and has not been qualified in the Worker runtime. `ADMISSION_POLICY_EPOCH` was not changed; whether tightening the quota under the unchanged epoch is compatible with release governance remains **OPEN**, not a reviewed decision.
 
 Strict post capacity stays untouched by these rejected challenges. Requests already admitted through pre can finish Turnstile and consume available post quota even while pre is saturated; a dedicated test proves this. Fresh submissions, even carrying a valid browser challenge token, must still pass pre and cannot use the reserved post capacity. Read-only pages and independent authorized admin operations are outside these budgets.
 
