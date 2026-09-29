@@ -122,6 +122,33 @@ test("Preview and bypass-only configurations remain closed", async () => {
     { enabled: false, reason: "persistence" });
 });
 
+test("operator, migration and disposable-test credentials are forbidden in every deployed runtime", async () => {
+  const misplaced = ["AUTHORITY_STAGING_OPERATOR_PRIVATE_KEY", "DATABASE_MIGRATION_URL", "TEST_DATABASE_URL"];
+  const matrix = await readJson("secret-matrix.json") as { runtimes: Record<string, unknown> };
+  const runtimes = Object.keys(matrix.runtimes) as Parameters<typeof validateRuntimeSecrets>[0][];
+  assert.equal(runtimes.length, 8);
+  for (const runtime of runtimes) {
+    assert.equal(validateRuntimeSecrets(runtime, {}, false), true, `${runtime} control`);
+    for (const name of misplaced) {
+      assert.equal(validateRuntimeSecrets(runtime, { [name]: "synthetic-placeholder" }, false), false, `${runtime} ${name}`);
+      assert.equal(validateRuntimeSecrets(runtime, { [name]: "synthetic-placeholder" }), false, `${runtime} ${name} requireAll`);
+    }
+  }
+  // The runtime application must still accept its own DATABASE_URL role while rejecting the migration and test roles.
+  assert.equal(validateRuntimeSecrets("vercelApplication", { DATABASE_URL: "synthetic-runtime-role" }, false), true);
+  assert.equal(validateRuntimeSecrets("vercelApplication", { DATABASE_URL: "synthetic-runtime-role", DATABASE_MIGRATION_URL: "synthetic-migration-role" }, false), false);
+  assert.equal(validateRuntimeSecrets("vercelApplication", { DATABASE_URL: "synthetic-runtime-role", TEST_DATABASE_URL: "synthetic-test-role" }, false), false);
+
+  const contract = await readJson("vercel-project-contract.json");
+  const preview = contract.previewApplicationProject as { forbiddenProductionConfiguration: string[] };
+  for (const name of misplaced) {
+    assert.ok(preview.forbiddenProductionConfiguration.includes(name), name);
+    const omitted = structuredClone(contract) as Record<string, Record<string, unknown>>;
+    omitted.previewApplicationProject.forbiddenProductionConfiguration = preview.forbiddenProductionConfiguration.filter((entry) => entry !== name);
+    assert.equal(validateVercelProjectContract(omitted), false, `contract omitting ${name}`);
+  }
+});
+
 test("browser/static checks catch configuration regressions without claiming runtime secrecy", async () => {
   const browserSource = await readTree(new URL("../src/app/", import.meta.url));
   const nextConfig = await readFile(new URL("../next.config.ts", import.meta.url), "utf8");
