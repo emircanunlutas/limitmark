@@ -50,7 +50,8 @@ export function validateVercelProjectContract(value: unknown): boolean {
     .every((gate) => bypassDoesNotSatisfy.includes(gate))) return false;
   if (!Array.isArray(previewForbidden) || !["DATABASE_URL", "ADMISSION_RELEASE_RPC_KEY", "VERCEL_AUTOMATION_BYPASS_SECRET",
     "VERCEL_ADMIN_AUTOMATION_BYPASS_SECRET", "INGRESS_SIGNING_PRIVATE_KEY", "INGRESS_IDENTITY_HMAC_KEY", "PUBLIC_ORIGIN_SECRET",
-    "TURNSTILE_SECRET_KEY", "RESEND_API_KEY", "AUTHORITY_OPERATOR_PRIVATE_KEY", "AUTHORITY"].every((name) => previewForbidden.includes(name))) return false;
+    "TURNSTILE_SECRET_KEY", "RESEND_API_KEY", "AUTHORITY_OPERATOR_PRIVATE_KEY", "AUTHORITY_STAGING_OPERATOR_PRIVATE_KEY",
+    "DATABASE_MIGRATION_URL", "TEST_DATABASE_URL", "AUTHORITY"].every((name) => previewForbidden.includes(name))) return false;
   if (admission.hosting !== "cloudflare-worker-custom-domain" || admission.vercelProjectRef !== null || admission.authorityBindingPlacement !== "admission-service-only") return false;
   return shared.productionAndPreviewProjectIdsMustDiffer === true && shared.publicAndAdminBypassCredentialsMustDiffer === true &&
     shared.staticChecksAreRuntimeSecrecyProof === false && shared.realSettingsChangeAuthorized === false;
