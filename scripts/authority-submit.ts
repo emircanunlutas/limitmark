@@ -1,12 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
-import { MAX_SEALED_ARTIFACT_BYTES, parseSealedLifecycleArtifact, parseStrictJson, type LifecycleOperation } from "../operator/lifecycle-submitter";
+import { MAX_SEALED_ARTIFACT_BYTES, authenticateSealedLifecycleArtifact, parseSealedLifecycleArtifact, parseStrictJson, type LifecycleOperation } from "../operator/lifecycle-submitter";
 import { commandDigest, verifyOperatorCommand } from "../workers/admission-service/operator-command";
 import { oneR2Request, type R2Credential } from "../operator/r2-transport";
 import { validateLifecycleTransportManifest } from "../deployment/lifecycle-private-contract";
 import { parseControl } from "../workers/lifecycle-mailbox/wire";
-import { verifyLifecycleResult } from "../operator/lifecycle-result";
+import { verifyProductionLifecycleResult } from "../operator/lifecycle-result";
 
 type Manifest = { accountId: string; requestBucket: string; resultBucket: string; operatorPublicKey: string; authorityId: string; policyEpoch: string };
 const digestPattern = /^[a-f0-9]{64}$/u;
@@ -119,24 +119,34 @@ async function control(operation: "reconcile" | "settle"): Promise<void> {
   } catch { terminal("UNCONFIRMED", { operation, digest, nonce }); }
 }
 async function readResult(): Promise<void> {
-  const args = argsFor(["--kind", "--digest", "--nonce", "--result-credentials"]);
+  const args = argsFor(["--kind", "--digest", "--nonce", "--result-credentials", "--command"]);
   const kind = pathArg(args, "--kind");
   const digest = args["--digest"];
   const nonce = args["--nonce"];
   if (!["lifecycle", "reconciliation", "settlement"].includes(kind) ||
       kind === "lifecycle" && (typeof digest !== "string" || !digestPattern.test(digest) || nonce !== undefined) ||
       kind !== "lifecycle" && (typeof nonce !== "string" || !noncePattern.test(nonce) || typeof digest !== "string" || !digestPattern.test(digest))) fail();
+  // Positive results need authenticated command context. Settlement is guard state, not a command receipt, so it takes none.
+  if (kind === "settlement" && args["--command"] !== undefined) fail();
   const target = await manifest();
+  let command;
+  if (args["--command"] !== undefined) {
+    // Historical authentication: the same parser and signature check as submission, without submission freshness.
+    const authenticated = await authenticateSealedLifecycleArtifact(await boundedFile(pathArg(args, "--command"), MAX_SEALED_ARTIFACT_BYTES),
+      target.operatorPublicKey);
+    if (authenticated.digest !== digest) fail();
+    command = authenticated.expected;
+  }
   const token = await credential(pathArg(args, "--result-credentials"));
   const key = kind === "lifecycle" ? `lifecycle/${digest}.json` : `${kind}/${nonce}.json`;
   let result;
   try { result = await oneR2Request("GET", { accountId: target.accountId, bucket: target.resultBucket }, token, key, undefined, 8_192); }
   catch { terminal("UNCONFIRMED", { kind }); return; }
   if (result.statusCode !== 200) { terminal("UNCONFIRMED", { kind }); return; }
-  let verified: ReturnType<typeof verifyLifecycleResult>;
+  let verified: ReturnType<typeof verifyProductionLifecycleResult>;
   try {
-    verified = verifyLifecycleResult(result.body, kind as "lifecycle" | "reconciliation" | "settlement",
-      kind === "lifecycle" ? { digest: digest as string } : { digest: digest as string, nonce: nonce as string });
+    verified = verifyProductionLifecycleResult(result.body, kind as "lifecycle" | "reconciliation" | "settlement",
+      kind === "lifecycle" ? { digest: digest as string } : { digest: digest as string, nonce: nonce as string }, { command });
   } catch {
     // Invalid result bytes are failed observations, never proof that an
     // earlier accepted lifecycle command was refused or rolled back.

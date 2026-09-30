@@ -35,23 +35,30 @@ export async function createCliResultHarness() {
   const trace = join(directory, "trace.txt");
   const credentials = join(directory, "synthetic-result-credential.json");
   const cli = join(directory, "cli.cjs");
+  const commandFile = join(directory, "sealed-command.json");
+  // A real throwaway operator key, so tests can sign commands that the manifest-pinned public key authenticates.
+  const pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+  const publicKey = encodeBase64url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)));
+  const privateKey = encodeBase64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey)));
   try {
     await mkdir(join(directory, "deployment"));
     await writeFile(join(directory, "deployment", "lifecycle-transport.production.json"), JSON.stringify({
       version: 1, environment: "production", accountId: "a".repeat(32),
       requestBucket: "limitmark-lifecycle-requests-production", resultBucket: "limitmark-lifecycle-results-production",
       authorityId: "production-public-inquiries-v1", policyEpoch: "phase5c-i1-epoch-1",
-      operatorPublicKey: encodeBase64url(new Uint8Array(32).fill(7)),
+      operatorPublicKey: publicKey,
     }));
     await writeFile(credentials, JSON.stringify({ accessKeyId: "synthetic-read", secretAccessKey: "synthetic-only" }));
     const bundle = await build({ entryPoints: [resolve(root, "scripts/authority-submit.ts")], outfile: cli, bundle: true,
       write: false, platform: "node", format: "cjs", target: "node24", plugins: [files], logLevel: "silent" });
     await writeFile(cli, bundle.outputFiles[0].contents);
     return {
-      async run(bytes: Uint8Array, kind: "lifecycle" | "reconciliation", digest: string, nonce?: string) {
+      publicKey, privateKey,
+      async run(bytes: Uint8Array, kind: "lifecycle" | "reconciliation" | "settlement", digest: string, nonce?: string, sealedCommand?: Uint8Array) {
         await writeFile(trace, "");
         const args = [cli, "read-result", "--kind", kind, "--digest", digest, "--result-credentials", credentials];
         if (nonce) args.push("--nonce", nonce);
+        if (sealedCommand) { await writeFile(commandFile, sealedCommand); args.push("--command", commandFile); }
         const result = spawnSync(process.execPath, args, { cwd: directory, encoding: "utf8", timeout: 5_000,
           env: { ...process.env, I3B_CLI_BODY: Buffer.from(bytes).toString("base64"), I3B_CLI_TRACE: trace } });
         return { exitCode: result.status, stdout: result.stdout, stderr: result.stderr, methods: (await readFile(trace, "utf8")).trim().split(/\s+/u) };

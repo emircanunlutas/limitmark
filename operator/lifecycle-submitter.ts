@@ -2,10 +2,12 @@ import { decodeCanonicalBase64url } from "../src/lib/ingress-protocol";
 import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID } from "../workers/admission-service/authority";
 import {
   AUTHORITY_OPERATOR_COMMAND_VERSION,
+  expectedCommandReceipt,
   validateAuthorityOperatorCommand,
   verifyOperatorCommand,
   type AuthorityInitializationCommand,
   type AuthorityReleaseRotationCommand,
+  type CommandDerivedReceipt,
 } from "../workers/admission-service/operator-command";
 import type { LifecycleReceipt } from "../workers/admission-service/authority";
 
@@ -78,9 +80,12 @@ export function parseStrictJson(source: string): unknown {
   return result;
 }
 
-export function parseSealedLifecycleArtifact(bytes: Uint8Array, operation: LifecycleOperation, nowMs = Date.now(),
-  expectedEnvironment: "production" | "staging" = "production"): SealedLifecycleArtifact {
-  if (!bytes.length || bytes.byteLength > MAX_SEALED_ARTIFACT_BYTES || !Number.isSafeInteger(nowMs)) throw new Error("invalid-sealed-artifact");
+/** Invariant parse and canonicalization: strict JSON, exact envelope, pinned protocol/target and the exact command schema.
+ * Nothing here depends on the current time, so the same logic serves submission and historical authentication.
+ * `operation` undefined accepts either lifecycle operation (the command itself then names it). */
+function parseSealedLifecycleArtifactInvariant(bytes: Uint8Array, operation: LifecycleOperation | undefined,
+  expectedEnvironment: "production" | "staging"): SealedLifecycleArtifact {
+  if (!bytes.length || bytes.byteLength > MAX_SEALED_ARTIFACT_BYTES) throw new Error("invalid-sealed-artifact");
   let value: unknown;
   try {
     const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -93,16 +98,43 @@ export function parseSealedLifecycleArtifact(bytes: Uint8Array, operation: Lifec
       !Array.isArray(record.command) || typeof record.signature !== "string") throw new Error("invalid-sealed-artifact");
   const command = record.command as unknown as SealedLifecycleArtifact["command"];
   const expectedAuthorityId = expectedEnvironment === "staging" ? STAGING_ADMISSION_AUTHORITY_ID : ADMISSION_AUTHORITY_ID;
-  if (command[0] !== AUTHORITY_OPERATOR_COMMAND_VERSION || command[1] !== operation || command[2] !== expectedEnvironment ||
-      command[3] !== expectedAuthorityId || command[4] !== ADMISSION_POLICY_EPOCH) throw new Error("invalid-sealed-artifact");
+  if (command[0] !== AUTHORITY_OPERATOR_COMMAND_VERSION || !(operation === undefined ? command[1] === "initialize" || command[1] === "rotate-release" : command[1] === operation) ||
+      command[2] !== expectedEnvironment || command[3] !== expectedAuthorityId || command[4] !== ADMISSION_POLICY_EPOCH) throw new Error("invalid-sealed-artifact");
   try {
     validateAuthorityOperatorCommand(command);
     decodeCanonicalBase64url(record.signature, 64);
   } catch { throw new Error("invalid-sealed-artifact"); }
-  const issuedAtMs = operation === "initialize" ? (command as AuthorityInitializationCommand)[7] : (command as AuthorityReleaseRotationCommand)[10];
-  if (Math.abs(nowMs - issuedAtMs) > 5 * 60_000 || operation === "rotate-release" &&
-      Math.abs(nowMs - (command as AuthorityReleaseRotationCommand)[8]) > 5 * 60_000) throw new Error("invalid-sealed-artifact");
   return { command, signature: record.signature };
+}
+
+/** Submission eligibility only: "may this command be submitted now?" Never used for historical authentication. */
+function assertSubmissionEligible(command: SealedLifecycleArtifact["command"], nowMs: number): void {
+  if (!Number.isSafeInteger(nowMs)) throw new Error("invalid-sealed-artifact");
+  const issuedAtMs = command[1] === "initialize" ? (command as AuthorityInitializationCommand)[7] : (command as AuthorityReleaseRotationCommand)[10];
+  if (Math.abs(nowMs - issuedAtMs) > 5 * 60_000 || command[1] === "rotate-release" &&
+      Math.abs(nowMs - (command as AuthorityReleaseRotationCommand)[8]) > 5 * 60_000) throw new Error("invalid-sealed-artifact");
+}
+
+export function parseSealedLifecycleArtifact(bytes: Uint8Array, operation: LifecycleOperation, nowMs = Date.now(),
+  expectedEnvironment: "production" | "staging" = "production"): SealedLifecycleArtifact {
+  if (!Number.isSafeInteger(nowMs)) throw new Error("invalid-sealed-artifact");
+  const artifact = parseSealedLifecycleArtifactInvariant(bytes, operation, expectedEnvironment);
+  assertSubmissionEligible(artifact.command, nowMs);
+  return artifact;
+}
+
+/** A sealed artifact whose operator signature verified against a pinned public key. `expected` carries every
+ * command-derived receipt field, including the operator-key fingerprint, and never `sequence`/`appliedMs`. */
+export type AuthenticatedLifecycleCommand = SealedLifecycleArtifact & { digest: string; expected: CommandDerivedReceipt };
+
+/** Historical authentication for result verification: the same invariant parser and signature logic as submission, but
+ * with no freshness. It authenticates that the operator signed exactly this command; it does not make it submittable. */
+export async function authenticateSealedLifecycleArtifact(bytes: Uint8Array, operatorPublicKey: string,
+  options: { expectedOperation?: LifecycleOperation; expectedEnvironment?: "production" | "staging" } = {}): Promise<AuthenticatedLifecycleCommand> {
+  const artifact = parseSealedLifecycleArtifactInvariant(bytes, options.expectedOperation, options.expectedEnvironment ?? "production");
+  await verifyOperatorCommand(artifact.command, artifact.signature, operatorPublicKey);
+  const expected = await expectedCommandReceipt(artifact.command, operatorPublicKey);
+  return { ...artifact, digest: expected.digest, expected };
 }
 
 /** A provider-owned private executor supplies the pinned binding and public key. */

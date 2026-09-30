@@ -92,17 +92,22 @@ test("K4b: with the staging pin, an initialize expectation refuses a rotate-rele
   assert.throws(() => call({ ...reconciliation(pinned), coverage: "INCOMPLETE" }, "reconciliation"), /result-integrity/u);
 });
 
-test("K5: only the staging caller pins; Production scripts are untouched", async () => {
+test("K5: only the staging caller pins the Gate 7 receipt; Production verification is command-backed and staging-free", async () => {
   const production = await readFile(join(root, "scripts", "authority-submit.ts"), "utf8");
-  assert.equal(/staging-gate7-continuity|STAGING_GATE7_KEY_FINGERPRINT/u.test(production), false);
-  const call = production.slice(production.indexOf("verified = verifyLifecycleResult("));
-  assert.match(call.slice(0, call.indexOf(";")), /nonce: nonce as string \}\)$/u,
-    "Production call still passes only bytes, kind and expected target: no identity or fingerprint argument");
+  // Staging-only trust state never reaches Production (unchanged property, now stated over code rather than one call shape).
+  assert.equal(/staging-gate7-continuity|STAGING_GATE7|STAGING_ADMISSION|staging-public-inquiries|staging-credential-io|staging-initialization-lock/u.test(production), false);
+  assert.equal(/expectedReceipt|STAGING_GATE7_CONTINUITY/u.test(production), false, "Production passes no staging canonical expected receipt");
+  // New Production contract: positive acceptance only through the command-backed verifier, fed solely by an authenticated command.
+  assert.equal(/\bverifyLifecycleResult\b/u.test(production), false, "no command-less positive verifier in the Production CLI");
+  const call = production.slice(production.indexOf("verified = verifyProductionLifecycleResult("));
+  assert.match(call.slice(0, call.indexOf(";")), /nonce: nonce as string \}, \{ command \}\)$/u,
+    "Production passes only bytes, kind, expected target and the authenticated command: no identity or fingerprint argument");
+  assert.match(production, /command = authenticated\.expected;/u, "the command context is derived from the authenticated artifact, never from CLI values");
   const staging = await readFile(join(root, "scripts", "authority-staging-submit.ts"), "utf8");
   assert.match(staging, /"staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT, "initialize", STAGING_GATE7_CONTINUITY\.receipt\);/u,
     "the staging caller binds the initialize operation, the Gate 7 key fingerprint and the full canonical Gate 7 receipt");
   assert.match(staging, /import \{ STAGING_GATE7_CONTINUITY, STAGING_GATE7_KEY_FINGERPRINT \} from "\.\.\/operator\/staging-gate7-continuity";/u);
-  assert.equal(/expectedReceipt|STAGING_GATE7_CONTINUITY/u.test(production), false, "Production passes no expected receipt");
+  assert.equal(/verifyProductionLifecycleResult|authenticateSealedLifecycleArtifact/u.test(staging), false, "staging does not use the Production command-backed path");
 });
 
 // --- Canonical receipt binding (R07) ------------------------------------------------------------------

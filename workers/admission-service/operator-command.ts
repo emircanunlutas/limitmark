@@ -101,14 +101,23 @@ export async function commandDigest(command: AuthorityOperatorCommand): Promise<
   return sha256(bytes);
 }
 
-async function receiptBase(command: AuthorityOperatorCommand, operatorPublicKey: string): Promise<Omit<LifecycleReceipt, "sequence">> {
+/** Every receipt field derived from the signed command and operator public key. `sequence` and `appliedMs` are
+ * assigned by the authority at application time and are deliberately not command-derived. */
+export type CommandDerivedReceipt = Omit<LifecycleReceipt, "sequence" | "appliedMs">;
+
+/** The single command -> receipt mapping: used when the authority writes a receipt and when a verifier binds a result to a command. */
+export async function expectedCommandReceipt(command: AuthorityOperatorCommand, operatorPublicKey: string): Promise<CommandDerivedReceipt> {
   const init = command[1] === "initialize";
   return { digest: await commandDigest(command), version: 1, operation: command[1], environment: command[2],
     authorityId: command[3], policyEpoch: command[4],
-    keyFingerprint: await sha256(decodeCanonicalBase64url(operatorPublicKey, 32)), appliedMs: 0,
+    keyFingerprint: await sha256(decodeCanonicalBase64url(operatorPublicKey, 32)),
     currentReleaseId: command[5], nextReleaseId: init ? command[5] : command[6],
     nextKeyId: init ? command[6] : command[7], activatesMs: init ? command[7] : command[8],
     retiresMs: init ? null : command[9] };
+}
+
+async function receiptBase(command: AuthorityOperatorCommand, operatorPublicKey: string): Promise<Omit<LifecycleReceipt, "sequence">> {
+  return { ...await expectedCommandReceipt(command, operatorPublicKey), appliedMs: 0 };
 }
 
 export async function executeSignedAuthorityInitialization(storage: DurableStorageLike, command: AuthorityInitializationCommand, signature: string,
