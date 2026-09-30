@@ -10,6 +10,7 @@ const receipt = { digest, version: 1, operation: "initialize", environment: "pro
   currentReleaseId: "release-a", nextReleaseId: "release-a", nextKeyId: "key-a", activatesMs: 9_000, retiresMs: null };
 const base = { version: 1, digest, environment: "production", authorityId: "production-public-inquiries-v1",
   policyEpoch: "phase5c-i1-epoch-1", observedAtMs: now };
+const row = { release_id: "release-a", key_id: "key-a", activated_ms: 9_000, retired_ms: null };
 const bytes = (value: object) => new TextEncoder().encode(JSON.stringify(value));
 
 test("only exact positive receipt becomes lifecycle success", () => {
@@ -22,7 +23,7 @@ test("only exact positive receipt becomes lifecycle success", () => {
 });
 
 test("read-only NOT_FOUND and stale observations never prove rollback", () => {
-  const observation = { ...base, nonce, status: "NOT_FOUND", initialized: true, coverage: "COMPLETE", receipt: null, releases: [] };
+  const observation = { ...base, nonce, status: "NOT_FOUND", initialized: true, coverage: "COMPLETE", receipt: null, releases: [row] };
   assert.equal(verifyLifecycleResult(bytes(observation), "reconciliation", { nonce }, now).status, "UNCONFIRMED");
   assert.throws(() => verifyLifecycleResult(bytes(observation), "reconciliation", { nonce: "c".repeat(32) }, now));
   assert.throws(() => verifyLifecycleResult(bytes(observation), "reconciliation", { nonce }, now + 300_001));
@@ -34,7 +35,7 @@ test("read-only NOT_FOUND and stale observations never prove rollback", () => {
 });
 
 const environment = "production", authorityId = "production-public-inquiries-v1";
-const exact = { ...base, nonce, status: "EXACT_RECEIPT", initialized: true, coverage: "COMPLETE", receipt, releases: [] };
+const exact = { ...base, nonce, status: "EXACT_RECEIPT", initialized: true, coverage: "COMPLETE", receipt, releases: [row] };
 const verify = (value: object, kind: "lifecycle" | "reconciliation", expectedOperation?: "initialize" | "rotate-release") =>
   verifyLifecycleResult(bytes(value), kind, kind === "lifecycle" ? { digest } : { nonce }, now, environment, authorityId, undefined, expectedOperation);
 
@@ -68,7 +69,7 @@ test("EXACT_RECEIPT requires initialized true and COMPLETE coverage; other modes
     assert.throws(() => verify({ ...exact, ...patch }, "reconciliation"), /result-integrity/u, name);
   // Legitimate non-exact states are still accepted, including uninitialized NOT_FOUND and INCOMPLETE history.
   const negative = { ...exact, receipt: null };
-  assert.equal(verify({ ...negative, status: "NOT_FOUND", initialized: false }, "reconciliation").status, "UNCONFIRMED");
+  assert.equal(verify({ ...negative, status: "NOT_FOUND", initialized: false, releases: [] }, "reconciliation").status, "UNCONFIRMED");
   assert.equal(verify({ ...negative, status: "NOT_FOUND" }, "reconciliation").status, "UNCONFIRMED");
   assert.equal(verify({ ...negative, status: "HISTORY_INCOMPLETE", coverage: "INCOMPLETE" }, "reconciliation").status, "UNCONFIRMED");
 });
@@ -147,4 +148,74 @@ test("expectedReceipt: receipt-less results and settlement keep their behavior; 
   assert.throws(() => withExpected({ ...base, status: "SUCCESS", receipt }, "lifecycle", { ...receipt, environment: "staging" }), /result-contract/u);
   // Omitting it preserves the generic behavior.
   assert.equal(withExpected({ ...base, status: "SUCCESS", receipt: { ...receipt, sequence: 7 } }, "lifecycle").status, "SUCCESS");
+});
+
+// --- reconciliation.releases[]: current authority snapshot coherence --------------------------------
+
+const snapshot = (releases: unknown[], patch: object = {}) => ({ ...exact, receipt: null, status: "NOT_FOUND", releases, ...patch });
+const two = [{ release_id: "release-old", key_id: "key-old", activated_ms: 1_000, retired_ms: 9_500 },
+  { release_id: "release-new", key_id: "key-new", activated_ms: 9_000, retired_ms: null }];
+const rejects = (value: object, pattern: RegExp, name: string) => assert.throws(() => verify(value, "reconciliation"), pattern, name);
+
+test("release snapshot: legitimate current states pass for every reconciliation status", () => {
+  assert.equal(verify(snapshot([row]), "reconciliation").status, "UNCONFIRMED");
+  assert.equal(verify(snapshot(two), "reconciliation").status, "UNCONFIRMED");
+  assert.equal(verify(snapshot(two, { status: "HISTORY_INCOMPLETE", coverage: "INCOMPLETE" }), "reconciliation").status, "UNCONFIRMED");
+  assert.equal(verify({ ...exact, releases: two }, "reconciliation").status, "SUCCESS");
+  // Equal activation timestamps are producible (rotation at the initialization instant) and ORDER BY leaves ties unordered.
+  const tied = [{ ...two[0], activated_ms: 9_000 }, two[1]];
+  assert.equal(verify(snapshot(tied), "reconciliation").status, "UNCONFIRMED");
+  assert.equal(verify(snapshot([tied[1], tied[0]]), "reconciliation").status, "UNCONFIRMED");
+  // Uninitialized NOT_FOUND carries no rows.
+  assert.equal(verify(snapshot([], { initialized: false }), "reconciliation").status, "UNCONFIRMED");
+});
+
+test("release snapshot: current rows are independent of the historical receipt", () => {
+  // The receipt names release-a/key-a; the current snapshot is an unrelated, later, valid rotation.
+  const later = [{ release_id: "release-x", key_id: "key-x", activated_ms: 9_900, retired_ms: null }];
+  assert.equal(verify({ ...exact, releases: later }, "reconciliation").status, "SUCCESS");
+  assert.equal(verify({ ...exact, receipt: { ...receipt, operation: "rotate-release", sequence: 1 }, releases: two }, "reconciliation").status, "SUCCESS");
+});
+
+test("release snapshot: malformed rows are result-contract", () => {
+  const bad = (patch: object) => snapshot([{ ...row, ...patch }]);
+  for (const key of Object.keys(row)) {
+    const rest: Record<string, unknown> = { ...row }; delete rest[key];
+    rejects(snapshot([rest]), /result-contract/u, `missing ${key}`);
+  }
+  rejects(bad({ extra: 1 }), /result-contract/u, "extra field");
+  rejects(snapshot([[]]), /result-contract/u, "array row");
+  rejects(snapshot([null]), /result-contract/u, "null row");
+  for (const release_id of ["", "a".repeat(129), "bad id", "x/y", 7, null]) rejects(bad({ release_id }), /result-contract/u, `release_id ${String(release_id)}`);
+  for (const key_id of ["", "a".repeat(65), "bad.key", "a:b", 7, null]) rejects(bad({ key_id }), /result-contract/u, `key_id ${String(key_id)}`);
+  for (const activated_ms of [-1, 1.5, "9000", null, Number.MAX_SAFE_INTEGER + 1]) rejects(bad({ activated_ms }), /result-contract/u, `activated_ms ${String(activated_ms)}`);
+  for (const retired_ms of [-1, 1.5, "9500", Number.MAX_SAFE_INTEGER + 1]) rejects(bad({ retired_ms }), /result-contract/u, `retired_ms ${String(retired_ms)}`);
+  // Domain boundaries mirror the authority validators.
+  assert.equal(verify(snapshot([{ ...row, release_id: "A.b:c_d-1".padEnd(128, "z"), key_id: "K_-".padEnd(64, "z") }]), "reconciliation").status, "UNCONFIRMED");
+});
+
+test("release snapshot: states the authority cannot produce are result-integrity", () => {
+  const [old, next] = two;
+  rejects(snapshot([{ ...row, retired_ms: 9_500 }]), /result-integrity/u, "single retired row, none unretired");
+  rejects(snapshot([{ ...old, retired_ms: old.activated_ms }, next]), /result-integrity/u, "retired at activation");
+  rejects(snapshot([{ ...old, retired_ms: old.activated_ms - 1 }, next]), /result-integrity/u, "retired before activation");
+  rejects(snapshot([old, { ...next, release_id: old.release_id }]), /result-integrity/u, "duplicate release_id");
+  rejects(snapshot([old, { ...next, key_id: old.key_id }]), /result-integrity/u, "duplicate key_id");
+  rejects(snapshot([{ ...old, retired_ms: null }, next]), /result-integrity/u, "two unretired rows");
+  rejects(snapshot([old, { ...next, retired_ms: 9_900 }]), /result-integrity/u, "no unretired row");
+  const third = { release_id: "release-third", key_id: "key-third", activated_ms: 9_500, retired_ms: null };
+  rejects(snapshot([old, { ...next, retired_ms: 9_800 }, third]), /result-integrity/u, "three rows");
+  rejects(snapshot([]), /result-integrity/u, "initialized with zero rows");
+  rejects(snapshot([], { status: "HISTORY_INCOMPLETE", coverage: "INCOMPLETE" }), /result-integrity/u, "incomplete history with zero rows");
+  rejects(snapshot([row], { initialized: false }), /result-integrity/u, "uninitialized with rows");
+  rejects(snapshot([next, old]), /result-integrity/u, "reversed activation order");
+  rejects(snapshot([old, { ...next, activated_ms: 9_500 }]), /result-integrity/u, "retired row not retired after successor activation");
+  rejects(snapshot([old, { ...next, activated_ms: 9_600 }]), /result-integrity/u, "successor activates after predecessor retires");
+  rejects(snapshot([{ ...old, activated_ms: 9_100 }, next]), /result-integrity/u, "retired row activated after the unretired row");
+  rejects({ ...exact, releases: [{ ...row, retired_ms: 9_000 }] }, /result-integrity/u, "EXACT_RECEIPT with impossible snapshot");
+});
+
+test("release snapshot: error text carries no row values", () => {
+  try { verify(snapshot([{ ...row, release_id: "secret-release-value", retired_ms: 1 }]), "reconciliation"); assert.fail("accepted"); }
+  catch (error) { assert.equal((error as Error).message, "result-integrity"); }
 });
