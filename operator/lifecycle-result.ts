@@ -1,5 +1,6 @@
 import { parseStrictJson, type LifecycleOperation } from "./lifecycle-submitter";
 import { UNAVAILABLE_AUTHORITY_OBSERVATION } from "./lifecycle-observation";
+import type { LifecycleReceipt } from "../workers/admission-service/authority";
 
 export type ResultKind = "lifecycle" | "reconciliation" | "settlement";
 const digestPattern = /^[a-f0-9]{64}$/u;
@@ -11,11 +12,15 @@ function exact(value: unknown, required: readonly string[], optional: readonly s
 }
 function safeTime(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
 const lifecycleOperations: readonly LifecycleOperation[] = ["initialize", "rotate-release"];
+// Every LifecycleReceipt field; shared by the shape check and the exact expected-receipt comparison.
+const receiptFields = ["digest", "version", "operation", "environment", "authorityId", "policyEpoch", "keyFingerprint", "sequence", "appliedMs",
+  "currentReleaseId", "nextReleaseId", "nextKeyId", "activatesMs", "retiresMs"] as const satisfies readonly (keyof LifecycleReceipt)[];
 function receipt(value: unknown, digest: string, expectedEnvironment: "production" | "staging", expectedAuthorityId: string,
-  expectedKeyFingerprint: string | undefined, expectedOperation: LifecycleOperation | undefined): value is Record<string, unknown> {
-  if (!exact(value, ["digest", "version", "operation", "environment", "authorityId", "policyEpoch", "keyFingerprint", "sequence", "appliedMs",
-    "currentReleaseId", "nextReleaseId", "nextKeyId", "activatesMs", "retiresMs"])) return false;
-  return value.digest === digest && value.version === 1 && lifecycleOperations.includes(value.operation as LifecycleOperation) &&
+  expectedKeyFingerprint: string | undefined, expectedOperation: LifecycleOperation | undefined,
+  expectedReceipt: Readonly<LifecycleReceipt> | undefined): value is Record<string, unknown> {
+  if (!exact(value, receiptFields)) return false;
+  return (expectedReceipt === undefined || receiptFields.every((field) => value[field] === expectedReceipt[field])) &&
+    value.digest === digest && value.version === 1 && lifecycleOperations.includes(value.operation as LifecycleOperation) &&
     (expectedOperation === undefined || value.operation === expectedOperation) && value.environment === expectedEnvironment &&
     value.authorityId === expectedAuthorityId && value.policyEpoch === "phase5c-i1-epoch-1" &&
     typeof value.keyFingerprint === "string" && digestPattern.test(value.keyFingerprint) &&
@@ -35,13 +40,23 @@ function receipt(value: unknown, digest: string, expectedEnvironment: "productio
  * `expectedOperation`, when supplied, requires every present receipt to carry that exact
  * operation; omitted, either lifecycle operation is accepted as before. A reconciliation
  * EXACT_RECEIPT must additionally report `initialized: true` and `coverage: "COMPLETE"`,
- * the only state the authority produces for an exact receipt. */
+ * the only state the authority produces for an exact receipt.
+ * `expectedReceipt`, when supplied, must itself be a complete, well-formed receipt for the
+ * expected environment/authority (and key fingerprint/operation, when those are supplied), and
+ * every present result receipt must equal it in ALL fourteen fields (fieldwise `===`, no partial
+ * expectation). It never requires a receipt to exist: receipt-less results are unaffected. It is a
+ * caller-intent/state binding, not writer authentication. Omitted (every Production caller),
+ * behavior is unchanged. */
 export function verifyLifecycleResult(bytes: Uint8Array, kind: ResultKind, expected: { digest?: string; nonce?: string }, nowMs = Date.now(),
   expectedEnvironment: "production" | "staging" = "production",
   expectedAuthorityId: string = "production-public-inquiries-v1",
-  expectedKeyFingerprint?: string, expectedOperation?: LifecycleOperation) {
+  expectedKeyFingerprint?: string, expectedOperation?: LifecycleOperation, expectedReceipt?: Readonly<LifecycleReceipt>) {
   if (expectedKeyFingerprint !== undefined && !digestPattern.test(expectedKeyFingerprint)) throw new Error("result-contract");
   if (expectedOperation !== undefined && !lifecycleOperations.includes(expectedOperation)) throw new Error("result-contract");
+  const expectedReceiptDigest: unknown = expectedReceipt?.digest;
+  if (expectedReceipt !== undefined && (typeof expectedReceiptDigest !== "string" || !digestPattern.test(expectedReceiptDigest) ||
+      !receipt(expectedReceipt, expectedReceiptDigest, expectedEnvironment, expectedAuthorityId, expectedKeyFingerprint, expectedOperation, undefined)))
+    throw new Error("result-contract");
   if (!bytes.length || bytes.byteLength > 8_192) throw new Error("result-size");
   const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   if (source.charCodeAt(0) === 0xfeff) throw new Error("result-bom");
@@ -72,7 +87,7 @@ export function verifyLifecycleResult(bytes: Uint8Array, kind: ResultKind, expec
         !Array.isArray(value.releases) || value.releases.length > 3) throw new Error("result-contract");
   } else if (!["SUCCESS", "ALREADY_APPLIED", "REFUSED", "UNAVAILABLE", "UNCONFIRMED"].includes(String(value.status)) ||
       value.reason !== undefined && (typeof value.reason !== "string" || value.reason.length > 64)) throw new Error("result-contract");
-  if (value.receipt !== undefined && value.receipt !== null && !receipt(value.receipt, value.digest, expectedEnvironment, expectedAuthorityId, expectedKeyFingerprint, expectedOperation)) throw new Error("result-contract");
+  if (value.receipt !== undefined && value.receipt !== null && !receipt(value.receipt, value.digest, expectedEnvironment, expectedAuthorityId, expectedKeyFingerprint, expectedOperation, expectedReceipt)) throw new Error("result-contract");
   if (kind === "reconciliation" && value.status === "EXACT_RECEIPT" && (value.initialized !== true || value.coverage !== "COMPLETE"))
     throw new Error("result-integrity");
   if (kind === "reconciliation" && (value.status === "EXACT_RECEIPT") !== (value.receipt !== null) ||

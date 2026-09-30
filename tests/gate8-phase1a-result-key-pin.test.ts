@@ -12,7 +12,7 @@ import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import { build, type Plugin } from "esbuild";
 import { verifyLifecycleResult } from "../operator/lifecycle-result";
-import { STAGING_GATE7_KEY_FINGERPRINT } from "../operator/staging-gate7-continuity";
+import { STAGING_GATE7_CONTINUITY, STAGING_GATE7_KEY_FINGERPRINT } from "../operator/staging-gate7-continuity";
 
 const root = process.cwd();
 const pinned = STAGING_GATE7_KEY_FINGERPRINT;
@@ -98,9 +98,64 @@ test("K5: only the staging caller pins; Production scripts are untouched", async
   assert.match(call.slice(0, call.indexOf(";")), /nonce: nonce as string \}\)$/u,
     "Production call still passes only bytes, kind and expected target: no identity or fingerprint argument");
   const staging = await readFile(join(root, "scripts", "authority-staging-submit.ts"), "utf8");
-  assert.match(staging, /"staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT, "initialize"\);/u,
-    "the staging caller binds the initialize operation");
-  assert.match(staging, /import \{ STAGING_GATE7_KEY_FINGERPRINT \} from "\.\.\/operator\/staging-gate7-continuity";/u);
+  assert.match(staging, /"staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT, "initialize", STAGING_GATE7_CONTINUITY\.receipt\);/u,
+    "the staging caller binds the initialize operation, the Gate 7 key fingerprint and the full canonical Gate 7 receipt");
+  assert.match(staging, /import \{ STAGING_GATE7_CONTINUITY, STAGING_GATE7_KEY_FINGERPRINT \} from "\.\.\/operator\/staging-gate7-continuity";/u);
+  assert.equal(/expectedReceipt|STAGING_GATE7_CONTINUITY/u.test(production), false, "Production passes no expected receipt");
+});
+
+// --- Canonical receipt binding (R07) ------------------------------------------------------------------
+
+const canonical = STAGING_GATE7_CONTINUITY.receipt;
+const boundWith = (value: object, kind: "lifecycle" | "reconciliation" | "settlement", expectedReceipt?: typeof canonical) =>
+  verifyLifecycleResult(bytes(value), kind, kind === "lifecycle" ? { digest } : { digest, nonce }, now, "staging",
+    "staging-public-inquiries-v1", pinned, "initialize", expectedReceipt);
+const bound = (value: object, kind: "lifecycle" | "reconciliation" | "settlement") => boundWith(value, kind, canonical);
+const deviations: Record<keyof typeof canonical, unknown> = { digest: "0".repeat(64), version: 2, operation: "rotate-release",
+  environment: "production", authorityId: "production-public-inquiries-v1", policyEpoch: "phase5c-i1-epoch-2", keyFingerprint: wrong,
+  sequence: 2, appliedMs: canonical.appliedMs + 1, currentReleaseId: "staging-gate7-other", nextReleaseId: "staging-gate7-other",
+  nextKeyId: "staging-gate7-key-2", activatesMs: canonical.activatesMs + 1, retiresMs: canonical.appliedMs + 1000 };
+
+test("K8: the test fixture is the committed canonical Gate 7 receipt, and canonical results pass with it bound", () => {
+  assert.deepEqual(receipt(pinned), canonical);
+  for (const status of ["SUCCESS", "ALREADY_APPLIED"])
+    for (let replay = 0; replay < 2; replay++) assert.equal(bound(lifecycle(status, pinned), "lifecycle").status, status);
+  assert.equal(bound(reconciliation(pinned), "reconciliation").status, "SUCCESS");
+  // Reconciliation releases[] is current authority state: the binding never compares it with the receipt snapshot.
+  const rotated = { ...reconciliation(pinned), releases: [{ release_id: "later", key_id: "later-key", activated_ms: now - 1, retired_ms: null }] };
+  assert.equal(bound(rotated, "reconciliation").status, "SUCCESS");
+});
+
+test("K9: every altered canonical-receipt field is refused for lifecycle and reconciliation results", () => {
+  assert.deepEqual(Object.keys(deviations).sort(), Object.keys(canonical).sort());
+  // Fields an existing check (digest/version/environment/authority/epoch/fingerprint/operation) refuses even without expectedReceipt.
+  const earlier = new Set(["digest", "version", "operation", "environment", "authorityId", "policyEpoch", "keyFingerprint"]);
+  for (const field of Object.keys(canonical) as (keyof typeof canonical)[]) {
+    const altered = { ...receipt(pinned), [field]: deviations[field] };
+    for (const [kind, value] of [["lifecycle", { ...lifecycle("SUCCESS", pinned), receipt: altered }],
+      ["lifecycle", { ...lifecycle("ALREADY_APPLIED", pinned), receipt: altered }],
+      ["reconciliation", { ...reconciliation(pinned), receipt: altered }]] as const) {
+      assert.throws(() => bound(value, kind), contract, `${kind} ${field}`);
+      const withoutReceipt = () => boundWith(value, kind);
+      if (earlier.has(field)) assert.throws(withoutReceipt, contract, `${field}: an earlier check also refuses`);
+      else assert.doesNotThrow(withoutReceipt, `${field}: only the canonical receipt binding refuses`);
+    }
+  }
+});
+
+test("K10: receipt-less and settlement results keep their behavior with the canonical receipt bound", () => {
+  const negative = { ...base(), nonce, initialized: true, coverage: "COMPLETE", receipt: null, releases: [] };
+  assert.equal(bound({ ...negative, status: "NOT_FOUND" }, "reconciliation").status, "UNCONFIRMED");
+  assert.equal(bound({ ...negative, status: "HISTORY_INCOMPLETE", coverage: "INCOMPLETE" }, "reconciliation").status, "UNCONFIRMED");
+  assert.equal(bound({ ...base(), nonce, status: "UNAVAILABLE" }, "reconciliation").status, "UNCONFIRMED");
+  assert.equal(bound({ ...base(), status: "UNCONFIRMED", reason: "dispatch-ambiguous" }, "lifecycle").status, "UNCONFIRMED");
+  assert.deepEqual(bound({ ...base(), nonce, settled: true }, "settlement"), { status: "SETTLED", digest, nonce });
+  assert.throws(() => bound({ ...base(), status: "SUCCESS" }, "lifecycle"), /result-integrity/u, "a receipt-less positive result is still not a pass");
+  // Fingerprint and operation pins stay active alongside the receipt.
+  assert.throws(() => bound(lifecycle("SUCCESS", wrong), "lifecycle"), contract);
+  assert.throws(() => bound({ ...lifecycle("SUCCESS", pinned), receipt: { ...receipt(pinned), operation: "rotate-release" } }, "lifecycle"), contract);
+  // Omitting the expectation keeps the prior pinned behavior.
+  assert.equal(boundWith({ ...lifecycle("SUCCESS", pinned), receipt: { ...receipt(pinned), sequence: 2 } }, "lifecycle").status, "SUCCESS");
 });
 
 // --- CLI boundary -----------------------------------------------------------
@@ -203,4 +258,25 @@ test("K7: staging CLI settlement reads remain valid without any receipt", async 
   assert.equal(unsettled.status, 3);
   assert.deepEqual(JSON.parse(unsettled.stdout), { status: "UNCONFIRMED", environment: "staging", digest, nonce });
   assert.deepEqual(settled.trace, ["manifest-load", "credential-read", `transport GET settlement/${nonce}.json`]);
+});
+
+test("K11: staging CLI read-result refuses a correctly keyed result whose receipt deviates from the canonical Gate 7 receipt", async () => {
+  const fresh = Date.now();
+  for (const field of ["sequence", "appliedMs", "currentReleaseId", "nextKeyId", "activatesMs", "retiresMs"] as const) {
+    const altered = { ...receipt(pinned), [field]: deviations[field] };
+    for (const [kind, body] of [["lifecycle", { ...lifecycle("SUCCESS", pinned, fresh), receipt: altered }],
+      ["reconciliation", { ...reconciliation(pinned, fresh), receipt: altered }]] as const) {
+      const result = await readResult(kind, body);
+      assert.equal(result.status, 3, `${kind}/${field}: ${result.stderr}`);
+      assert.deepEqual(JSON.parse(result.stdout), { status: "UNCONFIRMED", environment: "staging", kind },
+        "the deviating receipt is never displayed and no new field is emitted");
+      assert.equal(result.stderr, "");
+      assert.deepEqual(result.trace, ["manifest-load", "credential-read",
+        `transport GET ${kind === "lifecycle" ? `lifecycle/${digest}` : `${kind}/${nonce}`}.json`]);
+    }
+  }
+  // The canonical receipt is printed exactly as before.
+  const good = await readResult("lifecycle", lifecycle("SUCCESS", pinned, fresh));
+  assert.equal(good.status, 0);
+  assert.deepEqual((JSON.parse(good.stdout) as { receipt: unknown }).receipt, STAGING_GATE7_CONTINUITY.receipt);
 });
