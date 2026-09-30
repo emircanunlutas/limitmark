@@ -108,7 +108,7 @@ async function readResult(): Promise<void> {
   try {
     verified = verifyLifecycleResult(result.body, kind as "lifecycle" | "reconciliation" | "settlement",
       kind === "lifecycle" ? { digest: digest as string } : { digest: digest as string, nonce: nonce as string }, Date.now(),
-      "staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT);
+      "staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT, "initialize");
   } catch {
     terminal("UNCONFIRMED", { kind });
     return;

@@ -79,6 +79,18 @@ test("K4: omitting the parameter preserves prior behavior exactly (any well-form
     assert.throws(() => staged(lifecycle("SUCCESS", pinned), "lifecycle", malformed), contract, "a malformed pin never widens acceptance");
 });
 
+test("K4b: with the staging pin, an initialize expectation refuses a rotate-release receipt and an incoherent EXACT_RECEIPT", () => {
+  const rotate = { ...receipt(pinned), operation: "rotate-release" };
+  const call = (value: object, kind: "lifecycle" | "reconciliation") => verifyLifecycleResult(bytes(value), kind,
+    kind === "lifecycle" ? { digest } : { digest, nonce }, now, "staging", "staging-public-inquiries-v1", pinned, "initialize");
+  assert.equal(call(lifecycle("SUCCESS", pinned), "lifecycle").status, "SUCCESS");
+  assert.equal(call(reconciliation(pinned), "reconciliation").status, "SUCCESS");
+  assert.throws(() => call({ ...lifecycle("SUCCESS", pinned), receipt: rotate }, "lifecycle"), contract);
+  assert.throws(() => call({ ...reconciliation(pinned), receipt: rotate }, "reconciliation"), contract);
+  assert.throws(() => call({ ...reconciliation(pinned), initialized: false }, "reconciliation"), /result-integrity/u);
+  assert.throws(() => call({ ...reconciliation(pinned), coverage: "INCOMPLETE" }, "reconciliation"), /result-integrity/u);
+});
+
 test("K5: only the staging caller pins; Production scripts are untouched", async () => {
   const production = await readFile(join(root, "scripts", "authority-submit.ts"), "utf8");
   assert.equal(/staging-gate7-continuity|STAGING_GATE7_KEY_FINGERPRINT/u.test(production), false);
@@ -86,7 +98,8 @@ test("K5: only the staging caller pins; Production scripts are untouched", async
   assert.match(call.slice(0, call.indexOf(";")), /nonce: nonce as string \}\)$/u,
     "Production call still passes only bytes, kind and expected target: no identity or fingerprint argument");
   const staging = await readFile(join(root, "scripts", "authority-staging-submit.ts"), "utf8");
-  assert.match(staging, /"staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT\);/u);
+  assert.match(staging, /"staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT, "initialize"\);/u,
+    "the staging caller binds the initialize operation");
   assert.match(staging, /import \{ STAGING_GATE7_KEY_FINGERPRINT \} from "\.\.\/operator\/staging-gate7-continuity";/u);
 });
 
