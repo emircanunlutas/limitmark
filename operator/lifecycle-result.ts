@@ -13,8 +13,12 @@ function exact(value: unknown, required: readonly string[], optional: readonly s
 function safeTime(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
 const lifecycleOperations: readonly LifecycleOperation[] = ["initialize", "rotate-release"];
 // Every LifecycleReceipt field; shared by the shape check and the exact expected-receipt comparison.
-const receiptFields = ["digest", "version", "operation", "environment", "authorityId", "policyEpoch", "keyFingerprint", "sequence", "appliedMs",
+// Typecheck fails both ways: `satisfies` rejects a listed key that is not a LifecycleReceipt key, and
+// `Exhaustive` resolves to `never` (so the assignment below fails) if a LifecycleReceipt key is not listed.
+const listedReceiptFields = ["digest", "version", "operation", "environment", "authorityId", "policyEpoch", "keyFingerprint", "sequence", "appliedMs",
   "currentReleaseId", "nextReleaseId", "nextKeyId", "activatesMs", "retiresMs"] as const satisfies readonly (keyof LifecycleReceipt)[];
+type Exhaustive<List extends readonly (keyof LifecycleReceipt)[]> = [Exclude<keyof LifecycleReceipt, List[number]>] extends [never] ? List : never;
+const receiptFields: Exhaustive<typeof listedReceiptFields> = listedReceiptFields;
 function receipt(value: unknown, digest: string, expectedEnvironment: "production" | "staging", expectedAuthorityId: string,
   expectedKeyFingerprint: string | undefined, expectedOperation: LifecycleOperation | undefined,
   expectedReceipt: Readonly<LifecycleReceipt> | undefined): value is Record<string, unknown> {
