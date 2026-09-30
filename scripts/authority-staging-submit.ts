@@ -6,7 +6,7 @@ import { boundedFile, loadStagingLifecycleTransportManifest, readStagingR2Creden
 import { parseControl } from "../workers/lifecycle-mailbox/wire";
 import { verifyLifecycleResult } from "../operator/lifecycle-result";
 import { refuseClosedStagingInitialization } from "../operator/staging-initialization-lock";
-import { STAGING_GATE7_KEY_FINGERPRINT } from "../operator/staging-gate7-continuity";
+import { STAGING_GATE7_CONTINUITY, STAGING_GATE7_KEY_FINGERPRINT } from "../operator/staging-gate7-continuity";
 
 // Gate 2 staging capability. Structurally mirrors scripts/authority-submit.ts
 // (Production) but is a separate, explicitly self-identifying tool: its only
@@ -108,7 +108,7 @@ async function readResult(): Promise<void> {
   try {
     verified = verifyLifecycleResult(result.body, kind as "lifecycle" | "reconciliation" | "settlement",
       kind === "lifecycle" ? { digest: digest as string } : { digest: digest as string, nonce: nonce as string }, Date.now(),
-      "staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT, "initialize");
+      "staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT, "initialize", STAGING_GATE7_CONTINUITY.receipt);
   } catch {
     terminal("UNCONFIRMED", { kind });
     return;

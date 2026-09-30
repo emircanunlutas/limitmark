@@ -72,3 +72,79 @@ test("EXACT_RECEIPT requires initialized true and COMPLETE coverage; other modes
   assert.equal(verify({ ...negative, status: "NOT_FOUND" }, "reconciliation").status, "UNCONFIRMED");
   assert.equal(verify({ ...negative, status: "HISTORY_INCOMPLETE", coverage: "INCOMPLETE" }, "reconciliation").status, "UNCONFIRMED");
 });
+
+// --- expectedReceipt: exact canonical receipt binding -----------------------------------------------
+
+type Fields = typeof receipt;
+const mutations: Record<keyof Fields, unknown> = { digest: "d".repeat(64), version: 2, operation: "rotate-release", environment: "staging",
+  authorityId: "staging-public-inquiries-v1", policyEpoch: "phase5c-i1-epoch-2", keyFingerprint: "e".repeat(64), sequence: 2, appliedMs: 9_001,
+  currentReleaseId: "release-b", nextReleaseId: "release-b", nextKeyId: "key-b", activatesMs: 9_001, retiresMs: 9_500 };
+// Mutations that an earlier, pre-existing check (digest/version/environment/authority/epoch) already rejects even with no expectedReceipt.
+const earlierRejection = new Set(["digest", "version", "environment", "authorityId", "policyEpoch"]);
+const asReceipt = (value: object) => value as Parameters<typeof verifyLifecycleResult>[8];
+const withExpected = (value: object, kind: "lifecycle" | "reconciliation", expectedReceipt?: object, operation?: "initialize" | "rotate-release") =>
+  verifyLifecycleResult(bytes(value), kind, kind === "lifecycle" ? { digest } : { nonce }, now, environment, authorityId, undefined, operation,
+    expectedReceipt === undefined ? undefined : asReceipt(expectedReceipt));
+
+test("expectedReceipt: canonical lifecycle SUCCESS/ALREADY_APPLIED and reconciliation EXACT_RECEIPT pass, including exact replay", () => {
+  for (const status of ["SUCCESS", "ALREADY_APPLIED"])
+    for (let replay = 0; replay < 2; replay++)
+      assert.equal(withExpected({ ...base, status, receipt }, "lifecycle", receipt).status, status, `lifecycle ${status} replay ${replay}`);
+  assert.equal(withExpected(exact, "reconciliation", receipt).status, "SUCCESS");
+  // The comparison is fieldwise: property insertion order of the result receipt is irrelevant.
+  const reordered = Object.fromEntries(Object.entries(receipt).reverse());
+  assert.equal(withExpected({ ...base, status: "SUCCESS", receipt: reordered }, "lifecycle", receipt).status, "SUCCESS");
+});
+
+test("expectedReceipt: every single-field deviation of a present receipt is refused (lifecycle and reconciliation)", () => {
+  assert.deepEqual(Object.keys(mutations).sort(), Object.keys(receipt).sort(), "all fourteen receipt fields are covered");
+  for (const field of Object.keys(receipt) as (keyof Fields)[]) {
+    const altered = { ...receipt, [field]: mutations[field] };
+    for (const [kind, value] of [["lifecycle", { ...base, status: "SUCCESS", receipt: altered }],
+      ["lifecycle", { ...base, status: "ALREADY_APPLIED", receipt: altered }], ["reconciliation", { ...exact, receipt: altered }]] as const) {
+      assert.throws(() => withExpected(value, kind, receipt), /result-contract/u, `${kind} ${field}`);
+      // Fields not caught by an earlier check are accepted without the expectation: the new comparison alone rejects them.
+      if (!earlierRejection.has(field)) assert.doesNotThrow(() => withExpected(value, kind), `${kind} ${field} is rejected only by expectedReceipt`);
+      else assert.throws(() => withExpected(value, kind), /result-contract/u, `${kind} ${field} is rejected by an earlier check too`);
+    }
+    // A contradicting receipt on a non-positive lifecycle result is refused as well.
+    assert.throws(() => withExpected({ ...base, status: "REFUSED", receipt: altered }, "lifecycle", receipt), /result-contract/u, `REFUSED ${field}`);
+  }
+});
+
+test("expectedReceipt: a deviating or malformed expectation never widens acceptance", () => {
+  const positive = { ...base, status: "SUCCESS", receipt };
+  for (const field of Object.keys(receipt) as (keyof Fields)[]) {
+    assert.throws(() => withExpected(positive, "lifecycle", { ...receipt, [field]: mutations[field] }), /result-contract/u, `expected ${field}`);
+    const partial = Object.fromEntries(Object.entries(receipt).filter(([key]) => key !== field));
+    assert.throws(() => withExpected(positive, "lifecycle", partial), /result-contract/u, `expected omits ${field}`);
+    assert.throws(() => withExpected(positive, "lifecycle", { ...receipt, [field]: undefined }), /result-contract/u, `expected undefined ${field}`);
+  }
+  for (const malformed of [null, [], "x", {}, { ...receipt, extra: 1 }, { ...receipt, sequence: 0 }, { ...receipt, sequence: 4_097 },
+    { ...receipt, digest: "A".repeat(64) }, { ...receipt, keyFingerprint: "nothex" }, { ...receipt, retiresMs: undefined }])
+    assert.throws(() => withExpected(positive, "lifecycle", malformed as object), /result-contract/u, JSON.stringify(malformed));
+  // Receipt-less results do not even read a malformed expectation into acceptance: it is still refused up front.
+  assert.throws(() => withExpected({ ...exact, status: "NOT_FOUND", receipt: null }, "reconciliation", {}), /result-contract/u);
+});
+
+test("expectedReceipt: receipt-less results and settlement keep their behavior; other pins stay active", () => {
+  const negative = { ...exact, receipt: null };
+  assert.equal(withExpected({ ...negative, status: "NOT_FOUND" }, "reconciliation", receipt).status, "UNCONFIRMED");
+  assert.equal(withExpected({ ...negative, status: "HISTORY_INCOMPLETE", coverage: "INCOMPLETE" }, "reconciliation", receipt).status, "UNCONFIRMED");
+  assert.deepEqual(withExpected({ ...base, nonce, status: "UNAVAILABLE" }, "reconciliation", receipt), { status: "UNCONFIRMED", digest, observation: "UNAVAILABLE" });
+  assert.equal(withExpected({ ...base, status: "UNCONFIRMED", reason: "dispatch-ambiguous" }, "lifecycle", receipt).status, "UNCONFIRMED");
+  assert.deepEqual(verifyLifecycleResult(bytes({ ...base, nonce, settled: true }), "settlement", { nonce }, now, environment, authorityId,
+    undefined, undefined, asReceipt(receipt)), { status: "SETTLED", digest, nonce });
+  // A receipt-less positive result is still an integrity failure, not a pass: the expectation does not relax it.
+  assert.throws(() => withExpected({ ...base, status: "SUCCESS" }, "lifecycle", receipt), /result-integrity/u);
+  // expectedOperation and expectedKeyFingerprint still bind alongside the receipt, and a contradictory configuration fails closed.
+  assert.throws(() => withExpected({ ...base, status: "SUCCESS", receipt }, "lifecycle", receipt, "rotate-release"), /result-contract/u);
+  assert.throws(() => verifyLifecycleResult(bytes({ ...base, status: "SUCCESS", receipt }), "lifecycle", { digest }, now, environment, authorityId,
+    "f".repeat(64), "initialize", asReceipt(receipt)), /result-contract/u);
+  assert.equal(verifyLifecycleResult(bytes({ ...base, status: "SUCCESS", receipt }), "lifecycle", { digest }, now, environment, authorityId,
+    receipt.keyFingerprint, "initialize", asReceipt(receipt)).status, "SUCCESS");
+  // The expectation must be for the same environment/authority as the verifier is pinned to.
+  assert.throws(() => withExpected({ ...base, status: "SUCCESS", receipt }, "lifecycle", { ...receipt, environment: "staging" }), /result-contract/u);
+  // Omitting it preserves the generic behavior.
+  assert.equal(withExpected({ ...base, status: "SUCCESS", receipt: { ...receipt, sequence: 7 } }, "lifecycle").status, "SUCCESS");
+});
