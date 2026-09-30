@@ -355,7 +355,8 @@ async function main(): Promise<void> {
     for (const [state, seed, observed] of [
       ["unavailable-state", ["INSERT INTO authority_meta(singleton,authority_id,policy_epoch,last_now_ms) VALUES(1,'wrong-authority','wrong-epoch',0)"], "UNAVAILABLE"],
       ["history-state", [`INSERT INTO authority_meta(singleton,authority_id,policy_epoch,last_now_ms) VALUES(1,'${STAGING_ADMISSION_AUTHORITY_ID}','${ADMISSION_POLICY_EPOCH}',0)`,
-        "CREATE TABLE active_releases(release_id TEXT PRIMARY KEY, key_id TEXT NOT NULL UNIQUE, activated_ms INTEGER NOT NULL, retired_ms INTEGER)"], "HISTORY_INCOMPLETE"],
+        "CREATE TABLE active_releases(release_id TEXT PRIMARY KEY, key_id TEXT NOT NULL UNIQUE, activated_ms INTEGER NOT NULL, retired_ms INTEGER)",
+        "INSERT INTO active_releases(release_id,key_id,activated_ms,retired_ms) VALUES('release-a','key-a',0,NULL)"], "HISTORY_INCOMPLETE"],
     ] as const) {
       mf = await start(publicKey, state);
       await authoritySql(mf, "CREATE TABLE authority_meta(singleton INTEGER PRIMARY KEY, authority_id TEXT NOT NULL, policy_epoch TEXT NOT NULL, last_now_ms INTEGER NOT NULL)");
