@@ -240,7 +240,7 @@ test("L6: reconcile, settle and read-result remain reachable exactly as before",
   assert.deepEqual(settlement.trace, ["manifest-load", "credential-read", `transport GET settlement/${nonce}.json`]);
   const reconciliation = await run(cli.submit, ["read-result", "--kind", "reconciliation", "--digest", digest, "--nonce", nonce,
     "--result-credentials", credentialPath], { GATE8_MANIFEST: manifest, GATE8_BODY: Buffer.from(JSON.stringify({ ...base,
-    initialized: true, coverage: "COMPLETE", status: "NOT_FOUND", receipt: null, releases: [] })).toString("base64") });
+    initialized: true, coverage: "COMPLETE", status: "NOT_FOUND", receipt: null, releases: [{ release_id: "staging-release-1", key_id: "staging-key-1", activated_ms: 1, retired_ms: null }] })).toString("base64") });
   assert.equal(reconciliation.status, 3, "negative observation stays UNCONFIRMED");
   assert.deepEqual(JSON.parse(reconciliation.stdout), { status: "UNCONFIRMED", environment: "staging", digest, observation: "NOT_FOUND" });
   assert.deepEqual(reconciliation.trace, ["manifest-load", "credential-read", `transport GET reconciliation/${nonce}.json`]);

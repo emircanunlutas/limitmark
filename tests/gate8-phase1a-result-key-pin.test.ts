@@ -30,6 +30,7 @@ const lifecycle = (status: string, keyFingerprint: string, observedAtMs = now) =
 const reconciliation = (keyFingerprint: string, observedAtMs = now) => ({ ...base(observedAtMs), nonce, status: "EXACT_RECEIPT",
   initialized: true, coverage: "COMPLETE", receipt: receipt(keyFingerprint),
   releases: [{ release_id: "staging-gate7-initial", key_id: "staging-gate7-key-1", activated_ms: 1790251978099, retired_ms: null }] });
+const stagingRow = { release_id: "staging-gate7-initial", key_id: "staging-gate7-key-1", activated_ms: 1790251978099, retired_ms: null };
 const bytes = (value: object) => new TextEncoder().encode(JSON.stringify(value));
 const staged = (value: object, kind: "lifecycle" | "reconciliation" | "settlement", fingerprint?: string) =>
   verifyLifecycleResult(bytes(value), kind, kind === "lifecycle" ? { digest } : { digest, nonce }, now, "staging",
@@ -54,7 +55,7 @@ test("K2: staging reconciliation EXACT_RECEIPT passes with the pinned fingerprin
 });
 
 test("K3: receipt-less results are unaffected by the pin", () => {
-  const negative = { ...base(), nonce, initialized: true, coverage: "COMPLETE", receipt: null, releases: [] };
+  const negative = { ...base(), nonce, initialized: true, coverage: "COMPLETE", receipt: null, releases: [stagingRow] };
   assert.deepEqual(staged({ ...negative, status: "NOT_FOUND" }, "reconciliation", pinned),
     { status: "UNCONFIRMED", digest, observation: "NOT_FOUND" });
   assert.equal(staged({ ...negative, status: "HISTORY_INCOMPLETE", coverage: "INCOMPLETE" }, "reconciliation", pinned).status, "UNCONFIRMED");
@@ -144,7 +145,7 @@ test("K9: every altered canonical-receipt field is refused for lifecycle and rec
 });
 
 test("K10: receipt-less and settlement results keep their behavior with the canonical receipt bound", () => {
-  const negative = { ...base(), nonce, initialized: true, coverage: "COMPLETE", receipt: null, releases: [] };
+  const negative = { ...base(), nonce, initialized: true, coverage: "COMPLETE", receipt: null, releases: [stagingRow] };
   assert.equal(bound({ ...negative, status: "NOT_FOUND" }, "reconciliation").status, "UNCONFIRMED");
   assert.equal(bound({ ...negative, status: "HISTORY_INCOMPLETE", coverage: "INCOMPLETE" }, "reconciliation").status, "UNCONFIRMED");
   assert.equal(bound({ ...base(), nonce, status: "UNAVAILABLE" }, "reconciliation").status, "UNCONFIRMED");
@@ -279,4 +280,15 @@ test("K11: staging CLI read-result refuses a correctly keyed result whose receip
   const good = await readResult("lifecycle", lifecycle("SUCCESS", pinned, fresh));
   assert.equal(good.status, 0);
   assert.deepEqual((JSON.parse(good.stdout) as { receipt: unknown }).receipt, STAGING_GATE7_CONTINUITY.receipt);
+});
+
+test("K11: release snapshot coherence applies to staging reconciliation without touching the canonical receipt binding", () => {
+  const impossible = { ...reconciliation(pinned), releases: [{ ...stagingRow, retired_ms: stagingRow.activated_ms }] };
+  assert.throws(() => bound(impossible, "reconciliation"), /result-integrity/u);
+  assert.throws(() => bound({ ...reconciliation(pinned), releases: [stagingRow, { ...stagingRow }] }, "reconciliation"), /result-integrity/u);
+  assert.throws(() => bound({ ...reconciliation(pinned), releases: [{ ...stagingRow, extra: 1 }] }, "reconciliation"), /result-contract/u);
+  const rotatedPair = [{ ...stagingRow, retired_ms: now - 1 }, { release_id: "later", key_id: "later-key", activated_ms: now - 2, retired_ms: null }];
+  assert.equal(bound({ ...reconciliation(pinned), releases: rotatedPair }, "reconciliation").status, "SUCCESS");
+  // A deviating receipt is still refused as a contract failure, before any snapshot judgement.
+  assert.throws(() => bound({ ...reconciliation(pinned), receipt: { ...receipt(pinned), sequence: 2 } }, "reconciliation"), contract);
 });

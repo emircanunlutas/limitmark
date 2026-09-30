@@ -11,6 +11,34 @@ function exact(value: unknown, required: readonly string[], optional: readonly s
   return required.every((key) => keys.includes(key)) && keys.every((key) => required.includes(key) || optional.includes(key));
 }
 function safeTime(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
+// Mirror authority.ts validRelease/validKeyId (module-private there); tests pin the boundaries.
+const releaseIdPattern = /^[A-Za-z0-9_.:-]{1,128}$/u;
+const releaseKeyIdPattern = /^[A-Za-z0-9_-]{1,64}$/u;
+type ReleaseRow = { release_id: string; key_id: string; activated_ms: number; retired_ms: number | null };
+/** Current authority release snapshot (not receipt history). Row shape/domain failures are `result-contract`;
+ * states the authority cannot produce are `result-integrity`. Source-proven producer invariants only:
+ * initializeAuthority inserts one unretired row; rotateAuthorityRelease deletes the retired row when two exist,
+ * then retires the current row at previousRetiresAtMs > activatesAtMs and inserts the unretired next row at
+ * activatesAtMs >= last_now_ms >= current.activated_ms. So an initialized snapshot has one or two rows, exactly
+ * one unretired, unique release/key ids, retired_ms > activated_ms, and (when two) retired.retired_ms >
+ * unretired.activated_ms >= retired.activated_ms. The query is ORDER BY activated_ms only: ties have no defined order. */
+function releaseSnapshot(initialized: boolean, releases: unknown[]): void {
+  const rows: ReleaseRow[] = [];
+  for (const row of releases) {
+    if (!exact(row, ["release_id", "key_id", "activated_ms", "retired_ms"]) || typeof row.release_id !== "string" ||
+        !releaseIdPattern.test(row.release_id) || typeof row.key_id !== "string" || !releaseKeyIdPattern.test(row.key_id) ||
+        !safeTime(row.activated_ms) || (row.retired_ms !== null && !safeTime(row.retired_ms))) throw new Error("result-contract");
+    rows.push(row as ReleaseRow);
+  }
+  const unretired = rows.filter((row) => row.retired_ms === null);
+  const retired = rows.filter((row) => row.retired_ms !== null);
+  if ((initialized ? rows.length < 1 || rows.length > 2 || unretired.length !== 1 : rows.length > 0) ||
+      new Set(rows.map((row) => row.release_id)).size !== rows.length || new Set(rows.map((row) => row.key_id)).size !== rows.length ||
+      retired.some((row) => row.retired_ms! <= row.activated_ms) ||
+      rows.some((row, index) => index > 0 && row.activated_ms < rows[index - 1].activated_ms) ||
+      retired.length === 1 && (retired[0].retired_ms! <= unretired[0].activated_ms || unretired[0].activated_ms < retired[0].activated_ms))
+    throw new Error("result-integrity");
+}
 const lifecycleOperations: readonly LifecycleOperation[] = ["initialize", "rotate-release"];
 // Every LifecycleReceipt field; shared by the shape check and the exact expected-receipt comparison.
 // Typecheck fails both ways: `satisfies` rejects a listed key that is not a LifecycleReceipt key, and
@@ -97,6 +125,7 @@ export function verifyLifecycleResult(bytes: Uint8Array, kind: ResultKind, expec
   if (kind === "reconciliation" && (value.status === "EXACT_RECEIPT") !== (value.receipt !== null) ||
       kind === "lifecycle" && ["SUCCESS", "ALREADY_APPLIED"].includes(String(value.status)) && !value.receipt)
     throw new Error("result-integrity");
+  if (kind === "reconciliation") releaseSnapshot(value.initialized as boolean, value.releases as unknown[]);
   if (value.receipt && (kind === "reconciliation" && value.status === "EXACT_RECEIPT" ||
       kind === "lifecycle" && (value.status === "SUCCESS" || value.status === "ALREADY_APPLIED")))
     return { status: kind === "lifecycle" && value.status === "ALREADY_APPLIED" ? "ALREADY_APPLIED" : "SUCCESS",
