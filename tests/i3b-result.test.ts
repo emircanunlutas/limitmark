@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { verifyLifecycleResult } from "../operator/lifecycle-result";
+import { verifyLifecycleResult, verifyProductionLifecycleResult } from "../operator/lifecycle-result";
 
 const digest = "a".repeat(64);
 const nonce = "b".repeat(32);
@@ -218,4 +218,90 @@ test("release snapshot: states the authority cannot produce are result-integrity
 test("release snapshot: error text carries no row values", () => {
   try { verify(snapshot([{ ...row, release_id: "secret-release-value", retired_ms: 1 }]), "reconciliation"); assert.fail("accepted"); }
   catch (error) { assert.equal((error as Error).message, "result-integrity"); }
+});
+
+// --- Production command-backed verification ----------------------------------------------------------------
+
+const commandFields = ["digest", "version", "operation", "environment", "authorityId", "policyEpoch", "keyFingerprint",
+  "currentReleaseId", "nextReleaseId", "nextKeyId", "activatesMs", "retiresMs"] as const;
+const withoutAuthorityFields = (value: object) => Object.fromEntries(Object.entries(value).filter(([key]) => key !== "sequence" && key !== "appliedMs"));
+const commandContext = withoutAuthorityFields(receipt);
+type CommandOption = NonNullable<NonNullable<Parameters<typeof verifyProductionLifecycleResult>[3]>["command"]>;
+const productionVerify = (value: object, kind: "lifecycle" | "reconciliation", command: object | null = commandContext) =>
+  verifyProductionLifecycleResult(bytes(value), kind, kind === "lifecycle" ? { digest } : { digest, nonce }, { nowMs: now, command: command === null ? undefined : command as CommandOption });
+const positives = [["lifecycle", { ...base, status: "SUCCESS", receipt }, "SUCCESS"], ["lifecycle", { ...base, status: "ALREADY_APPLIED", receipt }, "ALREADY_APPLIED"],
+  ["reconciliation", exact, "SUCCESS"]] as const;
+
+test("production: a positive result without authenticated command context is never success", () => {
+  for (const [kind, value] of positives)
+    assert.deepEqual(productionVerify(value, kind, null), { status: "UNCONFIRMED", digest, observation: "COMMAND_CONTEXT_REQUIRED" }, kind);
+  // The generic verifier (staging and tests) is unchanged and still positive on its own.
+  assert.equal(verifyLifecycleResult(bytes(positives[0][1]), "lifecycle", { digest }, now).status, "SUCCESS");
+});
+
+test("production: a matching authenticated command yields success, and sequence/appliedMs are not command-bound", () => {
+  for (const [kind, value, status] of positives) {
+    assert.equal(productionVerify(value, kind).status, status, kind);
+    const reassigned = { ...value, receipt: { ...receipt, sequence: 4_096, appliedMs: 1 } };
+    assert.equal(productionVerify(reassigned, kind).status, status, `${kind}: forged/replayed sequence and appliedMs are authority-derived`);
+  }
+  const rotation = { ...receipt, operation: "rotate-release", nextReleaseId: "release-b", nextKeyId: "key-b", retiresMs: 9_500 };
+  const rotationContext = withoutAuthorityFields(rotation);
+  assert.equal(productionVerify({ ...base, status: "SUCCESS", receipt: rotation }, "lifecycle", rotationContext).status, "SUCCESS");
+  assert.throws(() => productionVerify({ ...base, status: "SUCCESS", receipt: rotation }, "lifecycle"), /result-contract/u, "initialize command cannot vouch for a rotation receipt");
+});
+
+test("production: every command-derived receipt field is bound, for every positive and non-positive result carrying a receipt", () => {
+  assert.deepEqual([...commandFields].sort(), Object.keys(commandContext).sort(), "all twelve command-derived fields are covered");
+  const other: Record<(typeof commandFields)[number], unknown> = { digest: "d".repeat(64), version: 2, operation: "rotate-release", environment: "staging",
+    authorityId: "staging-public-inquiries-v1", policyEpoch: "phase5c-i1-epoch-2", keyFingerprint: "e".repeat(64), currentReleaseId: "release-z",
+    nextReleaseId: "release-z", nextKeyId: "key-z", activatesMs: 9_001, retiresMs: 9_500 };
+  for (const field of commandFields) {
+    const altered = { ...receipt, [field]: other[field] };
+    for (const [kind, value] of [...positives.map(([k, v]) => [k, { ...v, receipt: altered }] as const),
+      ["lifecycle", { ...base, status: "REFUSED", receipt: altered }] as const])
+      assert.throws(() => productionVerify(value, kind), /result-contract/u, `${kind} ${field}`);
+    // A command context that itself deviates (wrong operator key, wrong ids...) rejects a coherent receipt the same way.
+    assert.throws(() => productionVerify(positives[0][1], "lifecycle", { ...commandContext, [field]: other[field] }), /result-contract/u, `command ${field}`);
+  }
+  // The operator-key fingerprint specifically.
+  assert.throws(() => productionVerify({ ...base, status: "SUCCESS", receipt: { ...receipt, keyFingerprint: "e".repeat(64) } }, "lifecycle"), /result-contract/u);
+});
+
+test("production: command context must be well formed and name the requested digest, and never widens acceptance", () => {
+  assert.throws(() => productionVerify(positives[0][1], "lifecycle", { ...commandContext, digest: "d".repeat(64) }), /result-contract/u, "command digest != requested digest");
+  for (const malformed of [{ ...commandContext, extra: 1 }, { ...commandContext, sequence: 1, appliedMs: 1 }, { ...commandContext, retiresMs: undefined },
+    { ...commandContext, keyFingerprint: "nothex" }, { ...commandContext, version: 2 }])
+    assert.throws(() => productionVerify(positives[0][1], "lifecycle", malformed), /result-contract/u, JSON.stringify(malformed));
+  for (const field of commandFields) {
+    const partial = Object.fromEntries(Object.entries(commandContext).filter(([key]) => key !== field));
+    assert.throws(() => productionVerify(positives[0][1], "lifecycle", partial), /result-contract/u, `omits ${field}`);
+  }
+  // Another environment's command never authenticates a Production result.
+  assert.throws(() => productionVerify(positives[0][1], "lifecycle", { ...commandContext, environment: "staging", authorityId: "staging-public-inquiries-v1" }), /result-contract/u);
+  // Result-level checks still apply under a command: incoherent EXACT_RECEIPT, receipt-less positive, wrong nonce.
+  assert.throws(() => productionVerify({ ...exact, initialized: false }, "reconciliation"), /result-integrity/u);
+  assert.throws(() => productionVerify({ ...base, status: "SUCCESS" }, "lifecycle"), /result-integrity/u);
+  assert.throws(() => productionVerify({ ...exact, nonce: "c".repeat(32) }, "reconciliation"), /result-contract/u);
+});
+
+test("production: receipt-less diagnostics and synthetic never-signed digests stay available and non-positive, with or without a command", () => {
+  const negative = { ...exact, receipt: null };
+  for (const command of [null, commandContext]) {
+    assert.deepEqual(productionVerify({ ...negative, status: "NOT_FOUND" }, "reconciliation", command), { status: "UNCONFIRMED", digest, observation: "NOT_FOUND" });
+    assert.deepEqual(productionVerify({ ...negative, status: "HISTORY_INCOMPLETE", coverage: "INCOMPLETE" }, "reconciliation", command),
+      { status: "UNCONFIRMED", digest, observation: "HISTORY_INCOMPLETE" });
+    assert.deepEqual(productionVerify({ ...base, nonce, status: "UNAVAILABLE" }, "reconciliation", command), { status: "UNCONFIRMED", digest, observation: "UNAVAILABLE" });
+    assert.equal(productionVerify({ ...base, status: "UNCONFIRMED", reason: "dispatch-ambiguous" }, "lifecycle", command).status, "UNCONFIRMED");
+    assert.equal(productionVerify({ ...base, status: "REFUSED" }, "lifecycle", command).status, "UNCONFIRMED");
+  }
+  // Synthetic digest: no command exists for it, so no receipt can ever be positive evidence.
+  const synthetic = "5".repeat(64);
+  const syntheticBase = { ...base, digest: synthetic };
+  assert.deepEqual(verifyProductionLifecycleResult(bytes({ ...syntheticBase, nonce, status: "NOT_FOUND", initialized: true, coverage: "COMPLETE", receipt: null, releases: [row] }),
+    "reconciliation", { digest: synthetic, nonce }, { nowMs: now }), { status: "UNCONFIRMED", digest: synthetic, observation: "NOT_FOUND" });
+  assert.equal(verifyProductionLifecycleResult(bytes({ ...syntheticBase, nonce, status: "EXACT_RECEIPT", initialized: true, coverage: "COMPLETE",
+    receipt: { ...receipt, digest: synthetic }, releases: [row] }), "reconciliation", { digest: synthetic, nonce }, { nowMs: now }).status, "UNCONFIRMED");
+  // Settlement is guard state: command context neither required nor consulted.
+  assert.deepEqual(verifyProductionLifecycleResult(bytes({ ...base, nonce, settled: true }), "settlement", { digest, nonce }, { nowMs: now }), { status: "SETTLED", digest, nonce });
 });

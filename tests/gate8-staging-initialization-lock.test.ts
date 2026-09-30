@@ -292,7 +292,31 @@ test("L8: the Production preparer cannot mint a staging artifact and its Product
   assert.equal(production.status, 0, production.stderr);
   const sealed = JSON.parse(production.stdout) as { command: unknown[] };
   assert.deepEqual(sealed.command.slice(1, 4), ["initialize", "production", "production-public-inquiries-v1"]);
-  const diff = spawnSync("git", ["diff", "--quiet", "HEAD", "--", "scripts/authority-initialize.ts", "scripts/authority-submit.ts",
-    "scripts/authority-rotate-release.ts"], { cwd: root });
-  assert.equal(diff.status, 0, "Production scripts are byte-identical to HEAD");
+  // The preparers are still byte-identical to HEAD. scripts/authority-submit.ts is not: it gained the authorized Production
+  // command-backed result-read contract, so it is pinned by the source contract below instead of by byte identity.
+  const diff = spawnSync("git", ["diff", "--quiet", "HEAD", "--", "scripts/authority-initialize.ts", "scripts/authority-rotate-release.ts"], { cwd: root });
+  assert.equal(diff.status, 0, "Production preparers are byte-identical to HEAD");
+});
+
+test("L9: the Production submit/read script stays Production-only, staging-free and command-backed", async () => {
+  const source = await readFile(join(root, "scripts", "authority-submit.ts"), "utf8");
+  const code = source.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
+  // Staging isolation: no staging identity, module, lock, fingerprint or canonical receipt is reachable from the Production script.
+  assert.equal(/staging/iu.test(code), false, "no staging identifier in Production code");
+  assert.equal(/STAGING_|Gate7|gate7|continuity|expectedReceipt/u.test(code), false, "no staging-only trust state or canonical receipt");
+  for (const match of code.matchAll(/from "([^"]+)"/gu)) assert.equal(/staging/iu.test(match[1]), false, `import ${match[1]}`);
+  // Production-only target and confirmation are unchanged.
+  assert.match(code, /boundedFile\("deployment\/lifecycle-transport\.production\.json", 2_048\)/u);
+  assert.match(code, /function production\(args[^)]*\): void \{ if \(args\["--confirm-production"\] !== true\) fail\(\); \}/u);
+  // Submission keeps its freshness-bound parse with the default (Production) environment and the same signature check.
+  assert.match(code, /const artifact = parseSealedLifecycleArtifact\(bytes, operation\);/u);
+  assert.match(code, /await verifyOperatorCommand\(artifact\.command, artifact\.signature, target\.operatorPublicKey\);/u);
+  // Result reading: command-backed Production verification only. The unbound generic verifier is not imported, so the old
+  // command-less positive path has no CLI branch or fallback.
+  assert.equal(/\bverifyLifecycleResult\b/u.test(code), false, "the generic (command-less positive) verifier is not reachable");
+  assert.equal(code.match(/verifyProductionLifecycleResult\(/gu)?.length, 1, "exactly one verifier call site");
+  assert.match(code, /authenticateSealedLifecycleArtifact\(/u);
+  assert.match(code, /\{ command \}\);/u, "the authenticated command is the only trust input passed to the verifier");
+  assert.match(code, /if \(authenticated\.digest !== digest\) fail\(\);/u, "the command must name the requested digest");
+  assert.match(code, /if \(kind === "settlement" && args\["--command"\] !== undefined\) fail\(\);/u, "settlement takes no command context");
 });

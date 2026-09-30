@@ -1,6 +1,7 @@
 import { parseStrictJson, type LifecycleOperation } from "./lifecycle-submitter";
 import { UNAVAILABLE_AUTHORITY_OBSERVATION } from "./lifecycle-observation";
 import type { LifecycleReceipt } from "../workers/admission-service/authority";
+import type { CommandDerivedReceipt } from "../workers/admission-service/operator-command";
 
 export type ResultKind = "lifecycle" | "reconciliation" | "settlement";
 const digestPattern = /^[a-f0-9]{64}$/u;
@@ -47,11 +48,14 @@ const listedReceiptFields = ["digest", "version", "operation", "environment", "a
   "currentReleaseId", "nextReleaseId", "nextKeyId", "activatesMs", "retiresMs"] as const satisfies readonly (keyof LifecycleReceipt)[];
 type Exhaustive<List extends readonly (keyof LifecycleReceipt)[]> = [Exclude<keyof LifecycleReceipt, List[number]>] extends [never] ? List : never;
 const receiptFields: Exhaustive<typeof listedReceiptFields> = listedReceiptFields;
+// Derived from the exhaustive list: every receipt field except the two the authority assigns when it applies a command.
+const commandDerivedFields = receiptFields.filter((field): field is keyof CommandDerivedReceipt => field !== "sequence" && field !== "appliedMs");
 function receipt(value: unknown, digest: string, expectedEnvironment: "production" | "staging", expectedAuthorityId: string,
   expectedKeyFingerprint: string | undefined, expectedOperation: LifecycleOperation | undefined,
-  expectedReceipt: Readonly<LifecycleReceipt> | undefined): value is Record<string, unknown> {
+  expectedReceipt: Readonly<LifecycleReceipt> | undefined, command?: Readonly<CommandDerivedReceipt>): value is Record<string, unknown> {
   if (!exact(value, receiptFields)) return false;
   return (expectedReceipt === undefined || receiptFields.every((field) => value[field] === expectedReceipt[field])) &&
+    (command === undefined || commandDerivedFields.every((field) => value[field] === command[field])) &&
     value.digest === digest && value.version === 1 && lifecycleOperations.includes(value.operation as LifecycleOperation) &&
     (expectedOperation === undefined || value.operation === expectedOperation) && value.environment === expectedEnvironment &&
     value.authorityId === expectedAuthorityId && value.policyEpoch === "phase5c-i1-epoch-1" &&
@@ -83,6 +87,31 @@ export function verifyLifecycleResult(bytes: Uint8Array, kind: ResultKind, expec
   expectedEnvironment: "production" | "staging" = "production",
   expectedAuthorityId: string = "production-public-inquiries-v1",
   expectedKeyFingerprint?: string, expectedOperation?: LifecycleOperation, expectedReceipt?: Readonly<LifecycleReceipt>) {
+  return verifyResult(bytes, kind, expected, nowMs, expectedEnvironment, expectedAuthorityId, expectedKeyFingerprint, expectedOperation, expectedReceipt,
+    undefined, false);
+}
+
+/** Production result verification. A positive result (lifecycle SUCCESS/ALREADY_APPLIED or reconciliation EXACT_RECEIPT)
+ * is accepted only when an authenticated command context is supplied: the receipt must then equal that command in every
+ * command-derived field (digest, operation, environment, authority, epoch, release/key ids, activation/retirement and the
+ * operator-key fingerprint). `sequence` and `appliedMs` are assigned by the authority and are not command-bound. Without a
+ * command a positive result is reported as UNCONFIRMED, never as success. Receipt-less diagnostics, including synthetic
+ * never-signed digests, stay available and non-positive. The context must come from `authenticateSealedLifecycleArtifact`;
+ * it is not a caller-supplied claim. Settlement is not command-authenticated and is unaffected. */
+export function verifyProductionLifecycleResult(bytes: Uint8Array, kind: ResultKind, expected: { digest?: string; nonce?: string },
+  options: { nowMs?: number; command?: Readonly<CommandDerivedReceipt> } = {}) {
+  const command = options.command;
+  return verifyResult(bytes, kind, expected, options.nowMs ?? Date.now(), "production", "production-public-inquiries-v1",
+    command?.keyFingerprint, command?.operation, undefined, command, true);
+}
+
+function verifyResult(bytes: Uint8Array, kind: ResultKind, expected: { digest?: string; nonce?: string }, nowMs: number,
+  expectedEnvironment: "production" | "staging", expectedAuthorityId: string, expectedKeyFingerprint: string | undefined,
+  expectedOperation: LifecycleOperation | undefined, expectedReceipt: Readonly<LifecycleReceipt> | undefined,
+  command: Readonly<CommandDerivedReceipt> | undefined, requireCommand: boolean) {
+  if (command !== undefined && (!exact(command, commandDerivedFields) || expected.digest !== command.digest ||
+      !receipt({ ...command, sequence: 1, appliedMs: 0 }, command.digest, expectedEnvironment, expectedAuthorityId, expectedKeyFingerprint, expectedOperation, undefined)))
+    throw new Error("result-contract");
   if (expectedKeyFingerprint !== undefined && !digestPattern.test(expectedKeyFingerprint)) throw new Error("result-contract");
   if (expectedOperation !== undefined && !lifecycleOperations.includes(expectedOperation)) throw new Error("result-contract");
   const expectedReceiptDigest: unknown = expectedReceipt?.digest;
@@ -119,7 +148,7 @@ export function verifyLifecycleResult(bytes: Uint8Array, kind: ResultKind, expec
         !Array.isArray(value.releases) || value.releases.length > 3) throw new Error("result-contract");
   } else if (!["SUCCESS", "ALREADY_APPLIED", "REFUSED", "UNAVAILABLE", "UNCONFIRMED"].includes(String(value.status)) ||
       value.reason !== undefined && (typeof value.reason !== "string" || value.reason.length > 64)) throw new Error("result-contract");
-  if (value.receipt !== undefined && value.receipt !== null && !receipt(value.receipt, value.digest, expectedEnvironment, expectedAuthorityId, expectedKeyFingerprint, expectedOperation, expectedReceipt)) throw new Error("result-contract");
+  if (value.receipt !== undefined && value.receipt !== null && !receipt(value.receipt, value.digest, expectedEnvironment, expectedAuthorityId, expectedKeyFingerprint, expectedOperation, expectedReceipt, command)) throw new Error("result-contract");
   if (kind === "reconciliation" && value.status === "EXACT_RECEIPT" && (value.initialized !== true || value.coverage !== "COMPLETE"))
     throw new Error("result-integrity");
   if (kind === "reconciliation" && (value.status === "EXACT_RECEIPT") !== (value.receipt !== null) ||
@@ -127,8 +156,11 @@ export function verifyLifecycleResult(bytes: Uint8Array, kind: ResultKind, expec
     throw new Error("result-integrity");
   if (kind === "reconciliation") releaseSnapshot(value.initialized as boolean, value.releases as unknown[]);
   if (value.receipt && (kind === "reconciliation" && value.status === "EXACT_RECEIPT" ||
-      kind === "lifecycle" && (value.status === "SUCCESS" || value.status === "ALREADY_APPLIED")))
+      kind === "lifecycle" && (value.status === "SUCCESS" || value.status === "ALREADY_APPLIED"))) {
+    // The only positive return. Production callers cannot reach it without an authenticated command context.
+    if (requireCommand && command === undefined) return { status: "UNCONFIRMED", digest: value.digest, observation: "COMMAND_CONTEXT_REQUIRED" } as const;
     return { status: kind === "lifecycle" && value.status === "ALREADY_APPLIED" ? "ALREADY_APPLIED" : "SUCCESS",
       digest: value.digest, receipt: value.receipt } as const;
+  }
   return { status: "UNCONFIRMED", digest: value.digest, observation: value.status } as const;
 }
