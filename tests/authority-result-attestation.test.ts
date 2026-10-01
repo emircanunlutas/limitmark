@@ -1375,6 +1375,9 @@ test("the protocol is wired only into the inert Slice 2A Authority producer, and
   // result writer/reader, CLI, deployment, public routes) must not reference it yet.
   const producer = new Set(["workers/admission-service/authority-attestation.ts", "workers/admission-service/authority-attestation-signer.ts",
     "tests/i3b-authority.test.ts", "tests/support/authority-attestation-test-signers.ts"]);
+  // Slice 2B: the inert verifier/composition side. Exactly this module and its focused test may consume the frozen protocol
+  // (the module through the verifier API, the test through the signing helpers); nothing active may.
+  const composition = new Set(["operator/authority-result-verifier.ts", "tests/authority-result-verifier.test.ts"]);
   // The producer's own surface: no other file may import the producer modules or invoke the attested Authority RPCs.
   const producerSurface = new Set([...producer, "workers/admission-service/index.ts"]);
   const offenders: string[] = [];
@@ -1385,7 +1388,7 @@ test("the protocol is wired only into the inert Slice 2A Authority producer, and
       const relative = `${directory}/${name}`;
       if (own.has(relative) || !/\.(ts|tsx|mts|js|mjs|json|jsonc)$/u.test(name) || name.includes("fixtures/")) continue;
       const text = await readFile(new URL(relative, root), "utf8");
-      if (/authority-result-(attestation|trust)/u.test(text) && !producer.has(relative)) offenders.push(relative);
+      if (/authority-result-(attestation|trust)/u.test(text) && !producer.has(relative) && !composition.has(relative)) offenders.push(relative);
       if (/authority-attestation|FromOperatorAttested|attestAppliedLifecycle|attestReconciliation|AuthorityAttestationCoordinator/u.test(text) &&
           !producerSurface.has(relative)) producerLeaks.push(relative);
     }

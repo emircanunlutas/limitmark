@@ -127,6 +127,17 @@ export function parseSealedLifecycleArtifact(bytes: Uint8Array, operation: Lifec
  * command-derived receipt field, including the operator-key fingerprint, and never `sequence`/`appliedMs`. */
 export type AuthenticatedLifecycleCommand = SealedLifecycleArtifact & { digest: string; expected: CommandDerivedReceipt };
 
+// The type above is structural: any object of that shape would typecheck. Authentication is therefore also recorded at RUNTIME in a
+// module-private registry that only `authenticateSealedLifecycleArtifact` writes. A hand-built object, a spread/`Object.assign`
+// copy, a JSON round trip, `Object.create(authenticated)` or a cast is never registered. Registered objects are deeply frozen so
+// they cannot be altered after authentication. Consumers that must not trust a TypeScript type call `isAuthenticatedLifecycleCommand`.
+const authenticatedCommands = new WeakSet<object>();
+
+/** Runtime proof that `value` was returned by `authenticateSealedLifecycleArtifact` (operator signature verified). */
+export function isAuthenticatedLifecycleCommand(value: unknown): value is AuthenticatedLifecycleCommand {
+  return typeof value === "object" && value !== null && authenticatedCommands.has(value);
+}
+
 /** Historical authentication for result verification: the same invariant parser and signature logic as submission, but
  * with no freshness. It authenticates that the operator signed exactly this command; it does not make it submittable. */
 export async function authenticateSealedLifecycleArtifact(bytes: Uint8Array, operatorPublicKey: string,
@@ -134,7 +145,11 @@ export async function authenticateSealedLifecycleArtifact(bytes: Uint8Array, ope
   const artifact = parseSealedLifecycleArtifactInvariant(bytes, options.expectedOperation, options.expectedEnvironment ?? "production");
   await verifyOperatorCommand(artifact.command, artifact.signature, operatorPublicKey);
   const expected = await expectedCommandReceipt(artifact.command, operatorPublicKey);
-  return { ...artifact, digest: expected.digest, expected };
+  const authenticated: AuthenticatedLifecycleCommand = Object.freeze({
+    command: Object.freeze(artifact.command) as SealedLifecycleArtifact["command"], signature: artifact.signature,
+    digest: expected.digest, expected: Object.freeze(expected) });
+  authenticatedCommands.add(authenticated);
+  return authenticated;
 }
 
 /** A provider-owned private executor supplies the pinned binding and public key. */
