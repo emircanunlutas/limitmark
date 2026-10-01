@@ -1,6 +1,7 @@
 import type { R2Bucket } from "@cloudflare/workers-types";
 import type { GuardOutcome } from "./dispatch-guard";
-import { boundedResult, parseControl, readBounded } from "./wire";
+import { unsignedDiagnostic } from "../../operator/attested-relay";
+import { boundedResult, parseControl, publishSignedEnvelope, readBounded } from "./wire";
 
 export type GuardStub = {
   processInitialization(artifact: string): Promise<GuardOutcome>;
@@ -29,11 +30,15 @@ export async function processSlot(env: MailboxEnvironment, key: "initialize.json
   if (artifact.charCodeAt(0) === 0xfeff) return;
   const guard = env.DISPATCH_GUARD.getByName("production-lifecycle-dispatch-v1");
   const outcome = key === "initialize.json" ? await guard.processInitialization(artifact) : await guard.processRotation(artifact);
+  if (!/^[a-f0-9]{64}$/u.test(outcome.digest)) return;
+  const resultKey = `lifecycle/${outcome.digest}.json`;
+  // Signed evidence is stored as the Authority's exact bytes. The relay neither reads nor adds any semantic to it.
+  if (outcome.status === "ATTESTED") await publishSignedEnvelope(env.RESULT_BUCKET, resultKey, outcome.envelope);
   // An active different command is a temporary supervisory refusal. Do not
   // freeze it as the digest's immutable result before that digest is consumed.
-  if (outcome.status !== "UNAVAILABLE" && outcome.reason !== "consumed" && /^[a-f0-9]{64}$/u.test(outcome.digest))
-    await publish(env.RESULT_BUCKET, `lifecycle/${outcome.digest}.json`, { ...outcome, environment: "production",
-      authorityId: "production-public-inquiries-v1", policyEpoch: "phase5c-i1-epoch-1", observedAtMs: Date.now() });
+  // Everything else is an explicit, unsigned, never-positive diagnostic.
+  else if (outcome.status !== "UNAVAILABLE" && outcome.reason !== "consumed")
+    await publish(env.RESULT_BUCKET, resultKey, unsignedDiagnostic(outcome.digest, outcome.status, outcome.reason));
 }
 
 export async function processSettlement(env: MailboxEnvironment): Promise<void> {

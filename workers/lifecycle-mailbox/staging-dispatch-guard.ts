@@ -3,6 +3,7 @@ import type { DurableObjectState } from "@cloudflare/workers-types";
 import { commandDigest, verifyOperatorCommand } from "../admission-service/operator-command";
 import { parseSealedLifecycleArtifact } from "../../operator/lifecycle-submitter";
 import type { LifecycleResult } from "../../operator/lifecycle-submitter";
+import { normalizeLifecycleRelayResult } from "../../operator/attested-relay";
 import type { LifecycleReceipt } from "../admission-service/authority";
 import type { GuardOutcome } from "./dispatch-guard";
 
@@ -21,9 +22,14 @@ export const STAGING_GUARD_CAPACITY = 4_096;
 export type StagingLifecycleExecutorBinding = {
   submitInitializationArtifact(sealedJson: string): Promise<LifecycleResult>;
 };
-export type StagingLifecycleReaderBinding = { inspectLifecycle(digest: string): Promise<{
-  status: string; receipt?: LifecycleReceipt | null; environment?: string; authorityId?: string; policyEpoch?: string;
-}> };
+export type StagingLifecycleReaderBinding = {
+  /** Unsigned supervisory read. Used ONLY by settlement; it never produces result evidence. */
+  inspectLifecycle(digest: string): Promise<{
+    status: string; receipt?: LifecycleReceipt | null; environment?: string; authorityId?: string; policyEpoch?: string;
+  }>;
+  /** Authority-signed read-only recovery and pre-dispatch probe (see the Production guard). */
+  attestAppliedLifecycle(digest: string): Promise<unknown>;
+};
 export type StagingGuardEnvironment = {
   LIFECYCLE_EXECUTOR: StagingLifecycleExecutorBinding;
   LIFECYCLE_READER: StagingLifecycleReaderBinding;
@@ -65,12 +71,10 @@ export class StagingLifecycleDispatchGuard extends DurableObject<StagingGuardEnv
       parseSealedLifecycleArtifact(new TextEncoder().encode(sealedJson), "initialize", Date.now(), "staging");
     } catch { return { version: 1, digest, status: "REFUSED", reason: "invalid-command" }; }
     try {
-      const snapshot = await this.env.LIFECYCLE_READER.inspectLifecycle(digest);
-      if (snapshot.status === "EXACT_RECEIPT" && snapshot.receipt?.digest === digest &&
-          snapshot.environment === "staging" && snapshot.authorityId === "staging-public-inquiries-v1" &&
-          snapshot.policyEpoch === "phase5c-i1-epoch-1")
-        return { version: 1, digest, status: "ALREADY_APPLIED", receipt: snapshot.receipt };
-      if (snapshot.status !== "NOT_FOUND") return { version: 1, digest, status: "UNAVAILABLE", reason: "authority-history" };
+      const known = normalizeLifecycleRelayResult(await this.env.LIFECYCLE_READER.attestAppliedLifecycle(digest));
+      if (known.status === "ATTESTED") return { version: 1, digest, status: "ATTESTED", relayDisposition: "ALREADY_APPLIED", envelope: known.envelope };
+      if (!(known.status === "UNAVAILABLE" && known.reason === "receipt-not-found"))
+        return { version: 1, digest, status: "UNAVAILABLE", reason: "authority-history" };
     } catch { return { version: 1, digest, status: "UNAVAILABLE", reason: "authority-read" }; }
     let won = false;
     let prior: Claim | null = null;
@@ -93,24 +97,23 @@ export class StagingLifecycleDispatchGuard extends DurableObject<StagingGuardEnv
     catch { return { version: 1, digest, status: "UNCONFIRMED", reason: "pre-dispatch" }; }
     try { parseSealedLifecycleArtifact(new TextEncoder().encode(sealedJson), "initialize", Date.now(), "staging"); }
     catch { return { version: 1, digest, status: "UNCONFIRMED", reason: "expired-after-claim" }; }
-    let response: LifecycleResult;
+    let response: ReturnType<typeof normalizeLifecycleRelayResult>;
     try {
       await this.#localFaults.beforeExecutorCall?.();
-      response = await this.env.LIFECYCLE_EXECUTOR.submitInitializationArtifact(sealedJson);
+      response = normalizeLifecycleRelayResult(await this.env.LIFECYCLE_EXECUTOR.submitInitializationArtifact(sealedJson));
     } catch { return { version: 1, digest, status: "UNCONFIRMED", reason: "dispatch-ambiguous" }; }
-    const safeResponse = response && typeof response === "object" ? response : null;
-    const receipt = safeResponse && "receipt" in safeResponse ? safeResponse.receipt : undefined;
-    const positive = receipt && receipt.digest === digest && receipt.environment === "staging" &&
-      receipt.authorityId === "staging-public-inquiries-v1" && receipt.policyEpoch === "phase5c-i1-epoch-1";
-    const responseStatus = safeResponse && "status" in safeResponse ? safeResponse.status : undefined;
-    const status: GuardOutcome["status"] = positive && responseStatus === "initialized" ? "SUCCESS" :
-      positive && responseStatus === "already-initialized" ? "ALREADY_APPLIED" :
-      responseStatus === "refused" ? "REFUSED" : "UNCONFIRMED";
+    // Relay-local ledger note (see the Production guard): AMBIGUOUS and UNAVAILABLE are never refusals.
+    const ledger = response.status === "ATTESTED" ? response.relayDisposition === "APPLIED" ? "SUCCESS" : "ALREADY_APPLIED" :
+      response.status === "REFUSED" ? "REFUSED" : "UNCONFIRMED";
     try {
-      this.#ledger.sql.exec("UPDATE claims SET status=? WHERE digest=?", status, digest);
+      this.#ledger.sql.exec("UPDATE claims SET status=? WHERE digest=?", ledger, digest);
       await this.#ledger.sync();
     } catch { return { version: 1, digest, status: "UNCONFIRMED", reason: "result-durability" }; }
-    return { version: 1, digest, status, ...(positive ? { receipt: receipt as LifecycleReceipt } : {}) };
+    if (response.status === "ATTESTED") return { version: 1, digest, status: "ATTESTED", relayDisposition: response.relayDisposition, envelope: response.envelope };
+    if (response.status === "REFUSED") return { version: 1, digest, status: "REFUSED" };
+    if (response.status === "AMBIGUOUS") return { version: 1, digest, status: "UNCONFIRMED", reason: "attestation-ambiguous" };
+    if (response.status === "UNAVAILABLE") return { version: 1, digest, status: "UNCONFIRMED", reason: ("authority-" + response.reason).slice(0, 64) };
+    return { version: 1, digest, status: "UNCONFIRMED", reason: "dispatch-ambiguous" };
   }
 
   /** STAGING ROTATION — NOT IMPLEMENTED / GATE 9 — CLOSED. No sealed artifact is

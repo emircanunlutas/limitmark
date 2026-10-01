@@ -2,19 +2,17 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { importAdmissionRpcKey } from "../../src/lib/admission-protocol";
 import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID, inspectLifecycleAuthority, PublicInquiryAdmissionAuthority, type DurableStorageLike } from "./authority";
-import {
-  executeSignedAuthorityInitialization,
-  executeSignedAuthorityReleaseRotation,
-  isLifecycleRefusal,
-  type AuthorityInitializationCommand,
-  type AuthorityReleaseRotationCommand,
-} from "./operator-command";
+import type { AuthorityInitializationCommand, AuthorityReleaseRotationCommand } from "./operator-command";
 import {
   AuthorityAttestationCoordinator,
   PRODUCTION_ATTESTATION_IDENTITY,
   STAGING_ATTESTATION_IDENTITY,
+  type AttestedLifecycleResult,
+  type AttestedReconciliationResult,
+  type AttestedRecoveryResult,
   type AuthorityAttestationRuntime,
 } from "./authority-attestation";
+import { authorityAttestationRuntimeFromEnvironment } from "./authority-attestation-config";
 import { createVercelOidcVerifier, type VercelOidcPolicy } from "./auth";
 import { createAdmissionService, type AdmissionServiceRelease } from "./service";
 import { validateRuntimeSecrets } from "../../deployment/secret-policy";
@@ -24,21 +22,15 @@ export { createAdmissionService } from "./service";
 export { createVercelOidcVerifier } from "./auth";
 
 type AuthorityStub = {
-  initializeFromOperator(command: AuthorityInitializationCommand, signature: string): Promise<{ status: "initialized" | "already-initialized" | "refused" }>;
-  rotateReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string): Promise<{ status: "rotated" | "already-rotated" | "refused" }>;
+  initializeFromOperatorAttested(command: AuthorityInitializationCommand, signature: string): Promise<AttestedLifecycleResult>;
+  rotateReleaseFromOperatorAttested(command: AuthorityReleaseRotationCommand, signature: string): Promise<AttestedLifecycleResult>;
+  attestAppliedLifecycle(digest: string): Promise<AttestedRecoveryResult>;
+  attestReconciliation(digest: string, nonce: string): Promise<AttestedReconciliationResult>;
   claimPre(input: Parameters<PublicInquiryAdmissionAuthority["claimPre"]>[0]): Promise<ReturnType<PublicInquiryAdmissionAuthority["claimPre"]>>;
   consumePost(input: Parameters<PublicInquiryAdmissionAuthority["consumePost"]>[0]): Promise<ReturnType<PublicInquiryAdmissionAuthority["consumePost"]>>;
   inspectLifecycle(digest: string): Promise<ReturnType<typeof inspectLifecycleAuthority>>;
 };
 type AuthorityNamespace = { getByName(name: string): AuthorityStub };
-
-async function withLifecycleRefusal<T>(operation: () => Promise<T>): Promise<T | { status: "refused" }> {
-  try { return await operation(); }
-  catch (error) {
-    if (isLifecycleRefusal(error)) return { status: "refused" };
-    throw error;
-  }
-}
 
 export type AdmissionServiceEnvironment = {
   AUTHORITY: AuthorityNamespace;
@@ -48,18 +40,22 @@ export type AdmissionServiceEnvironment = {
   ADMISSION_CURRENT_RELEASE_ID: string; ADMISSION_CURRENT_KEY_ID: string; ADMISSION_CURRENT_RPC_KEY: string; ADMISSION_CURRENT_ACTIVATED_AT_MS: string;
   ADMISSION_PREVIOUS_RELEASE_ID?: string; ADMISSION_PREVIOUS_KEY_ID?: string; ADMISSION_PREVIOUS_RPC_KEY?: string;
   ADMISSION_PREVIOUS_ACTIVATED_AT_MS?: string; ADMISSION_PREVIOUS_RETIRE_AT_MS?: string;
+  /** R06 signer bindings (secret channel). Each Authority class reads only its own environment's names; see authority-attestation-config.ts. */
+  AUTHORITY_ATTESTATION_PRIVATE_KEY?: string; AUTHORITY_ATTESTATION_PUBLIC_KEY?: string; AUTHORITY_ATTESTATION_KEY_FINGERPRINT?: string;
+  AUTHORITY_STAGING_ATTESTATION_PRIVATE_KEY?: string; AUTHORITY_STAGING_ATTESTATION_PUBLIC_KEY?: string; AUTHORITY_STAGING_ATTESTATION_KEY_FINGERPRINT?: string;
 };
 
 /** Production RPC adapter. Business/state-machine logic remains in the reviewed
- * core; this class exists only to attach that core to Cloudflare's DO runtime. */
+ * core; this class exists only to attach that core to Cloudflare's DO runtime.
+ * Lifecycle mutation is signed-result ONLY (R06 Slice 2C): there is no unsigned lifecycle mutation method on this class. */
 export class ProductionAdmissionAuthority extends DurableObject<AdmissionServiceEnvironment> {
   private readonly operatorPublicKey: string;
   private readonly authority: PublicInquiryAdmissionAuthority;
   private readonly durableStorage: DurableStorageLike;
   private readonly attestation: AuthorityAttestationCoordinator;
   /** `attestationRuntime` (signer + Authority clock) is a construction seam for tests. The Durable Object runtime never
-   * passes it, and Slice 2A deliberately configures no signer from the environment, so in a deployed Authority every attested
-   * method below answers UNAVAILABLE/signer-unconfigured before touching storage. */
+   * passes it: the signer then comes ONLY from this environment's production signer bindings, and an absent or malformed binding
+   * leaves no signer, so every attested method answers UNAVAILABLE/signer-unconfigured before touching storage. */
   constructor(state: DurableObjectState, environment: AdmissionServiceEnvironment, attestationRuntime?: AuthorityAttestationRuntime) {
     super(state, environment);
     // Cloudflare's generic SQL cursor type is narrower than the core's testable
@@ -67,35 +63,27 @@ export class ProductionAdmissionAuthority extends DurableObject<AdmissionService
     this.durableStorage = state.storage as unknown as DurableStorageLike;
     this.authority = new PublicInquiryAdmissionAuthority({ storage: this.durableStorage });
     this.operatorPublicKey = environment.AUTHORITY_OPERATOR_PUBLIC_KEY;
-    this.attestation = new AuthorityAttestationCoordinator(this.durableStorage, PRODUCTION_ATTESTATION_IDENTITY, this.operatorPublicKey, attestationRuntime);
+    this.attestation = new AuthorityAttestationCoordinator(this.durableStorage, PRODUCTION_ATTESTATION_IDENTITY, this.operatorPublicKey,
+      attestationRuntime ?? authorityAttestationRuntimeFromEnvironment("production", environment));
   }
 
-  async initializeFromOperator(command: AuthorityInitializationCommand, signature: string) {
-    return withLifecycleRefusal(() => executeSignedAuthorityInitialization(this.durableStorage, command, signature, this.operatorPublicKey, Date.now(), "production", Date.now));
-  }
-
-  /** R06 Slice 2A (inert): same command, signed APPLIED envelope. Not bound to any entrypoint or caller yet. */
+  /** Signed APPLIED envelope for the operator-authenticated initialization command. */
   async initializeFromOperatorAttested(command: AuthorityInitializationCommand, signature: string) {
     return this.attestation.initialize(command, signature);
   }
 
-  /** R06 Slice 2A (inert). */
   async rotateReleaseFromOperatorAttested(command: AuthorityReleaseRotationCommand, signature: string) {
     return this.attestation.rotate(command, signature);
   }
 
-  /** R06 Slice 2A (inert): read-only fresh signed APPLIED evidence for an already-durable receipt. */
+  /** Read-only fresh signed APPLIED evidence for an already-durable receipt. */
   async attestAppliedLifecycle(digest: string) {
     return this.attestation.attestAppliedLifecycle(digest);
   }
 
-  /** R06 Slice 2A (inert): Authority-signed reconciliation; the nonce is inside the signed statement. */
+  /** Authority-signed reconciliation; the nonce is inside the signed statement. */
   async attestReconciliation(digest: string, nonce: string) {
     return this.attestation.attestReconciliation(digest, nonce);
-  }
-
-  async rotateReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string) {
-    return withLifecycleRefusal(() => executeSignedAuthorityReleaseRotation(this.durableStorage, command, signature, this.operatorPublicKey, Date.now(), "production", Date.now));
   }
 
   async inspectLifecycle(digest: string) {
@@ -114,6 +102,15 @@ export class ProductionAdmissionAuthority extends DurableObject<AdmissionService
     await this.authority.alarm();
   }
 }
+
+/** The ONE runtime-secret gate for every admission entrypoint, mutating and read-only (the `admissionService` policy of
+ * deployment/secret-matrix.json; the Production and staging admission Workers are both validated against it). */
+const runtimeSecretsValid = (environment: AdmissionServiceEnvironment): boolean =>
+  validateRuntimeSecrets("admissionService", environment as unknown as Record<string, unknown>);
+/** Read-only attested entrypoints answer this (never a throw, never "receipt-not-found") when the gate fails, before the Authority is
+ * reached. The pre-claim probe then stops a dispatch whose mutation entrypoint would deterministically fail the same gate AFTER a
+ * claim was consumed. */
+const RUNTIME_CONFIG_UNAVAILABLE = { status: "UNAVAILABLE", reason: "runtime-config-invalid" } as const;
 
 let handlerPromise: Promise<(request: Request) => Promise<Response>> | undefined;
 async function configure(environment: AdmissionServiceEnvironment) {
@@ -136,43 +133,42 @@ async function configure(environment: AdmissionServiceEnvironment) {
 export class AdmissionServiceWorker extends WorkerEntrypoint<AdmissionServiceEnvironment> {
   override async fetch(request: Request): Promise<Response> {
     try {
-      if (!validateRuntimeSecrets("admissionService", this.env as unknown as Record<string, unknown>)) throw new Error("admission-secret-policy");
+      if (!runtimeSecretsValid(this.env)) throw new Error("admission-secret-policy");
       handlerPromise ??= configure(this.env); return await (await handlerPromise)(request);
     }
     catch { return Response.json({ decision: "unavailable" }, { status: 503 }); }
   }
-
-  /** Operator service-binding RPC only; public fetch never dispatches here. */
-  async initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string) {
-    if (!validateRuntimeSecrets("admissionService", this.env as unknown as Record<string, unknown>)) throw new Error("admission-secret-policy");
-    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).initializeFromOperator(command, signature);
-  }
-
-  /** Operator service-binding RPC only; preserves the one fixed authority ID. */
-  async rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string) {
-    if (!validateRuntimeSecrets("admissionService", this.env as unknown as Record<string, unknown>)) throw new Error("admission-secret-policy");
-    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).rotateReleaseFromOperator(command, signature);
-  }
 }
 
-/** The executor binds only these two methods; public fetch has no dispatch path. */
+/** The executor binds only these two methods; public fetch has no dispatch path. Results are Authority-signed envelopes
+ * (ATTESTED), refusals, or explicit non-positive UNAVAILABLE/AMBIGUOUS: never an unsigned positive. */
 export class AuthorityLifecycleOnly extends WorkerEntrypoint<AdmissionServiceEnvironment> {
   override fetch(): Response { return new Response(null, { status: 404 }); }
-  async initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string) {
-    if (!validateRuntimeSecrets("admissionService", this.env as unknown as Record<string, unknown>)) throw new Error("admission-secret-policy");
-    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).initializeFromOperator(command, signature);
+  async initializeAuthorityFromOperatorAttested(command: AuthorityInitializationCommand, signature: string) {
+    if (!runtimeSecretsValid(this.env)) throw new Error("admission-secret-policy");
+    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).initializeFromOperatorAttested(command, signature);
   }
-  async rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string) {
-    if (!validateRuntimeSecrets("admissionService", this.env as unknown as Record<string, unknown>)) throw new Error("admission-secret-policy");
-    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).rotateReleaseFromOperator(command, signature);
+  async rotateAuthorityReleaseFromOperatorAttested(command: AuthorityReleaseRotationCommand, signature: string) {
+    if (!runtimeSecretsValid(this.env)) throw new Error("admission-secret-policy");
+    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).rotateReleaseFromOperatorAttested(command, signature);
   }
 }
 
-/** Narrow read capability: one fixed authority, one digest SELECT. */
+/** Narrow read capability: one fixed authority, SELECT-only. `inspectLifecycle` is the unsigned supervisory read used by guard
+ * settlement and the Gate 4 continuity verifier; it is deliberately NOT gated. `attestAppliedLifecycle` / `attestReconciliation`
+ * return Authority-signed envelopes and pass the same runtime-secret gate as the mutation entrypoints before the Authority is reached. */
 export class AuthorityLifecycleReadOnly extends WorkerEntrypoint<AdmissionServiceEnvironment> {
   override fetch(): Response { return new Response(null, { status: 404 }); }
   async inspectLifecycle(digest: string) {
     return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).inspectLifecycle(digest);
+  }
+  async attestAppliedLifecycle(digest: string): Promise<AttestedRecoveryResult | typeof RUNTIME_CONFIG_UNAVAILABLE> {
+    if (!runtimeSecretsValid(this.env)) return RUNTIME_CONFIG_UNAVAILABLE;
+    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).attestAppliedLifecycle(digest);
+  }
+  async attestReconciliation(digest: string, nonce: string): Promise<AttestedReconciliationResult | typeof RUNTIME_CONFIG_UNAVAILABLE> {
+    if (!runtimeSecretsValid(this.env)) return RUNTIME_CONFIG_UNAVAILABLE;
+    return this.env.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID).attestReconciliation(digest, nonce);
   }
 }
 
@@ -194,29 +190,25 @@ export class StagingAdmissionAuthority extends DurableObject<AdmissionServiceEnv
   private readonly operatorPublicKey: string;
   private readonly durableStorage: DurableStorageLike;
   private readonly attestation: AuthorityAttestationCoordinator;
-  /** See ProductionAdmissionAuthority: `attestationRuntime` is a test seam; none is configured from the environment. */
+  /** See ProductionAdmissionAuthority: `attestationRuntime` is a test seam; the deployed signer comes only from the STAGING
+   * signer bindings (distinct names from Production's) and is absent when they are absent or malformed. */
   constructor(state: DurableObjectState, environment: AdmissionServiceEnvironment, attestationRuntime?: AuthorityAttestationRuntime) {
     super(state, environment);
     this.durableStorage = state.storage as unknown as DurableStorageLike;
     this.operatorPublicKey = environment.AUTHORITY_OPERATOR_PUBLIC_KEY;
-    this.attestation = new AuthorityAttestationCoordinator(this.durableStorage, STAGING_ATTESTATION_IDENTITY, this.operatorPublicKey, attestationRuntime);
+    this.attestation = new AuthorityAttestationCoordinator(this.durableStorage, STAGING_ATTESTATION_IDENTITY, this.operatorPublicKey,
+      attestationRuntime ?? authorityAttestationRuntimeFromEnvironment("staging", environment));
   }
 
-  async initializeFromOperator(command: AuthorityInitializationCommand, signature: string) {
-    return withLifecycleRefusal(() => executeSignedAuthorityInitialization(this.durableStorage, command, signature, this.operatorPublicKey, Date.now(), "staging", Date.now));
-  }
-
-  /** R06 Slice 2A (inert): staging-keyed signed APPLIED envelope. Staging has NO rotation attestation method at all. */
+  /** Staging-keyed signed APPLIED envelope. Staging has NO rotation attestation method at all. */
   async initializeFromOperatorAttested(command: AuthorityInitializationCommand, signature: string) {
     return this.attestation.initialize(command, signature);
   }
 
-  /** R06 Slice 2A (inert). */
   async attestAppliedLifecycle(digest: string) {
     return this.attestation.attestAppliedLifecycle(digest);
   }
 
-  /** R06 Slice 2A (inert). */
   async attestReconciliation(digest: string, nonce: string) {
     return this.attestation.attestReconciliation(digest, nonce);
   }
@@ -236,9 +228,9 @@ export class StagingAdmissionAuthority extends DurableObject<AdmissionServiceEnv
  * surface as AuthorityLifecycleOnly, pinned to the distinct staging authority. */
 export class StagingAuthorityLifecycleOnly extends WorkerEntrypoint<AdmissionServiceEnvironment> {
   override fetch(): Response { return new Response(null, { status: 404 }); }
-  async initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string) {
-    if (!validateRuntimeSecrets("admissionService", this.env as unknown as Record<string, unknown>)) throw new Error("admission-secret-policy");
-    return this.env.AUTHORITY.getByName(STAGING_ADMISSION_AUTHORITY_ID).initializeFromOperator(command, signature);
+  async initializeAuthorityFromOperatorAttested(command: AuthorityInitializationCommand, signature: string) {
+    if (!runtimeSecretsValid(this.env)) throw new Error("admission-secret-policy");
+    return this.env.AUTHORITY.getByName(STAGING_ADMISSION_AUTHORITY_ID).initializeFromOperatorAttested(command, signature);
   }
   /** STAGING ROTATION — NOT IMPLEMENTED / GATE 9 — CLOSED. */
   async rotateAuthorityReleaseFromOperator(): Promise<{ status: "refused" }> {
@@ -246,11 +238,19 @@ export class StagingAuthorityLifecycleOnly extends WorkerEntrypoint<AdmissionSer
   }
 }
 
-/** Narrow staging read capability: one fixed staging authority, one digest SELECT. */
+/** Narrow staging read capability: one fixed staging authority, SELECT-only (see AuthorityLifecycleReadOnly). */
 export class StagingAuthorityLifecycleReadOnly extends WorkerEntrypoint<AdmissionServiceEnvironment> {
   override fetch(): Response { return new Response(null, { status: 404 }); }
   async inspectLifecycle(digest: string) {
     return this.env.AUTHORITY.getByName(STAGING_ADMISSION_AUTHORITY_ID).inspectLifecycle(digest);
+  }
+  async attestAppliedLifecycle(digest: string): Promise<AttestedRecoveryResult | typeof RUNTIME_CONFIG_UNAVAILABLE> {
+    if (!runtimeSecretsValid(this.env)) return RUNTIME_CONFIG_UNAVAILABLE;
+    return this.env.AUTHORITY.getByName(STAGING_ADMISSION_AUTHORITY_ID).attestAppliedLifecycle(digest);
+  }
+  async attestReconciliation(digest: string, nonce: string): Promise<AttestedReconciliationResult | typeof RUNTIME_CONFIG_UNAVAILABLE> {
+    if (!runtimeSecretsValid(this.env)) return RUNTIME_CONFIG_UNAVAILABLE;
+    return this.env.AUTHORITY.getByName(STAGING_ADMISSION_AUTHORITY_ID).attestReconciliation(digest, nonce);
   }
 }
 

@@ -30,7 +30,8 @@ const files: Plugin = { name: "local-cli-result", setup(api) {
     resolveDir: dirname(args.path), loader: extname(args.path) === ".ts" ? "ts" : extname(args.path) === ".json" ? "json" : "js" }));
 } };
 
-export async function createCliResultHarness() {
+/** `trust`: what deployment/authority-result-trust.json holds in the sandbox: the frozen TEST manifest, nothing, the unresolved template, or junk. */
+export async function createCliResultHarness(options: { trust?: "test-manifest" | "absent" | "template" | "junk" } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "i3b-cli-result-"));
   const trace = join(directory, "trace.txt");
   const credentials = join(directory, "synthetic-result-credential.json");
@@ -49,6 +50,12 @@ export async function createCliResultHarness() {
       operatorPublicKey: publicKey,
     }));
     await writeFile(credentials, JSON.stringify({ accessKeyId: "synthetic-read", secretAccessKey: "synthetic-only" }));
+    const trust = options.trust ?? "test-manifest";
+    if (trust !== "absent") {
+      const content = trust === "test-manifest" ? await readFile(join(root, "tests", "fixtures", "authority-result-trust-v1.test.json"), "utf8") :
+        trust === "template" ? await readFile(join(root, "deployment", "authority-result-trust.template.json"), "utf8") : "{ not json";
+      await writeFile(join(directory, "deployment", "authority-result-trust.json"), content);
+    }
     const bundle = await build({ entryPoints: [resolve(root, "scripts/authority-submit.ts")], outfile: cli, bundle: true,
       write: false, platform: "node", format: "cjs", target: "node24", plugins: [files], logLevel: "silent" });
     await writeFile(cli, bundle.outputFiles[0].contents);

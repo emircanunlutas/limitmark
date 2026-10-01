@@ -1,13 +1,12 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { MAX_SEALED_ARTIFACT_BYTES, submitSealedLifecycleArtifact, type AdmissionLifecycleBinding } from "../operator/lifecycle-submitter";
+import { MAX_SEALED_ARTIFACT_BYTES, submitSealedLifecycleArtifact, type StagingAdmissionLifecycleBinding } from "../operator/lifecycle-submitter";
 import { validateRuntimeSecrets } from "../deployment/secret-policy";
 
-// The bound entrypoint (StagingAuthorityLifecycleOnly) exposes both methods;
-// rotateAuthorityReleaseFromOperator always refuses (Gate 9 — CLOSED). This
-// executor itself never calls it: submitInitializationArtifact is the only
-// method exported below.
+// The bound entrypoint (StagingAuthorityLifecycleOnly) exposes the attested initialization method and a
+// rotation stub that always refuses (Gate 9 — CLOSED). This executor binds and calls only initialization:
+// submitInitializationArtifact is the only method exported below.
 type StagingExecutorEnvironment = {
-  ADMISSION_SERVICE: AdmissionLifecycleBinding;
+  ADMISSION_SERVICE: StagingAdmissionLifecycleBinding;
   AUTHORITY_OPERATOR_PUBLIC_KEY: string;
   OPERATOR_EXECUTOR_ENVIRONMENT: string;
 };

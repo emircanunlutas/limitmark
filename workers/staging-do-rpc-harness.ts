@@ -12,9 +12,18 @@ type HarnessEnvironment = {
 };
 type ReadOnlyEntrypoint = { inspectLifecycle(digest: string): Promise<unknown> };
 type LifecycleOnlyEntrypoint = {
-  initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string): Promise<{ status: "initialized" | "already-initialized" | "refused" }>;
+  initializeAuthorityFromOperatorAttested(command: AuthorityInitializationCommand, signature: string): Promise<unknown>;
   rotateAuthorityReleaseFromOperator(): Promise<{ status: "refused" }>;
 };
+
+const toHex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+/** HTTP cannot carry a Uint8Array as JSON; an envelope is reported as hex for the driving test only. */
+function serialize(result: unknown): unknown {
+  const record = (result ?? {}) as Record<string, unknown>;
+  if (!(record.envelope instanceof Uint8Array)) return result;
+  const { envelope, ...rest } = record;
+  return { ...rest, envelopeHex: toHex(envelope as Uint8Array) };
+}
 
 /** Local workerd integration only (Gate 4A). Never deployed; no route, no
  * workers_dev, no preview URL. This harness deliberately never configures
@@ -37,7 +46,7 @@ const stagingRpcHarness = {
         authorityName: STAGING_ADMISSION_AUTHORITY_ID,
         policyEpoch: ADMISSION_POLICY_EPOCH,
         readOnlyRpc: ["inspectLifecycle"],
-        dormantLifecycleRpc: ["initializeAuthorityFromOperator", "rotateAuthorityReleaseFromOperator"],
+        dormantLifecycleRpc: ["initializeAuthorityFromOperatorAttested", "rotateAuthorityReleaseFromOperator"],
       });
     }
     if (request.method !== "POST" || request.headers.get("x-local-staging-rpc-test") !== "phase5c-gate4a") {
@@ -57,7 +66,7 @@ const stagingRpcHarness = {
         // Reachable only from the driving regression test, which asserts this
         // always fails closed and never completes an initialization.
         case "/__local-staging-rpc/attempt-initialize":
-          return Response.json(await exported.StagingAuthorityLifecycleOnly.initializeAuthorityFromOperator(body.command!, body.signature ?? ""));
+          return Response.json(serialize(await exported.StagingAuthorityLifecycleOnly.initializeAuthorityFromOperatorAttested(body.command!, body.signature ?? "")));
         case "/__local-staging-rpc/attempt-rotate":
           return Response.json(await exported.StagingAuthorityLifecycleOnly.rotateAuthorityReleaseFromOperator());
         default:

@@ -137,8 +137,9 @@ test("G: staging rotation preparation/submission/runtime processing fails closed
   const ledger = stagingLedger();
   let dispatches = 0;
   const env: StagingGuardEnvironment = { AUTHORITY_OPERATOR_PUBLIC_KEY: "unused", LIFECYCLE_ENVIRONMENT: "staging",
-    LIFECYCLE_READER: { inspectLifecycle: async () => ({ status: "NOT_FOUND" }) },
-    LIFECYCLE_EXECUTOR: { submitInitializationArtifact: async () => { dispatches++; return { status: "refused" }; } } };
+    LIFECYCLE_READER: { inspectLifecycle: async () => ({ status: "NOT_FOUND" }),
+      attestAppliedLifecycle: async () => ({ status: "UNAVAILABLE", reason: "receipt-not-found" }) },
+    LIFECYCLE_EXECUTOR: { submitInitializationArtifact: async () => { dispatches++; return { status: "REFUSED" }; } } };
   const guard = new StagingGuard({ storage: ledger } as never, env);
   const outcome = await guard.processRotation();
   assert.deepEqual(outcome, { version: 1, digest: "", status: "REFUSED", reason: "staging-rotation-not-implemented" });
@@ -273,17 +274,21 @@ test("P: positive staging settlement releases only the supervisor latch, never r
     policyEpoch: ADMISSION_POLICY_EPOCH, keyFingerprint: "a".repeat(64), sequence: 1, appliedMs: command[7],
     currentReleaseId: "release-a", nextReleaseId: "release-a", nextKeyId: "key-a", activatesMs: command[7], retiresMs: null };
   const env: StagingGuardEnvironment = { AUTHORITY_OPERATOR_PUBLIC_KEY: key.publicKey, LIFECYCLE_ENVIRONMENT: "staging",
-    LIFECYCLE_READER: { inspectLifecycle: async () => snapshot },
-    LIFECYCLE_EXECUTOR: { submitInitializationArtifact: async () => { dispatches++; return { status: "initialized", receipt }; } } };
+    LIFECYCLE_READER: { inspectLifecycle: async () => snapshot,
+      attestAppliedLifecycle: async () => snapshot.status === "EXACT_RECEIPT"
+        ? { status: "ATTESTED", relayDisposition: "ALREADY_APPLIED", envelope: Uint8Array.from([7, 7, 7]) }
+        : { status: "UNAVAILABLE", reason: "receipt-not-found" } },
+    LIFECYCLE_EXECUTOR: { submitInitializationArtifact: async () => { dispatches++;
+      return { status: "ATTESTED", relayDisposition: "APPLIED", envelope: Uint8Array.from([7, 7, 7]) }; } } };
   const construct = () => new StagingGuard({ storage: ledger } as never, env);
-  assert.equal((await construct().processInitialization(sealed)).status, "SUCCESS");
+  assert.equal((await construct().processInitialization(sealed)).status, "ATTESTED");
   assert.equal(dispatches, 1);
   snapshot = { status: "EXACT_RECEIPT", receipt, environment: "staging", authorityId: STAGING_ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH };
   assert.equal((await construct().settle(digest)).settled, true);
   assert.equal((await construct().settle(digest)).settled, true, "duplicate settlement is idempotent");
   // Settlement releases only the supervisor latch; the digest remains
   // permanently consumed and can never dispatch again.
-  assert.equal((await construct().processInitialization(sealed)).status, "ALREADY_APPLIED");
+  assert.equal((await construct().processInitialization(sealed)).status, "ATTESTED");
   assert.equal(dispatches, 1, "settlement never rearms a consumed digest");
 });
 

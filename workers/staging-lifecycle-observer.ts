@@ -1,27 +1,29 @@
-import { boundedResult, parseControl, readBounded } from "./lifecycle-mailbox/wire";
+import { boundedResult, parseControl, publishSignedEnvelope, readBounded } from "./lifecycle-mailbox/wire";
 import type { R2Bucket, ScheduledEvent } from "@cloudflare/workers-types";
 import { validateRuntimeSecrets } from "../deployment/secret-policy";
-import { UNAVAILABLE_AUTHORITY_OBSERVATION } from "../operator/lifecycle-observation";
+import { normalizeReconciliationRelayResult, unsignedDiagnostic } from "../operator/attested-relay";
 
 export type StagingObserverEnvironment = {
   REQUEST_BUCKET: R2Bucket;
   RESULT_BUCKET: R2Bucket;
-  LIFECYCLE_READER: { inspectLifecycle(digest: string): Promise<object> };
+  /** The staging Authority-signed reconciliation capability. The observer holds no unsigned read and constructs no Authority semantics. */
+  LIFECYCLE_READER: { attestReconciliation(digest: string, nonce: string): Promise<unknown> };
 };
 
-/** Reconstructs a nonce-scoped result using only the staging authority read capability. */
+/** A DUMB RELAY. It forwards the caller's exact digest and nonce to the Authority and stores the signed envelope bytes the
+ * Authority returns, untouched. It never builds initialized/coverage/status/receipt/releases/observedAtMs: those are signed
+ * Authority semantics. Without signed evidence it stores only an explicit unsigned, never-positive diagnostic. */
 export async function observeStagingReconciliation(env: StagingObserverEnvironment): Promise<void> {
   const bytes = await readBounded(await env.REQUEST_BUCKET.get("reconcile.json"), 1_024);
   if (!bytes) return;
   const control = parseControl(bytes);
   const key = `reconciliation/${control.nonce}.json`;
   if (await env.RESULT_BUCKET.head(key)) return;
-  const snapshot = await env.LIFECYCLE_READER.inspectLifecycle(control.digest);
-  const observed = (snapshot as { status?: unknown }).status === UNAVAILABLE_AUTHORITY_OBSERVATION.status
-    ? { version: 1, digest: control.digest, nonce: control.nonce, status: "UNAVAILABLE", environment: "staging",
-      authorityId: "staging-public-inquiries-v1", policyEpoch: "phase5c-i1-epoch-1", observedAtMs: Date.now() }
-    : { version: 1, digest: control.digest, nonce: control.nonce, ...snapshot };
-  const written = await env.RESULT_BUCKET.put(key, boundedResult(observed));
+  const answer = normalizeReconciliationRelayResult(await env.LIFECYCLE_READER.attestReconciliation(control.digest, control.nonce));
+  if (answer.status === "ATTESTED") { await publishSignedEnvelope(env.RESULT_BUCKET, key, answer.envelope); return; }
+  const diagnostic = unsignedDiagnostic(control.digest, answer.status === "UNCONFIRMED" ? "UNCONFIRMED" : answer.status,
+    answer.status === "UNAVAILABLE" ? answer.reason : undefined, control.nonce);
+  const written = await env.RESULT_BUCKET.put(key, boundedResult(diagnostic));
   if (!written || typeof written !== "object" || written.key !== key)
     throw new Error("reconciliation-publication-unconfirmed");
 }

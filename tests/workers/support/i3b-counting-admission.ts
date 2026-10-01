@@ -9,13 +9,13 @@ let count = 0;
 export class CountingAdmission extends WorkerEntrypoint<Environment> {
   override fetch(): Response { return new Response(null, { status: 404 }); }
   getDispatchCount(): number { return count; }
-  async initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string) {
+  async initializeAuthorityFromOperatorAttested(command: AuthorityInitializationCommand, signature: string) {
     count++;
-    return this.env.ADMISSION.initializeAuthorityFromOperator(command, signature);
+    return this.env.ADMISSION.initializeAuthorityFromOperatorAttested(command, signature);
   }
-  async rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string) {
+  async rotateAuthorityReleaseFromOperatorAttested(command: AuthorityReleaseRotationCommand, signature: string) {
     count++;
-    return this.env.ADMISSION.rotateAuthorityReleaseFromOperator(command, signature);
+    return this.env.ADMISSION.rotateAuthorityReleaseFromOperatorAttested(command, signature);
   }
 }
 export default CountingAdmission;

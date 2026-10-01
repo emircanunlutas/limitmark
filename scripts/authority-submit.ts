@@ -6,7 +6,9 @@ import { commandDigest, verifyOperatorCommand } from "../workers/admission-servi
 import { oneR2Request, type R2Credential } from "../operator/r2-transport";
 import { validateLifecycleTransportManifest } from "../deployment/lifecycle-private-contract";
 import { parseControl } from "../workers/lifecycle-mailbox/wire";
-import { verifyProductionLifecycleResult } from "../operator/lifecycle-result";
+import { verifySettlementResult } from "../operator/lifecycle-result";
+import { readProductionAuthorityResult } from "../operator/authority-result-reader";
+import { loadAuthorityResultTrustManifest } from "../operator/authority-trust-loader";
 
 type Manifest = { accountId: string; requestBucket: string; resultBucket: string; operatorPublicKey: string; authorityId: string; policyEpoch: string };
 const digestPattern = /^[a-f0-9]{64}$/u;
@@ -75,9 +77,11 @@ function pathArg(args: Record<string, string | true>, key: string): string {
 }
 function production(args: Record<string, string | true>): void { if (args["--confirm-production"] !== true) fail(); }
 function print(value: object): void { process.stdout.write(`${JSON.stringify(value)}\n`); }
-function terminal(status: "SUCCESS" | "ALREADY_APPLIED" | "REFUSED" | "UNAVAILABLE" | "UNCONFIRMED", value: object): void {
+type Terminal = "POSITIVE" | "VERIFIED_NON_POSITIVE" | "REFUSED" | "UNAVAILABLE" | "UNCONFIRMED";
+/** Only POSITIVE exits 0. A signed-but-not-success observation and an unconfirmed one both exit 3; local input failures exit 2. */
+function terminal(status: Terminal, value: object): void {
   print({ status, ...value });
-  if (status !== "SUCCESS" && status !== "ALREADY_APPLIED") process.exitCode = status === "UNCONFIRMED" ? 3 : 2;
+  if (status !== "POSITIVE") process.exitCode = status === "UNCONFIRMED" || status === "VERIFIED_NON_POSITIVE" ? 3 : 2;
 }
 async function submit(operation: LifecycleOperation): Promise<void> {
   const args = argsFor(["--command", "--request-credentials", "--confirm-production", "--inspect"]);
@@ -126,36 +130,38 @@ async function readResult(): Promise<void> {
   if (!["lifecycle", "reconciliation", "settlement"].includes(kind) ||
       kind === "lifecycle" && (typeof digest !== "string" || !digestPattern.test(digest) || nonce !== undefined) ||
       kind !== "lifecycle" && (typeof nonce !== "string" || !noncePattern.test(nonce) || typeof digest !== "string" || !digestPattern.test(digest))) fail();
-  // Positive results need authenticated command context. Settlement is guard state, not a command receipt, so it takes none.
+  // Positive results need R06-signed Authority evidence AND an authenticated command. Settlement is guard state, not a command receipt, so it takes none.
   if (kind === "settlement" && args["--command"] !== undefined) fail();
   const target = await manifest();
   let command;
   if (args["--command"] !== undefined) {
-    // Historical authentication: the same parser and signature check as submission, without submission freshness.
-    const authenticated = await authenticateSealedLifecycleArtifact(await boundedFile(pathArg(args, "--command"), MAX_SEALED_ARTIFACT_BYTES),
+    // Historical authentication: the same parser and signature check as submission, without submission freshness. A command that
+    // names a DIFFERENT digest is not refused here: the reader reports it as MISMATCHED context, keeps any valid signed negative
+    // reportable and never lets it vouch for a positive.
+    command = await authenticateSealedLifecycleArtifact(await boundedFile(pathArg(args, "--command"), MAX_SEALED_ARTIFACT_BYTES),
       target.operatorPublicKey);
-    if (authenticated.digest !== digest) fail();
-    command = authenticated.expected;
   }
+  const trust = kind === "settlement" ? undefined : await loadAuthorityResultTrustManifest();
   const token = await credential(pathArg(args, "--result-credentials"));
   const key = kind === "lifecycle" ? `lifecycle/${digest}.json` : `${kind}/${nonce}.json`;
   let result;
   try { result = await oneR2Request("GET", { accountId: target.accountId, bucket: target.resultBucket }, token, key, undefined, 8_192); }
   catch { terminal("UNCONFIRMED", { kind }); return; }
   if (result.statusCode !== 200) { terminal("UNCONFIRMED", { kind }); return; }
-  let verified: ReturnType<typeof verifyProductionLifecycleResult>;
-  try {
-    verified = verifyProductionLifecycleResult(result.body, kind as "lifecycle" | "reconciliation" | "settlement",
-      kind === "lifecycle" ? { digest: digest as string } : { digest: digest as string, nonce: nonce as string }, { command });
-  } catch {
-    // Invalid result bytes are failed observations, never proof that an
-    // earlier accepted lifecycle command was refused or rolled back.
-    terminal("UNCONFIRMED", { kind });
+  if (kind === "settlement") {
+    let settlement: ReturnType<typeof verifySettlementResult>;
+    try { settlement = verifySettlementResult(result.body, { digest: digest as string, nonce: nonce as string }); }
+    catch { terminal("UNCONFIRMED", { kind }); return; }
+    if (settlement.status === "SETTLED") print(settlement);
+    else terminal("UNCONFIRMED", settlement);
     return;
   }
-  if (verified.status === "SETTLED") print(verified);
-  else if (verified.status === "SUCCESS" || verified.status === "ALREADY_APPLIED") terminal(verified.status, verified);
-  else terminal("UNCONFIRMED", verified);
+  // The stored object is untrusted: only a genuine Authority-signed envelope, verified against the pinned trust manifest, can be positive.
+  const outcome = await readProductionAuthorityResult({ kind: kind as "lifecycle" | "reconciliation", digest: digest as string,
+    ...(kind === "reconciliation" ? { nonce: nonce as string } : {}), bytes: result.body, trustManifest: trust!, nowMs: Date.now(),
+    ...(command === undefined ? {} : { authenticatedCommand: command }) });
+  const { status, ...rest } = outcome;
+  terminal(status, rest);
 }
 async function main(): Promise<void> {
   const action = process.argv[2];

@@ -15,6 +15,9 @@ import {
   type AuthorityReleaseRotationCommand,
 } from "../../workers/admission-service/operator-command";
 import { encodeBase64url } from "../../src/lib/ingress-protocol";
+import { commandDigest } from "../../workers/admission-service/operator-command";
+import { verifyAuthoritySignedStatement } from "../../src/lib/authority-result-trust";
+import { rfcSignerBindings, rfcTrustManifest } from "../support/authority-attestation-test-signers";
 
 type RpcResult = { status: number; body: Record<string, unknown> };
 type PreInput = {
@@ -48,6 +51,8 @@ async function start(publicKey: string): Promise<Unstable_DevWorker> {
     vars: {
       AUTHORITY_OPERATOR_PUBLIC_KEY: publicKey,
       ADMISSION_CURRENT_RPC_KEY: encodeBase64url(new Uint8Array(32).fill(9)),
+      // Explicit TEST-ONLY signer configuration (the frozen RFC 8032 vectors) under the binding names the active runtime reads.
+      ...await rfcSignerBindings("production"),
     },
     experimental: { showInteractiveDevSession: false, watch: false },
   });
@@ -66,6 +71,18 @@ async function call(path: string, body: unknown): Promise<RpcResult> {
 
 const submit = (operation: "initialize" | "rotate", command: unknown, signature: string) =>
   call(`submit-${operation}`, { command, signature });
+const fromHex = (value: string) => Uint8Array.from(value.match(/../gu) ?? [], (pair) => Number.parseInt(pair, 16));
+/** An ATTESTED relay result whose envelope really verifies under the Production trust key for exactly this command digest (real workerd, real DO). */
+async function verifiedAttestation(body: Record<string, unknown>, command: Parameters<typeof commandDigest>[0], disposition: "APPLIED" | "ALREADY_APPLIED") {
+  assert.equal(body.status, "ATTESTED", JSON.stringify(body));
+  assert.equal(body.relayDisposition, disposition);
+  assert.deepEqual(Object.keys(body).sort(), ["envelopeHex", "relayDisposition", "status"]);
+  const digest = await commandDigest(command);
+  const verified = await verifyAuthoritySignedStatement(fromHex(String(body.envelopeHex)),
+    { kind: "lifecycle", environment: "production", authorityId: ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH, digest }, await rfcTrustManifest(), Date.now() + 1_000);
+  assert.equal(verified.statement.kind, "lifecycle");
+  return verified.statement.kind === "lifecycle" ? verified.statement.receipt : undefined;
+}
 
 async function assertProductionHarness(): Promise<void> {
   const response = await fetch(`${root}/health`, { signal: AbortSignal.timeout(10_000) });
@@ -77,7 +94,7 @@ async function assertProductionHarness(): Promise<void> {
     extendsDurableObject: true,
     authorityName: ADMISSION_AUTHORITY_ID,
     dataRpc: ["claimPre", "consumePost"],
-    lifecycleRpc: ["initializeAuthorityFromOperator", "rotateAuthorityReleaseFromOperator"],
+    lifecycleRpc: ["initializeAuthorityFromOperatorAttested", "rotateAuthorityReleaseFromOperatorAttested"],
     oldLocalHarnessFallback: false,
   });
 }
@@ -152,16 +169,15 @@ async function main() {
     const initializeSignature = await signAuthorityInitializationCommand(initialize, privateKey);
     const wrongEpoch = [...initialize] as unknown as AuthorityInitializationCommand;
     (wrongEpoch as unknown as string[])[4] = "wrong-epoch";
-    assert.deepEqual((await call("initialize", { command: wrongEpoch, signature: initializeSignature })).body, { status: "refused" });
+    assert.deepEqual((await call("initialize", { command: wrongEpoch, signature: initializeSignature })).body, { status: "REFUSED" });
     const unconfirmed = [...initialize] as unknown as AuthorityInitializationCommand;
     (unconfirmed as unknown as boolean[])[8] = false;
-    assert.deepEqual((await call("initialize", { command: unconfirmed, signature: initializeSignature })).body, { status: "refused" });
+    assert.deepEqual((await call("initialize", { command: unconfirmed, signature: initializeSignature })).body, { status: "REFUSED" });
     const initialized = (await submit("initialize", initialize, initializeSignature)).body;
-    assert.equal(initialized.status, "initialized");
-    assert.ok(initialized.receipt);
+    const initializedReceipt = await verifiedAttestation(initialized, initialize, "APPLIED");
+    assert.ok(initializedReceipt);
     const repeatedInit = (await submit("initialize", initialize, initializeSignature)).body;
-    assert.equal(repeatedInit.status, "already-initialized");
-    assert.deepEqual(repeatedInit.receipt, initialized.receipt);
+    assert.deepEqual(await verifiedAttestation(repeatedInit, initialize, "ALREADY_APPLIED"), initializedReceipt, "replay: same durable receipt, signed again, no second mutation");
 
     // Establish every persistence-sensitive state before rotation.
     const quotaClient = freshClient();
@@ -187,21 +203,20 @@ async function main() {
     const wrongCurrent = [...rotate] as unknown as AuthorityReleaseRotationCommand;
     (wrongCurrent as unknown as string[])[5] = "dpl_wrong_current";
     assert.deepEqual((await submit("rotate", wrongCurrent,
-      await signAuthorityReleaseRotationCommand(wrongCurrent, privateKey))).body, { status: "refused" });
+      await signAuthorityReleaseRotationCommand(wrongCurrent, privateKey))).body, { status: "REFUSED" });
     const wrongRotationEpoch = [...rotate] as unknown as AuthorityReleaseRotationCommand;
     (wrongRotationEpoch as unknown as string[])[4] = "wrong-epoch";
-    assert.deepEqual((await call("rotate", { command: wrongRotationEpoch, signature: rotateSignature })).body, { status: "refused" });
+    assert.deepEqual((await call("rotate", { command: wrongRotationEpoch, signature: rotateSignature })).body, { status: "REFUSED" });
     const rotated = (await submit("rotate", rotate, rotateSignature)).body;
-    assert.equal(rotated.status, "rotated");
-    assert.ok(rotated.receipt);
+    const rotatedReceipt = await verifiedAttestation(rotated, rotate, "APPLIED");
+    assert.ok(rotatedReceipt);
     const repeatedRotation = (await submit("rotate", rotate, rotateSignature)).body;
-    assert.equal(repeatedRotation.status, "already-rotated");
-    assert.deepEqual(repeatedRotation.receipt, rotated.receipt);
+    assert.deepEqual(await verifiedAttestation(repeatedRotation, rotate, "ALREADY_APPLIED"), rotatedReceipt);
 
     const conflict = [...rotate] as unknown as AuthorityReleaseRotationCommand;
     (conflict as unknown as string[])[7] = "rpc-conflict";
     const conflictSignature = await signAuthorityReleaseRotationCommand(conflict, privateKey);
-    assert.deepEqual((await submit("rotate", conflict, conflictSignature)).body, { status: "refused" });
+    assert.deepEqual((await submit("rotate", conflict, conflictSignature)).body, { status: "REFUSED" });
     const untilActivation = Math.max(0, activatesAtMs - Date.now() + 10);
     if (untilActivation) await new Promise((resolve) => setTimeout(resolve, untilActivation));
     await expectPreAllowed(makePre(nextRelease));
@@ -314,13 +329,13 @@ async function main() {
     if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
     assert.equal((await call("pre", { input: makePre(currentRelease) })).body.decision, "unavailable");
     assert.equal((await call("pre", { input: makePre(nextRelease) })).body.decision, "limited");
-    assert.equal((await call("rotate", { command: rotate, signature: rotateSignature })).body.status, "already-rotated");
-    assert.deepEqual((await call("rotate", { command: conflict, signature: conflictSignature })).body, { status: "refused" });
+    assert.equal((await call("rotate", { command: rotate, signature: rotateSignature })).body.relayDisposition, "ALREADY_APPLIED");
+    assert.deepEqual((await call("rotate", { command: conflict, signature: conflictSignature })).body, { status: "REFUSED" });
 
     const resetAttempt: AuthorityInitializationCommand = [AUTHORITY_OPERATOR_COMMAND_VERSION, "initialize", "production", ADMISSION_AUTHORITY_ID,
       ADMISSION_POLICY_EPOCH, "dpl_reset", "rpc-reset", Date.now(), true];
     assert.deepEqual((await submit("initialize", resetAttempt,
-      await signAuthorityInitializationCommand(resetAttempt, privateKey))).body, { status: "refused" });
+      await signAuthorityInitializationCommand(resetAttempt, privateKey))).body, { status: "REFUSED" });
     assert.equal((await call("reset", {})).status, 404);
   } finally {
     try {

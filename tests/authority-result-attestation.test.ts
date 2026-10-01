@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   ATTESTATION_AUTHORITY_IDS,
@@ -1368,36 +1368,10 @@ test("trust manifest hygiene: UTF-8 byte size, distinct placeholders, current-ke
 // ---------------------------------------------------------------------------------------------------------------------
 // Scope guards
 // ---------------------------------------------------------------------------------------------------------------------
-test("the protocol is wired only into the inert Slice 2A Authority producer, and ships no operational key material", async () => {
+test("the Authority-side producer is isolated from the relay layer, and the fixtures ship only the public RFC test key material", async () => {
+  // The exact allowlists of who may import the protocol, call the attested RPCs or use the composers live in
+  // tests/authority-activation-guards.test.ts (R06 Slice 2C: "only these reviewed active callers", replacing the 2A/2B "nobody" guards).
   const root = new URL("../", import.meta.url);
-  const own = new Set(["src/lib/authority-result-attestation.ts", "src/lib/authority-result-trust.ts", "tests/authority-result-attestation.test.ts"]);
-  // Slice 2A: the only files that may reference the frozen protocol besides itself. Everything else (relay, mailbox, observer,
-  // result writer/reader, CLI, deployment, public routes) must not reference it yet.
-  const producer = new Set(["workers/admission-service/authority-attestation.ts", "workers/admission-service/authority-attestation-signer.ts",
-    "tests/i3b-authority.test.ts", "tests/support/authority-attestation-test-signers.ts"]);
-  // Slice 2B: the inert verifier/composition side. Exactly this module and its focused test may consume the frozen protocol
-  // (the module through the verifier API, the test through the signing helpers); nothing active may.
-  const composition = new Set(["operator/authority-result-verifier.ts", "tests/authority-result-verifier.test.ts"]);
-  // Pre-2C transport gate: a local-workerd-only harness and its integration test push the real Slice 2A attested results across a
-  // real RPC boundary. Test-only: no wrangler config other than wrangler.attestation-rpc-transport.local.jsonc names the harness.
-  const transportGate = new Set(["workers/attestation-rpc-transport-harness.ts", "tests/workers/attestation-rpc-transport.integration.ts"]);
-  // The producer's own surface: no other file may import the producer modules or invoke the attested Authority RPCs.
-  const producerSurface = new Set([...producer, ...transportGate, "workers/admission-service/index.ts"]);
-  const offenders: string[] = [];
-  const producerLeaks: string[] = [];
-  for (const directory of ["src", "workers", "operator", "scripts", "deployment", "tests"]) {
-    for (const entry of await readdir(new URL(directory, root), { recursive: true })) {
-      const name = entry.replaceAll("\\", "/");
-      const relative = `${directory}/${name}`;
-      if (own.has(relative) || !/\.(ts|tsx|mts|js|mjs|json|jsonc)$/u.test(name) || name.includes("fixtures/")) continue;
-      const text = await readFile(new URL(relative, root), "utf8");
-      if (/authority-result-(attestation|trust)/u.test(text) && !producer.has(relative) && !composition.has(relative) && !transportGate.has(relative)) offenders.push(relative);
-      if (/authority-attestation|FromOperatorAttested|attestAppliedLifecycle|attestReconciliation|AuthorityAttestationCoordinator/u.test(text) &&
-          !producerSurface.has(relative)) producerLeaks.push(relative);
-    }
-  }
-  assert.deepEqual(offenders, []);
-  assert.deepEqual(producerLeaks, [], "no relay/mailbox/observer/CLI/result caller imports or invokes the attested Authority RPCs");
   // The Authority-side producer never learns the relay layer: it imports only the frozen protocol, the authority core and the command module.
   for (const file of ["workers/admission-service/authority-attestation.ts", "workers/admission-service/authority-attestation-signer.ts"]) {
     const imports = [...(await readFile(new URL(file, root), "utf8")).matchAll(/from "([^"]+)"/gu)].map((match) => match[1]);

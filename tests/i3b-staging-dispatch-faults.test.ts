@@ -97,7 +97,10 @@ before(async () => {
   third = await signed(now + 2, "synthetic-release-3");
 });
 
-type Response = "success" | "throw" | "malformed" | "null" | "refused";
+/** Opaque stand-in for the Authority's signed envelope: relays must never look inside it (it is not a protocol envelope). */
+const envelopeFor = (digest: string) => new TextEncoder().encode(`opaque-envelope:${digest}`);
+const reasonOf = (outcome: GuardOutcome): string | undefined => "reason" in outcome ? outcome.reason : undefined;
+type Response = "success" | "throw" | "malformed" | "null" | "refused" | "ambiguous" | "unavailable" | "legacy" | "custom";
 function harness(ledger = new FaultLedger()) {
   const dispatched: string[] = [];
   let response: Response = "success";
@@ -105,21 +108,43 @@ function harness(ledger = new FaultLedger()) {
   let receipts: Signed[] = [];
   let snapshotOverride: Snapshot | null = null;
   let readerFault = false;
+  let signerUnavailable = false;
+  let customResponse: unknown;
+  let customProbe: { value: unknown } | null = null;
   const env: StagingGuardEnvironment = { AUTHORITY_OPERATOR_PUBLIC_KEY: publicKey, LIFECYCLE_ENVIRONMENT: "staging",
-    LIFECYCLE_READER: { inspectLifecycle: async (digest: string) => {
-      if (readerFault) throw new Error("authority-unavailable");
-      if (snapshotOverride) return snapshotOverride;
-      const found = receipts.find((entry) => entry.digest === digest);
-      return found ? exactFor(found) : absent;
-    } },
+    LIFECYCLE_READER: {
+      // The unsigned supervisory read serves settlement only.
+      inspectLifecycle: async (digest: string) => {
+        if (readerFault) throw new Error("authority-unavailable");
+        if (snapshotOverride) return snapshotOverride;
+        const found = receipts.find((entry) => entry.digest === digest);
+        return found ? exactFor(found) : absent;
+      },
+      // The Authority-signed read: what the staging Authority itself would answer for the same state.
+      attestAppliedLifecycle: async (digest: string) => {
+        if (readerFault) throw new Error("authority-unavailable");
+        if (customProbe) return customProbe.value;
+        if (signerUnavailable) return { status: "UNAVAILABLE", reason: "signer-unconfigured" };
+        const found = snapshotOverride ?? (receipts.find((entry) => entry.digest === digest) ? exactFor(receipts.find((entry) => entry.digest === digest)!) : absent);
+        if (found.status === "EXACT_RECEIPT" && found.environment === "staging" && found.receipt?.digest === digest)
+          return { status: "ATTESTED", relayDisposition: "ALREADY_APPLIED", envelope: envelopeFor(digest) };
+        return { status: "UNAVAILABLE", reason: found.status === "NOT_FOUND" ? "receipt-not-found" :
+          found.status === "HISTORY_INCOMPLETE" ? "history-incomplete" : "authority-state-unavailable" };
+      },
+    },
     LIFECYCLE_EXECUTOR: { submitInitializationArtifact: async (sealed: string) => {
       const match = [first, second, third].find((entry) => entry.sealed === sealed);
       dispatched.push(match?.digest ?? "unknown");
       if (response === "throw") throw new Error("lost-executor-ack");
       if (response === "malformed") return { status: "retryable" } as never;
       if (response === "null") return null as never;
-      if (response === "refused") return { status: "refused" };
-      return { status: "initialized", receipt: match!.receipt };
+      if (response === "refused") return { status: "REFUSED" };
+      if (response === "ambiguous") return { status: "AMBIGUOUS", reason: "post-commit-attestation-failed" };
+      if (response === "unavailable") return { status: "UNAVAILABLE", reason: "signer-not-ready" };
+      // The pre-2C unsigned positive: the guard must not honor it.
+      if (response === "legacy") return { status: "initialized", receipt: match!.receipt } as never;
+      if (response === "custom") return customResponse as never;
+      return { status: "ATTESTED", relayDisposition: "APPLIED", envelope: envelopeFor(match!.digest) };
     } } };
   const construct = (point?: "afterClaimSync" | "beforeExecutorCall") => new Guard({ storage: ledger } as never, env, {
     afterClaimSync: async () => { if (point === "afterClaimSync") throw new Error("after-sync"); },
@@ -127,7 +152,9 @@ function harness(ledger = new FaultLedger()) {
   });
   return { ledger, construct, dispatched, get dispatches() { return dispatched.length; },
     set response(value: Response) { response = value; }, set receipts(value: Signed[]) { receipts = value; },
-    set snapshot(value: Snapshot | null) { snapshotOverride = value; }, set readerFault(value: boolean) { readerFault = value; } };
+    set snapshot(value: Snapshot | null) { snapshotOverride = value; }, set readerFault(value: boolean) { readerFault = value; },
+    set signerUnavailable(value: boolean) { signerUnavailable = value; },
+    set customResponse(value: unknown) { response = "custom"; customResponse = value; }, set customProbe(value: unknown) { customProbe = { value }; } };
 }
 
 const claims = (ledger: FaultLedger) => ledger.count("SELECT COUNT(*) AS count FROM claims");
@@ -138,7 +165,7 @@ function claimedAndLatched(ledger: FaultLedger, digest: string): void {
 }
 async function duplicateCannotDispatch(h: ReturnType<typeof harness>, entry: Signed): Promise<void> {
   const outcome = await h.construct().processInitialization(entry.sealed);
-  assert.deepEqual([outcome.status, outcome.reason], ["UNCONFIRMED", "consumed"]);
+  assert.deepEqual([outcome.status, reasonOf(outcome)], ["UNCONFIRMED", "consumed"]);
 }
 
 test("staging guard prototype exposes only the three reviewed operations (no fault or reset method)", () => {
@@ -154,14 +181,14 @@ test("pre-claim interruption, invalid input and failed claim transaction never d
     assert.deepEqual(statusReason(await h.construct().processInitialization(first.sealed)), ["UNAVAILABLE", "authority-read"]);
     h.readerFault = false;
     h.ledger.failTransaction = true;
-    assert.equal((await h.construct().processInitialization(first.sealed)).reason, "claim-durability");
+    assert.equal(reasonOf(await h.construct().processInitialization(first.sealed)), "claim-durability");
     h.ledger.failTransaction = false;
     h.ledger.failSql = /^INSERT INTO latch/u;
-    assert.equal((await h.construct().processInitialization(first.sealed)).reason, "claim-durability");
+    assert.equal(reasonOf(await h.construct().processInitialization(first.sealed)), "claim-durability");
     assert.equal(claims(h.ledger), 0, "partial claim transaction rolls back");
     assert.equal(h.dispatches, 0);
     h.ledger.failSql = null;
-    assert.equal((await h.construct().processInitialization(first.sealed)).status, "SUCCESS");
+    assert.equal((await h.construct().processInitialization(first.sealed)).status, "ATTESTED");
     assert.equal(h.dispatches, 1, "only the later first durable claim dispatches");
   } finally { h.ledger.close(); }
 });
@@ -236,7 +263,7 @@ test("begun RPC, lost acknowledgement, malformed and refused responses never red
       if (response === "throw") {
         // Lost ack after commit: the authority holds the receipt; only a read resolves it.
         h.receipts = [first];
-        assert.equal((await h.construct().processInitialization(first.sealed)).status, "ALREADY_APPLIED");
+        assert.equal((await h.construct().processInitialization(first.sealed)).status, "ATTESTED");
         assert.equal((await h.construct().settle(first.digest)).settled, true);
         assert.equal(latches(h.ledger), 0);
         assert.equal(claims(h.ledger), 1);
@@ -257,7 +284,7 @@ test("authoritative response with failed result SQL/sync leaves a permanent clai
       h.ledger.failSql = null; h.ledger.failSyncAt = 0;
       await duplicateCannotDispatch(h, first);
       h.receipts = [first];
-      assert.equal((await h.construct().processInitialization(first.sealed)).status, "ALREADY_APPLIED");
+      assert.equal((await h.construct().processInitialization(first.sealed)).status, "ATTESTED");
       assert.equal(h.dispatches, 1);
     } finally { h.ledger.close(); }
   }
@@ -296,7 +323,7 @@ test("negative or unavailable reconciliation never settles or rearms an ambiguou
 test("positive-only settlement: unknown/unresolved digests cannot release the latch; duplicate is idempotent; failure never rearms", async () => {
   const h = harness();
   try {
-    assert.equal((await h.construct().processInitialization(first.sealed)).status, "SUCCESS");
+    assert.equal((await h.construct().processInitialization(first.sealed)).status, "ATTESTED");
     assert.equal((await h.construct().settle(first.digest)).settled, false, "no authority receipt observed yet");
     assert.equal((await h.construct().settle("b".repeat(64))).settled, false, "unknown digest");
     assert.equal((await h.construct().settle("not-a-digest")).settled, false);
@@ -314,7 +341,7 @@ test("positive-only settlement: unknown/unresolved digests cannot release the la
     assert.equal(claims(h.ledger), 1);
     assert.equal((await h.construct().settle(first.digest)).settled, true, "duplicate settlement is idempotent");
     assert.equal(h.ledger.count("SELECT COUNT(*) AS count FROM settlements"), 1);
-    assert.equal((await h.construct().processInitialization(first.sealed)).status, "ALREADY_APPLIED");
+    assert.equal((await h.construct().processInitialization(first.sealed)).status, "ATTESTED");
     assert.equal(h.dispatches, 1, "settlement never redispatches");
   } finally { h.ledger.close(); }
 });
@@ -322,10 +349,10 @@ test("positive-only settlement: unknown/unresolved digests cannot release the la
 test("exact replay after commit is resolved by the read path with no second dispatch", async () => {
   const h = harness();
   try {
-    assert.equal((await h.construct().processInitialization(first.sealed)).status, "SUCCESS");
+    assert.equal((await h.construct().processInitialization(first.sealed)).status, "ATTESTED");
     h.receipts = [first];
     for (let index = 0; index < 3; index++)
-      assert.equal((await h.construct().processInitialization(first.sealed)).status, "ALREADY_APPLIED");
+      assert.equal((await h.construct().processInitialization(first.sealed)).status, "ATTESTED");
     assert.equal(h.dispatches, 1);
   } finally { h.ledger.close(); }
 });
@@ -336,7 +363,7 @@ test("exact replay after commit is resolved by the read path with no second disp
 test("HAZARD: a fresh initialization after positive settlement is claimed, refused, and latches the guard permanently", async () => {
   const h = harness();
   try {
-    assert.equal((await h.construct().processInitialization(first.sealed)).status, "SUCCESS");
+    assert.equal((await h.construct().processInitialization(first.sealed)).status, "ATTESTED");
     h.receipts = [first];
     assert.equal((await h.construct().settle(first.digest)).settled, true);
     assert.equal(latches(h.ledger), 0, "latch released after positive settlement");
@@ -353,7 +380,7 @@ test("HAZARD: a fresh initialization after positive settlement is claimed, refus
     claimedAndLatched(h.ledger, second.digest);
     await duplicateCannotDispatch(h, second);
     assert.deepEqual(statusReason(await h.construct().processInitialization(third.sealed)), ["UNAVAILABLE", "active-or-capacity"]);
-    assert.equal((await h.construct().processInitialization(first.sealed)).status, "ALREADY_APPLIED");
+    assert.equal((await h.construct().processInitialization(first.sealed)).status, "ATTESTED");
     assert.equal(h.dispatches, 2, "digest 3 never dispatched");
   } finally { h.ledger.close(); }
 });
@@ -368,4 +395,116 @@ test("staging rotation stays closed and touches no guard storage", async () => {
   } finally { h.ledger.close(); }
 });
 
-function statusReason(outcome: GuardOutcome): [string, string | undefined] { return [outcome.status, outcome.reason]; }
+function statusReason(outcome: GuardOutcome): [string, string | undefined] { return [outcome.status, reasonOf(outcome)]; }
+
+// --- R06 Slice 2C (staging): opaque signed relay, AMBIGUOUS recovery, signer-unavailable pre-mutation, downgrade closure ------------
+
+test("2C staging: the attested envelope crosses the guard as the exact same bytes; AMBIGUOUS and UNAVAILABLE are never REFUSED", async () => {
+  const h = harness();
+  try {
+    const outcome = await h.construct().processInitialization(first.sealed);
+    assert.equal(outcome.status, "ATTESTED");
+    if (outcome.status === "ATTESTED") {
+      assert.equal(outcome.relayDisposition, "APPLIED");
+      assert.deepEqual(outcome.envelope, envelopeFor(first.digest));
+    }
+  } finally { h.ledger.close(); }
+  const ambiguous = harness();
+  try {
+    ambiguous.response = "ambiguous";
+    assert.deepEqual(statusReason(await ambiguous.construct().processInitialization(first.sealed)), ["UNCONFIRMED", "attestation-ambiguous"]);
+    claimedAndLatched(ambiguous.ledger, first.digest);
+    // recovery: the replay is answered by the Authority's signed read, with no second dispatch
+    ambiguous.receipts = [first];
+    const recovered = await ambiguous.construct().processInitialization(first.sealed);
+    assert.equal(recovered.status, "ATTESTED");
+    assert.equal(ambiguous.dispatches, 1);
+  } finally { ambiguous.ledger.close(); }
+  const unavailable = harness();
+  try {
+    unavailable.response = "unavailable";
+    assert.deepEqual(statusReason(await unavailable.construct().processInitialization(first.sealed)), ["UNCONFIRMED", "authority-signer-not-ready"]);
+  } finally { unavailable.ledger.close(); }
+});
+
+test("2C staging: a signer problem is UNAVAILABLE before the claim; unsigned positives never become ATTESTED", async () => {
+  const pre = harness();
+  try {
+    pre.signerUnavailable = true;
+    assert.deepEqual(statusReason(await pre.construct().processInitialization(first.sealed)), ["UNAVAILABLE", "authority-history"]);
+    assert.equal(claims(pre.ledger), 0);
+    assert.equal(latches(pre.ledger), 0);
+    assert.equal(pre.dispatches, 0);
+    pre.signerUnavailable = false;
+    assert.equal((await pre.construct().processInitialization(first.sealed)).status, "ATTESTED");
+  } finally { pre.ledger.close(); }
+  const legacy = harness();
+  try {
+    legacy.response = "legacy";
+    const outcome = await legacy.construct().processInitialization(first.sealed);
+    assert.deepEqual(statusReason(outcome), ["UNCONFIRMED", "dispatch-ambiguous"]);
+    assert.equal("receipt" in outcome, false);
+  } finally { legacy.ledger.close(); }
+});
+
+/** ATTESTED-shaped answers that are NOT exactly {status, relayDisposition, envelope: non-empty bounded Uint8Array}; all must fail non-positive. */
+const malformedAttested = (): Array<[string, unknown]> => {
+  const good = envelopeFor(first.digest);
+  return [
+    ["missing envelope", { status: "ATTESTED", relayDisposition: "APPLIED" }],
+    ["null envelope", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: null }],
+    ["array envelope", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: [1, 2, 3] }],
+    ["string envelope", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: "opaque" }],
+    ["ArrayBuffer envelope", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: new ArrayBuffer(8) }],
+    ["array-like object envelope", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: { 0: 1, length: 1 } }],
+    ["empty Uint8Array envelope", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: new Uint8Array(0) }],
+    ["oversize Uint8Array envelope", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: new Uint8Array(8_193) }],
+    ["extra semantic field: receipt", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: good, receipt: first.receipt }],
+    ["extra semantic field: statement", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: good, statement: [2, 1] }],
+    ["extra field: reason", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: good, reason: "ok" }],
+    ["unexpected key", { status: "ATTESTED", relayDisposition: "APPLIED", envelope: good, extra: true }],
+    ["missing relayDisposition", { status: "ATTESTED", envelope: good }],
+    ["relayDisposition SUCCESS", { status: "ATTESTED", relayDisposition: "SUCCESS", envelope: good }],
+    ["relayDisposition lowercase", { status: "ATTESTED", relayDisposition: "applied", envelope: good }],
+    ["relayDisposition number", { status: "ATTESTED", relayDisposition: 1, envelope: good }],
+    ["array instead of record", ["ATTESTED", "APPLIED", good]],
+  ];
+};
+
+test("2C staging: malformed ATTESTED executor answers fail non-positive at the guard and are never relayed as signed evidence", async () => {
+  assert.ok(malformedAttested().length >= 15, "the malformed-ATTESTED matrix cannot silently shrink");
+  for (const [label, answer] of malformedAttested()) {
+    const h = harness();
+    try {
+      h.customResponse = answer;
+      const outcome = await h.construct().processInitialization(first.sealed);
+      assert.notEqual(outcome.status, "ATTESTED", `${label}: must never be treated as signed evidence`);
+      assert.deepEqual(statusReason(outcome), ["UNCONFIRMED", "dispatch-ambiguous"], label);
+      assert.equal("envelope" in outcome, false, label);
+      assert.equal("relayDisposition" in outcome, false, label);
+      assert.equal(h.dispatches, 1, label);
+      claimedAndLatched(h.ledger, first.digest);
+      assert.equal((h.ledger.row("SELECT status FROM claims WHERE digest=?", first.digest) as { status: string }).status, "UNCONFIRMED", label);
+      await duplicateCannotDispatch(h, first);
+      assert.equal(h.dispatches, 1, `${label}: no redispatch`);
+    } finally { h.ledger.close(); }
+  }
+  const control = harness();
+  try {
+    control.customResponse = { status: "ATTESTED", relayDisposition: "ALREADY_APPLIED", envelope: envelopeFor(first.digest) };
+    assert.equal((await control.construct().processInitialization(first.sealed)).status, "ATTESTED");
+  } finally { control.ledger.close(); }
+});
+
+test("2C staging: malformed ATTESTED answers to the signed PRE-CLAIM probe are UNAVAILABLE, consume nothing and never short-circuit as evidence", async () => {
+  for (const [label, answer] of malformedAttested()) {
+    const h = harness();
+    try {
+      h.customProbe = answer;
+      assert.deepEqual(statusReason(await h.construct().processInitialization(first.sealed)), ["UNAVAILABLE", "authority-history"], label);
+      assert.equal(claims(h.ledger), 0, `${label}: no claim`);
+      assert.equal(latches(h.ledger), 0, `${label}: no latch`);
+      assert.equal(h.dispatches, 0, label);
+    } finally { h.ledger.close(); }
+  }
+});
