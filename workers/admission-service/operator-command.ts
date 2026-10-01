@@ -10,6 +10,15 @@ import {
   type LifecycleReceipt,
 } from "./authority";
 
+/** Error messages that mean the lifecycle command itself was refused (authentication, schema, policy or state). Signer and
+ * attestation failures are deliberately NOT here: they are not authorization decisions. */
+const LIFECYCLE_REFUSAL_MESSAGES: ReadonlySet<string> = new Set(["operator-command", "operator-signature", "operator-command-freshness",
+  "initialization-policy", "operator-environment", "authority-already-initialized", "release-rotation-policy", "authority-mismatch",
+  "release-already-exists", "release-retention", "release-state", "receipt-capacity", "receipt-history"]);
+export function isLifecycleRefusal(error: unknown): boolean {
+  return error instanceof Error && LIFECYCLE_REFUSAL_MESSAGES.has(error.message);
+}
+
 export const AUTHORITY_OPERATOR_COMMAND_VERSION = "limitmark-authority-operator-v1";
 export type AuthorityInitializationCommand = readonly [
   version: typeof AUTHORITY_OPERATOR_COMMAND_VERSION,
@@ -120,12 +129,22 @@ async function receiptBase(command: AuthorityOperatorCommand, operatorPublicKey:
   return { ...await expectedCommandReceipt(command, operatorPublicKey), appliedMs: 0 };
 }
 
+/** Optional preflight (e.g. signer readiness). Runs after operator authentication, command validation and receipt derivation,
+ * and strictly BEFORE the final Authority clock reading, the final freshness check and any storage statement (including schema
+ * creation) or transaction. It may await, so any time it observes is NOT the freshness time and NOT `appliedMs`: the final
+ * reading is taken after it resolves. A throw aborts the command with no storage access. Absent (every pre-existing caller),
+ * nothing is awaited and the legacy async shape is unchanged. */
+export type BeforeLifecycleFreshness = () => Promise<void>;
+
 export async function executeSignedAuthorityInitialization(storage: DurableStorageLike, command: AuthorityInitializationCommand, signature: string,
   operatorPublicKey: string, nowMs: number, expectedEnvironment: "production" | "staging" = "production",
-  finalNow: () => number = () => nowMs): Promise<{ status: "initialized" | "already-initialized"; receipt?: LifecycleReceipt }> {
+  finalNow: () => number = () => nowMs, preflight?: BeforeLifecycleFreshness): Promise<{ status: "initialized" | "already-initialized"; receipt?: LifecycleReceipt }> {
   if (command[2] !== expectedEnvironment) throw new Error("operator-environment");
   await verifyOperatorCommand(command, signature, operatorPublicKey);
   const receipt = await receiptBase(command, operatorPublicKey);
+  if (preflight) await preflight();
+  // FINAL freshness reading, taken after every await: it is both the freshness time and the receipt's appliedMs, and there is
+  // NO await between this check and the synchronous transaction below.
   const observed = finalNow();
   if (!Number.isSafeInteger(observed) || Math.abs(observed - command[7]) > 5 * 60_000) throw new Error("operator-command-freshness");
   const specification: AuthorityInitialization = { environment: command[2], authorityId: command[3], policyEpoch: command[4], releaseId: command[5],
@@ -137,10 +156,12 @@ export async function executeSignedAuthorityInitialization(storage: DurableStora
 
 export async function executeSignedAuthorityReleaseRotation(storage: DurableStorageLike, command: AuthorityReleaseRotationCommand, signature: string,
   operatorPublicKey: string, nowMs: number, expectedEnvironment: "production" | "staging" = "production",
-  finalNow: () => number = () => nowMs): Promise<{ status: "rotated" | "already-rotated"; receipt?: LifecycleReceipt }> {
+  finalNow: () => number = () => nowMs, preflight?: BeforeLifecycleFreshness): Promise<{ status: "rotated" | "already-rotated"; receipt?: LifecycleReceipt }> {
   if (command[2] !== expectedEnvironment) throw new Error("operator-environment");
   await verifyOperatorCommand(command, signature, operatorPublicKey);
   const receipt = await receiptBase(command, operatorPublicKey);
+  if (preflight) await preflight();
+  // FINAL freshness reading: see executeSignedAuthorityInitialization. No await between this check and the transaction.
   const observed = finalNow();
   if (!Number.isSafeInteger(observed) || Math.abs(observed - command[10]) > 5 * 60_000 || Math.abs(observed - command[8]) > 5 * 60_000)
     throw new Error("operator-command-freshness");

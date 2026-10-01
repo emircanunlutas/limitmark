@@ -5,9 +5,16 @@ import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHO
 import {
   executeSignedAuthorityInitialization,
   executeSignedAuthorityReleaseRotation,
+  isLifecycleRefusal,
   type AuthorityInitializationCommand,
   type AuthorityReleaseRotationCommand,
 } from "./operator-command";
+import {
+  AuthorityAttestationCoordinator,
+  PRODUCTION_ATTESTATION_IDENTITY,
+  STAGING_ATTESTATION_IDENTITY,
+  type AuthorityAttestationRuntime,
+} from "./authority-attestation";
 import { createVercelOidcVerifier, type VercelOidcPolicy } from "./auth";
 import { createAdmissionService, type AdmissionServiceRelease } from "./service";
 import { validateRuntimeSecrets } from "../../deployment/secret-policy";
@@ -25,13 +32,10 @@ type AuthorityStub = {
 };
 type AuthorityNamespace = { getByName(name: string): AuthorityStub };
 
-const lifecycleRefusals = new Set(["operator-command", "operator-signature", "operator-command-freshness", "initialization-policy",
-  "operator-environment", "authority-already-initialized", "release-rotation-policy", "authority-mismatch", "release-already-exists", "release-retention", "release-state", "receipt-capacity", "receipt-history"]);
-
 async function withLifecycleRefusal<T>(operation: () => Promise<T>): Promise<T | { status: "refused" }> {
   try { return await operation(); }
   catch (error) {
-    if (error instanceof Error && lifecycleRefusals.has(error.message)) return { status: "refused" };
+    if (isLifecycleRefusal(error)) return { status: "refused" };
     throw error;
   }
 }
@@ -52,17 +56,42 @@ export class ProductionAdmissionAuthority extends DurableObject<AdmissionService
   private readonly operatorPublicKey: string;
   private readonly authority: PublicInquiryAdmissionAuthority;
   private readonly durableStorage: DurableStorageLike;
-  constructor(state: DurableObjectState, environment: AdmissionServiceEnvironment) {
+  private readonly attestation: AuthorityAttestationCoordinator;
+  /** `attestationRuntime` (signer + Authority clock) is a construction seam for tests. The Durable Object runtime never
+   * passes it, and Slice 2A deliberately configures no signer from the environment, so in a deployed Authority every attested
+   * method below answers UNAVAILABLE/signer-unconfigured before touching storage. */
+  constructor(state: DurableObjectState, environment: AdmissionServiceEnvironment, attestationRuntime?: AuthorityAttestationRuntime) {
     super(state, environment);
     // Cloudflare's generic SQL cursor type is narrower than the core's testable
     // structural seam, while exposing the same exec/transactionSync operations.
     this.durableStorage = state.storage as unknown as DurableStorageLike;
     this.authority = new PublicInquiryAdmissionAuthority({ storage: this.durableStorage });
     this.operatorPublicKey = environment.AUTHORITY_OPERATOR_PUBLIC_KEY;
+    this.attestation = new AuthorityAttestationCoordinator(this.durableStorage, PRODUCTION_ATTESTATION_IDENTITY, this.operatorPublicKey, attestationRuntime);
   }
 
   async initializeFromOperator(command: AuthorityInitializationCommand, signature: string) {
     return withLifecycleRefusal(() => executeSignedAuthorityInitialization(this.durableStorage, command, signature, this.operatorPublicKey, Date.now(), "production", Date.now));
+  }
+
+  /** R06 Slice 2A (inert): same command, signed APPLIED envelope. Not bound to any entrypoint or caller yet. */
+  async initializeFromOperatorAttested(command: AuthorityInitializationCommand, signature: string) {
+    return this.attestation.initialize(command, signature);
+  }
+
+  /** R06 Slice 2A (inert). */
+  async rotateReleaseFromOperatorAttested(command: AuthorityReleaseRotationCommand, signature: string) {
+    return this.attestation.rotate(command, signature);
+  }
+
+  /** R06 Slice 2A (inert): read-only fresh signed APPLIED evidence for an already-durable receipt. */
+  async attestAppliedLifecycle(digest: string) {
+    return this.attestation.attestAppliedLifecycle(digest);
+  }
+
+  /** R06 Slice 2A (inert): Authority-signed reconciliation; the nonce is inside the signed statement. */
+  async attestReconciliation(digest: string, nonce: string) {
+    return this.attestation.attestReconciliation(digest, nonce);
   }
 
   async rotateReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string) {
@@ -164,14 +193,32 @@ export class AuthorityLifecycleReadOnly extends WorkerEntrypoint<AdmissionServic
 export class StagingAdmissionAuthority extends DurableObject<AdmissionServiceEnvironment> {
   private readonly operatorPublicKey: string;
   private readonly durableStorage: DurableStorageLike;
-  constructor(state: DurableObjectState, environment: AdmissionServiceEnvironment) {
+  private readonly attestation: AuthorityAttestationCoordinator;
+  /** See ProductionAdmissionAuthority: `attestationRuntime` is a test seam; none is configured from the environment. */
+  constructor(state: DurableObjectState, environment: AdmissionServiceEnvironment, attestationRuntime?: AuthorityAttestationRuntime) {
     super(state, environment);
     this.durableStorage = state.storage as unknown as DurableStorageLike;
     this.operatorPublicKey = environment.AUTHORITY_OPERATOR_PUBLIC_KEY;
+    this.attestation = new AuthorityAttestationCoordinator(this.durableStorage, STAGING_ATTESTATION_IDENTITY, this.operatorPublicKey, attestationRuntime);
   }
 
   async initializeFromOperator(command: AuthorityInitializationCommand, signature: string) {
     return withLifecycleRefusal(() => executeSignedAuthorityInitialization(this.durableStorage, command, signature, this.operatorPublicKey, Date.now(), "staging", Date.now));
+  }
+
+  /** R06 Slice 2A (inert): staging-keyed signed APPLIED envelope. Staging has NO rotation attestation method at all. */
+  async initializeFromOperatorAttested(command: AuthorityInitializationCommand, signature: string) {
+    return this.attestation.initialize(command, signature);
+  }
+
+  /** R06 Slice 2A (inert). */
+  async attestAppliedLifecycle(digest: string) {
+    return this.attestation.attestAppliedLifecycle(digest);
+  }
+
+  /** R06 Slice 2A (inert). */
+  async attestReconciliation(digest: string, nonce: string) {
+    return this.attestation.attestReconciliation(digest, nonce);
   }
 
   /** STAGING ROTATION — NOT IMPLEMENTED / GATE 9 — CLOSED. No parsing, signature
