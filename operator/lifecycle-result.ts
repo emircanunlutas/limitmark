@@ -49,7 +49,12 @@ const listedReceiptFields = ["digest", "version", "operation", "environment", "a
 type Exhaustive<List extends readonly (keyof LifecycleReceipt)[]> = [Exclude<keyof LifecycleReceipt, List[number]>] extends [never] ? List : never;
 const receiptFields: Exhaustive<typeof listedReceiptFields> = listedReceiptFields;
 // Derived from the exhaustive list: every receipt field except the two the authority assigns when it applies a command.
-const commandDerivedFields = receiptFields.filter((field): field is keyof CommandDerivedReceipt => field !== "sequence" && field !== "appliedMs");
+// Frozen at construction: it is shared (exported below), so no importer may substitute, add or drop a field at runtime.
+const commandDerivedFields: readonly (keyof CommandDerivedReceipt)[] =
+  Object.freeze(receiptFields.filter((field): field is keyof CommandDerivedReceipt => field !== "sequence" && field !== "appliedMs"));
+/** The one shared list of command-derived receipt fields, for verifiers that bind a receipt to an authenticated command.
+ * Runtime-frozen; it is the same array the Production verifier above uses. */
+export const commandDerivedReceiptFields: readonly (keyof CommandDerivedReceipt)[] = commandDerivedFields;
 function receipt(value: unknown, digest: string, expectedEnvironment: "production" | "staging", expectedAuthorityId: string,
   expectedKeyFingerprint: string | undefined, expectedOperation: LifecycleOperation | undefined,
   expectedReceipt: Readonly<LifecycleReceipt> | undefined, command?: Readonly<CommandDerivedReceipt>): value is Record<string, unknown> {
