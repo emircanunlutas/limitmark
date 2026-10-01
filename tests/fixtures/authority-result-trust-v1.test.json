@@ -1,0 +1,37 @@
+{
+  "manifestVersion": 1,
+  "attestationVersion": 2,
+  "trustEpoch": 1,
+  "environments": [
+    {
+      "environment": "production",
+      "authorityId": "production-public-inquiries-v1",
+      "policyEpoch": "phase5c-i1-epoch-1",
+      "currentKeyFingerprint": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9",
+      "keys": [
+        {
+          "keyFingerprint": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9",
+          "publicKey": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+          "status": "active",
+          "notBeforeMs": 1700000000000,
+          "notAfterMs": null
+        }
+      ]
+    },
+    {
+      "environment": "staging",
+      "authorityId": "staging-public-inquiries-v1",
+      "policyEpoch": "phase5c-i1-epoch-1",
+      "currentKeyFingerprint": "39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f",
+      "keys": [
+        {
+          "keyFingerprint": "39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f",
+          "publicKey": "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw",
+          "status": "active",
+          "notBeforeMs": 1700000000000,
+          "notAfterMs": null
+        }
+      ]
+    }
+  ]
+}
