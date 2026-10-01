@@ -72,11 +72,17 @@ test("submitter calls only pinned lifecycle methods and verifies operator signat
   const f = await fixture();
   const calls: string[] = [];
   const binding: AdmissionLifecycleBinding = {
-    async initializeAuthorityFromOperator() { calls.push("initialize"); return { status: "initialized" }; },
-    async rotateAuthorityReleaseFromOperator() { calls.push("rotate"); return { status: "rotated" }; },
+    async initializeAuthorityFromOperatorAttested() { calls.push("initialize"); return { status: "ATTESTED", relayDisposition: "APPLIED", envelope: initEnvelope }; },
+    async rotateAuthorityReleaseFromOperatorAttested() { calls.push("rotate"); return { status: "ATTESTED", relayDisposition: "APPLIED", envelope: rotateEnvelope }; },
   };
-  assert.deepEqual(await submitSealedLifecycleArtifact(f.initBytes, "initialize", binding, f.publicKey, f.now), { status: "initialized" });
-  assert.deepEqual(await submitSealedLifecycleArtifact(f.rotateBytes, "rotate-release", binding, f.publicKey, f.now), { status: "rotated" });
+  // The relay is OPAQUE: these are not protocol envelopes at all, and they cross the submitter byte-for-byte (same instance).
+  const initEnvelope = Uint8Array.from([0, 1, 2, 250, 251, 255]);
+  const rotateEnvelope = Uint8Array.from([9, 8, 7]);
+  const initialized = await submitSealedLifecycleArtifact(f.initBytes, "initialize", binding, f.publicKey, f.now);
+  const rotated = await submitSealedLifecycleArtifact(f.rotateBytes, "rotate-release", binding, f.publicKey, f.now);
+  assert.deepEqual(initialized, { status: "ATTESTED", relayDisposition: "APPLIED", envelope: initEnvelope });
+  assert.deepEqual(rotated, { status: "ATTESTED", relayDisposition: "APPLIED", envelope: rotateEnvelope });
+  assert.equal((initialized as { envelope: Uint8Array }).envelope, initEnvelope, "the exact bytes object is relayed, never copied or re-serialized");
   assert.deepEqual(calls, ["initialize", "rotate"]);
   const altered = bytes({ command: [...f.initialize.slice(0, 5), "changed", ...f.initialize.slice(6)],
     signature: JSON.parse(new TextDecoder().decode(f.initBytes)).signature });
@@ -89,15 +95,15 @@ test("committed mutation with lost acknowledgement is UNCONFIRMED and never retr
   let calls = 0;
   let committed = false;
   const binding: AdmissionLifecycleBinding = {
-    async initializeAuthorityFromOperator() { calls += 1; committed = true; throw new Error("acknowledgement lost"); },
-    async rotateAuthorityReleaseFromOperator() { calls += 1; committed = true; throw new Error("acknowledgement lost"); },
+    async initializeAuthorityFromOperatorAttested() { calls += 1; committed = true; throw new Error("acknowledgement lost"); },
+    async rotateAuthorityReleaseFromOperatorAttested() { calls += 1; committed = true; throw new Error("acknowledgement lost"); },
   };
   for (const [artifact, operation] of [[f.initBytes, "initialize"], [f.rotateBytes, "rotate-release"]] as const) {
     committed = false; calls = 0;
     const result = await submitSealedLifecycleArtifact(artifact, operation, binding, f.publicKey, f.now);
     assert.equal(committed, true);
     assert.equal(calls, 1);
-    assert.deepEqual(result, { status: "unconfirmed", instruction: "Inspect authoritative state before any retry; the mutation may have committed." });
+    assert.deepEqual(result, { status: "UNCONFIRMED", instruction: "Inspect authoritative state before any retry; the mutation may have committed." });
     assert.doesNotMatch(JSON.stringify(result), /rollback|failed|not committed/iu);
   }
 });
@@ -105,13 +111,42 @@ test("committed mutation with lost acknowledgement is UNCONFIRMED and never retr
 test("definite policy refusal stays distinct from ambiguous transport outcome", async () => {
   const f = await fixture();
   const binding: AdmissionLifecycleBinding = {
-    async initializeAuthorityFromOperator() { return { status: "refused" }; },
-    async rotateAuthorityReleaseFromOperator() { return { status: "refused" }; },
+    async initializeAuthorityFromOperatorAttested() { return { status: "REFUSED" }; },
+    async rotateAuthorityReleaseFromOperatorAttested() { return { status: "REFUSED" }; },
   };
-  assert.deepEqual(await submitSealedLifecycleArtifact(f.initBytes, "initialize", binding, f.publicKey, f.now), { status: "refused" });
-  assert.deepEqual(await submitSealedLifecycleArtifact(f.rotateBytes, "rotate-release", binding, f.publicKey, f.now), { status: "refused" });
-  const unexpected = { ...binding, async initializeAuthorityFromOperator() { return { status: "unknown" } as never; } };
-  assert.equal((await submitSealedLifecycleArtifact(f.initBytes, "initialize", unexpected, f.publicKey, f.now)).status, "unconfirmed");
+  assert.deepEqual(await submitSealedLifecycleArtifact(f.initBytes, "initialize", binding, f.publicKey, f.now), { status: "REFUSED" });
+  assert.deepEqual(await submitSealedLifecycleArtifact(f.rotateBytes, "rotate-release", binding, f.publicKey, f.now), { status: "REFUSED" });
+  const unexpected = { ...binding, async initializeAuthorityFromOperatorAttested() { return { status: "unknown" } as never; } };
+  assert.equal((await submitSealedLifecycleArtifact(f.initBytes, "initialize", unexpected, f.publicKey, f.now)).status, "UNCONFIRMED");
+});
+
+test("non-positive Authority answers keep their class: UNAVAILABLE and AMBIGUOUS are never rewritten as REFUSED", async () => {
+  const f = await fixture();
+  const answer = (value: unknown): AdmissionLifecycleBinding => ({
+    async initializeAuthorityFromOperatorAttested() { return value; },
+    async rotateAuthorityReleaseFromOperatorAttested() { return value; },
+  });
+  const run = (value: unknown) => submitSealedLifecycleArtifact(f.initBytes, "initialize", answer(value), f.publicKey, f.now);
+  assert.deepEqual(await run({ status: "UNAVAILABLE", reason: "signer-unconfigured" }), { status: "UNAVAILABLE", reason: "signer-unconfigured" });
+  assert.deepEqual(await run({ status: "AMBIGUOUS", reason: "post-commit-attestation-failed" }), { status: "AMBIGUOUS", reason: "post-commit-attestation-failed" });
+  // Malformed positives are UNCONFIRMED, never ATTESTED and never REFUSED: non-Uint8Array, empty, oversize, number[], extra or missing keys.
+  const envelope = Uint8Array.from([1, 2, 3]);
+  for (const bad of [
+    { status: "ATTESTED", relayDisposition: "APPLIED", envelope: [1, 2, 3] },
+    { status: "ATTESTED", relayDisposition: "APPLIED", envelope: "AQID" },
+    { status: "ATTESTED", relayDisposition: "APPLIED", envelope: new Uint8Array(0) },
+    { status: "ATTESTED", relayDisposition: "APPLIED", envelope: new Uint8Array(8_193) },
+    { status: "ATTESTED", relayDisposition: "APPLIED", envelope, receipt: {} },
+    { status: "ATTESTED", relayDisposition: "WHATEVER", envelope },
+    { status: "ATTESTED", envelope },
+    { status: "REFUSED", reason: "x" },
+    { status: "AMBIGUOUS" },
+    { status: "UNAVAILABLE", reason: "Not Lowercase" },
+    { status: "initialized", receipt: {} },
+    null, "ATTESTED", [],
+  ]) assert.equal((await run(bad)).status, "UNCONFIRMED", JSON.stringify(bad));
+  // 8192 bytes is the exact upper bound.
+  assert.equal((await run({ status: "ATTESTED", relayDisposition: "ALREADY_APPLIED", envelope: new Uint8Array(8_192) })).status, "ATTESTED");
 });
 
 test("lifecycle adapter makes one admission call for 429, 5xx, reset, timeout, retryable and malformed outcomes", async () => {
@@ -119,16 +154,16 @@ test("lifecycle adapter makes one admission call for 429, 5xx, reset, timeout, r
   for (const fault of [429, 500, 503, "timeout", "connection-reset", "retryable", "malformed"] as const) {
     let dispatches = 0;
     const binding: AdmissionLifecycleBinding = {
-      async initializeAuthorityFromOperator() {
+      async initializeAuthorityFromOperatorAttested() {
         dispatches++;
         if (fault === "retryable") return { status: "retryable" } as never;
         if (fault === "malformed") return null as never;
         throw Object.assign(new Error(String(fault)), { retryable: true, status: fault });
       },
-      async rotateAuthorityReleaseFromOperator() { throw new Error("wrong operation"); },
+      async rotateAuthorityReleaseFromOperatorAttested() { throw new Error("wrong operation"); },
     };
     const result = await submitSealedLifecycleArtifact(f.initBytes, "initialize", binding, f.publicKey, f.now);
-    assert.equal(result.status, "unconfirmed", String(fault));
+    assert.equal(result.status, "UNCONFIRMED", String(fault));
     assert.equal(dispatches, 1, String(fault));
   }
 });
@@ -198,8 +233,8 @@ test("historical authentication accepts an expired correctly signed command that
   const later = expiredBy(f);
   for (const [artifact, operation, command] of [[f.initBytes, "initialize", f.initialize], [f.rotateBytes, "rotate-release", f.rotate]] as const) {
     assert.throws(() => parseSealedLifecycleArtifact(artifact, operation, later), /invalid-sealed-artifact/u, `${operation} no longer parses for submission`);
-    const binding: AdmissionLifecycleBinding = { async initializeAuthorityFromOperator() { throw new Error("must not dispatch"); },
-      async rotateAuthorityReleaseFromOperator() { throw new Error("must not dispatch"); } };
+    const binding: AdmissionLifecycleBinding = { async initializeAuthorityFromOperatorAttested() { throw new Error("must not dispatch"); },
+      async rotateAuthorityReleaseFromOperatorAttested() { throw new Error("must not dispatch"); } };
     await assert.rejects(() => submitSealedLifecycleArtifact(artifact, operation, binding, f.publicKey, later), /invalid-sealed-artifact/u, `${operation} resubmission refused`);
     const authenticated = await authenticateSealedLifecycleArtifact(artifact, f.publicKey);
     assert.deepEqual(authenticated.command, command);

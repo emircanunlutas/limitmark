@@ -67,7 +67,7 @@ async function assertStagingHarness(): Promise<void> {
     authorityName: STAGING_ADMISSION_AUTHORITY_ID,
     policyEpoch: ADMISSION_POLICY_EPOCH,
     readOnlyRpc: ["inspectLifecycle"],
-    dormantLifecycleRpc: ["initializeAuthorityFromOperator", "rotateAuthorityReleaseFromOperator"],
+    dormantLifecycleRpc: ["initializeAuthorityFromOperatorAttested", "rotateAuthorityReleaseFromOperator"],
   });
 }
 

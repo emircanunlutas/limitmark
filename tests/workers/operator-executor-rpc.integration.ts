@@ -7,8 +7,11 @@ import { build, type Plugin } from "esbuild";
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare, type V4MiniflareOptions } from "miniflare";
 import { encodeBase64url } from "../../src/lib/ingress-protocol";
 import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID } from "../../workers/admission-service/authority";
+import { verifyAuthoritySignedStatement } from "../../src/lib/authority-result-trust";
+import { rfcSignerBindings, rfcTrustManifest } from "../support/authority-attestation-test-signers";
 import {
   AUTHORITY_OPERATOR_COMMAND_VERSION,
+  commandDigest,
   signAuthorityInitializationCommand,
   signAuthorityReleaseRotationCommand,
   type AuthorityInitializationCommand,
@@ -60,6 +63,7 @@ async function bundle(): Promise<void> {
 async function start(publicKey: string, persistence: string, dropAck: boolean): Promise<Miniflare> {
   const date = "2026-09-13";
   const admissionBindings = {
+    ...await rfcSignerBindings("production"), // explicit TEST-ONLY signer configuration (RFC vectors) under the runtime's binding names
     AUTHORITY_OPERATOR_PUBLIC_KEY: publicKey,
     ADMISSION_CURRENT_RPC_KEY: encodeBase64url(new Uint8Array(32).fill(9)),
     ADMISSION_CURRENT_RELEASE_ID: "executor-current",
@@ -73,16 +77,16 @@ async function start(publicKey: string, persistence: string, dropAck: boolean): 
   };
   const workers = [
     { name: "driver", scriptPath: bundles.driver, modules: true, compatibilityDate: date, unsafeRegisterWorker: false,
-      serviceBindings: { EXECUTOR: "executor", ADMISSION_SERVICE: "admission", ...(dropAck ? { ACK_PROXY: "ack-proxy" } : {}) },
+      serviceBindings: { EXECUTOR: "executor", ADMISSION_SERVICE: { name: "admission", entrypoint: "AuthorityLifecycleOnly" }, ...(dropAck ? { ACK_PROXY: "ack-proxy" } : {}) },
       durableObjects: { AUTHORITY: { className: "ProductionAdmissionAuthority", scriptName: "admission", useSQLite: true } } },
     { name: "executor", scriptPath: bundles.executor, modules: true, compatibilityDate: date, unsafeRegisterWorker: false,
       bindings: { AUTHORITY_OPERATOR_PUBLIC_KEY: publicKey, OPERATOR_EXECUTOR_ENVIRONMENT: "production" },
-      serviceBindings: { ADMISSION_SERVICE: dropAck ? "ack-proxy" : "admission" } },
+      serviceBindings: { ADMISSION_SERVICE: dropAck ? "ack-proxy" : { name: "admission", entrypoint: "AuthorityLifecycleOnly" } } },
     { name: "admission", scriptPath: bundles.admission, modules: true, compatibilityDate: date, unsafeRegisterWorker: false,
       bindings: admissionBindings,
       durableObjects: { AUTHORITY: { className: "ProductionAdmissionAuthority", useSQLite: true } } },
     ...(dropAck ? [{ name: "ack-proxy", scriptPath: bundles.proxy, modules: true, compatibilityDate: date, unsafeRegisterWorker: false,
-      serviceBindings: { ADMISSION_SERVICE: "admission" } }] : []),
+      serviceBindings: { ADMISSION_SERVICE: { name: "admission", entrypoint: "AuthorityLifecycleOnly" } } }] : []),
   ];
   const options = convertV4MiniflareOptions({ host: "127.0.0.1", port: 0, log: new Log(LogLevel.ERROR),
     resourcePersistencePath: persistence, workers } as V4MiniflareOptions);
@@ -102,6 +106,15 @@ async function call(mf: Miniflare, path: string, body?: unknown): Promise<{ stat
 }
 
 const sealed = (command: unknown, signature: string) => JSON.stringify({ command, signature });
+const fromHex = (value: string) => Uint8Array.from(value.match(/../gu) ?? [], (pair) => Number.parseInt(pair, 16));
+/** The relayed result is an ATTESTED envelope that verifies under the Production trust key for exactly this command (real workerd, real DO). */
+async function attested(body: Record<string, unknown>, command: Parameters<typeof commandDigest>[0], disposition: "APPLIED" | "ALREADY_APPLIED") {
+  assert.equal(body.status, "ATTESTED", JSON.stringify(body));
+  assert.equal(body.relayDisposition, disposition);
+  const verified = await verifyAuthoritySignedStatement(fromHex(String(body.envelopeHex)), { kind: "lifecycle", environment: "production",
+    authorityId: ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH, digest: await commandDigest(command) }, await rfcTrustManifest(), Date.now() + 1_000);
+  return verified.statement.kind === "lifecycle" ? verified.statement.receipt : undefined;
+}
 const submit = (mf: Miniflare, operation: "initialize" | "rotate", command: unknown, signature: string) =>
   call(mf, `/submit-${operation}`, { sealedJson: sealed(command, signature) });
 
@@ -144,7 +157,7 @@ async function main(): Promise<void> {
     const initSignature = await signAuthorityInitializationCommand(initialize, privateKey);
     const forgedSignature = await signAuthorityInitializationCommand(initialize, forgedPrivateKey);
     assert.equal((await submit(mf, "initialize", initialize, forgedSignature)).body.error, "operator-signature");
-    assert.deepEqual((await call(mf, "/direct-signature-check", { command: initialize, signature: forgedSignature })).body, { status: "refused" });
+    assert.deepEqual((await call(mf, "/direct-signature-check", { command: initialize, signature: forgedSignature })).body, { status: "REFUSED" });
     assert.equal((await rows(mf, "SELECT name FROM sqlite_master WHERE type='table' AND name='authority_meta'")).length, 0);
     // A staging-flagged command must carry the distinct staging authority
     // identity (Gate 2); it is still refused by this Production executor.
@@ -153,7 +166,7 @@ async function main(): Promise<void> {
     assert.equal((await submit(mf, "initialize", staging, await signAuthorityInitializationCommand(staging, privateKey))).body.error,
       "invalid-sealed-artifact");
     assert.deepEqual((await call(mf, "/direct-signature-check", { command: staging,
-      signature: await signAuthorityInitializationCommand(staging, privateKey) })).body, { status: "refused" });
+      signature: await signAuthorityInitializationCommand(staging, privateKey) })).body, { status: "REFUSED" });
     for (const index of [3, 4]) {
       const changed = [...initialize] as unknown as Array<unknown>;
       changed[index] = "wrong";
@@ -163,15 +176,14 @@ async function main(): Promise<void> {
     stale[7] = now - 300_001;
     assert.equal((await submit(mf, "initialize", stale, initSignature)).body.error, "invalid-sealed-artifact");
     const initialized = (await submit(mf, "initialize", initialize, initSignature)).body;
-    assert.equal(initialized.status, "initialized");
-    assert.ok(initialized.receipt);
+    const initializedReceipt = await attested(initialized, initialize, "APPLIED");
+    assert.ok(initializedReceipt);
     const repeatedInit = (await submit(mf, "initialize", initialize, initSignature)).body;
-    assert.equal(repeatedInit.status, "already-initialized");
-    assert.deepEqual(repeatedInit.receipt, initialized.receipt);
+    assert.deepEqual(await attested(repeatedInit, initialize, "ALREADY_APPLIED"), initializedReceipt);
     const conflict: AuthorityInitializationCommand = [AUTHORITY_OPERATOR_COMMAND_VERSION, "initialize", "production", ADMISSION_AUTHORITY_ID,
       ADMISSION_POLICY_EPOCH, "executor-conflict", "executor-conflict-key", Date.now(), true];
     assert.deepEqual((await submit(mf, "initialize", conflict,
-      await signAuthorityInitializationCommand(conflict, privateKey))).body, { status: "refused" });
+      await signAuthorityInitializationCommand(conflict, privateKey))).body, { status: "REFUSED" });
 
     const preInput = (seed: number) => ({ releaseId: "executor-current", clientPseudonym: opaque(32, 1), requestBinding: opaque(32, seed + 1),
       nonce: opaque(16, seed + 2), issuedAtMs: Date.now() });
@@ -190,15 +202,14 @@ async function main(): Promise<void> {
       ADMISSION_POLICY_EPOCH, "executor-current", "executor-next", "executor-next-key", activatesAtMs, activatesAtMs + 30_000, Date.now(), true];
     const rotationSignature = await signAuthorityReleaseRotationCommand(rotate, privateKey);
     const rotated = (await submit(mf, "rotate", rotate, rotationSignature)).body;
-    assert.equal(rotated.status, "rotated");
-    assert.ok(rotated.receipt);
+    const rotatedReceipt = await attested(rotated, rotate, "APPLIED");
+    assert.ok(rotatedReceipt);
     const repeatedRotation = (await submit(mf, "rotate", rotate, rotationSignature)).body;
-    assert.equal(repeatedRotation.status, "already-rotated");
-    assert.deepEqual(repeatedRotation.receipt, rotated.receipt);
+    assert.deepEqual(await attested(repeatedRotation, rotate, "ALREADY_APPLIED"), rotatedReceipt);
     const rotationConflict = [...rotate] as unknown as AuthorityReleaseRotationCommand;
     (rotationConflict as unknown as string[])[7] = "executor-other-key";
     assert.deepEqual((await submit(mf, "rotate", rotationConflict,
-      await signAuthorityReleaseRotationCommand(rotationConflict, privateKey))).body, { status: "refused" });
+      await signAuthorityReleaseRotationCommand(rotationConflict, privateKey))).body, { status: "REFUSED" });
     assert.deepEqual({ observations: (await rows(mf, "SELECT * FROM observations")).length,
       nonces: (await rows(mf, "SELECT * FROM nonces")).length }, before);
     assert.equal((await call(mf, "/post", { input: { ...used, permit: usedPermit } })).body.decision, "replay");
@@ -216,7 +227,7 @@ async function main(): Promise<void> {
     mf = await start(publicKey, join(runtimeRoot, "main-state"), false);
     assert.deepEqual(await rows(mf, "SELECT release_id,key_id,activated_ms,retired_ms FROM active_releases ORDER BY release_id"), snapshot.releases);
     assert.equal((await rows(mf, "SELECT * FROM nonces")).length, snapshot.nonces);
-    assert.equal((await submit(mf, "rotate", rotate, rotationSignature)).body.status, "already-rotated");
+    assert.equal((await submit(mf, "rotate", rotate, rotationSignature)).body.relayDisposition, "ALREADY_APPLIED");
     await mf.dispose(); mf = undefined;
 
     mf = await start(publicKey, join(runtimeRoot, "ack-state"), true);
@@ -225,12 +236,13 @@ async function main(): Promise<void> {
     const ackSignature = await signAuthorityInitializationCommand(ackCommand, privateKey);
     const lost = await submit(mf, "initialize", ackCommand, ackSignature);
     assert.equal(lost.status, 200);
-    assert.equal(lost.body.status, "unconfirmed");
+    assert.equal(lost.body.status, "UNCONFIRMED");
     assert.match(String(lost.body.instruction), /may have committed/u);
     assert.deepEqual((await call(mf, "/dispatch-count")).body, { count: 1 });
     assert.deepEqual(await rows(mf, "SELECT authority_id,policy_epoch FROM authority_meta"),
       [{ authority_id: ADMISSION_AUTHORITY_ID, policy_epoch: ADMISSION_POLICY_EPOCH }]);
-    assert.equal((await submit(mf, "initialize", ackCommand, ackSignature)).body.status, "already-initialized");
+    // the committed mutation's replay obtains fresh signed evidence without mutating again
+    await attested((await submit(mf, "initialize", ackCommand, ackSignature)).body, ackCommand, "ALREADY_APPLIED");
     assert.deepEqual((await call(mf, "/dispatch-count")).body, { count: 2 });
     await mf.dispose(); mf = undefined;
     mf = await start(publicKey, join(runtimeRoot, "ack-state"), true);

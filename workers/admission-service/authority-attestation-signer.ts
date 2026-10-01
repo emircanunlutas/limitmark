@@ -25,8 +25,9 @@ import { encodeBase64url, toArrayBuffer } from "../../src/lib/ingress-protocol";
  * (c) sign-then-verify before returning. A signer never looks anything up from a provider or global environment: its key
  * material is handed to the factory by the caller.
  *
- * TEST KEYS ONLY in this slice: `importAttestationTestPrivateKey` accepts the exact 48-byte RFC 8410 PKCS#8 form used by the
- * frozen RFC 8032 test vectors. No operational key is provisioned, generated or referenced anywhere in this change.
+ * Key material comes only from the caller (see authority-attestation-config.ts for the active runtime bindings; tests inject the
+ * frozen RFC 8032 vectors explicitly). `importAttestationTestPrivateKey` is the frozen protocol's name for the exact 48-byte
+ * RFC 8410 PKCS#8 Ed25519 import; it is the same format an operational key uses. No key is provisioned, generated or defaulted here.
  */
 export interface AuthorityAttestationSigner {
   /** The one environment this instance may sign for. */
@@ -46,7 +47,7 @@ export interface AuthorityAttestationSignerConfig {
   readonly environment: AttestationEnvironment;
   /** The writer-key fingerprint this environment is pinned to (what the trust manifest names). */
   readonly writerKeyFingerprint: string;
-  /** Canonical base64url RFC 8410 PKCS#8 Ed25519 private key (TEST KEYS ONLY in this slice). */
+  /** Canonical base64url RFC 8410 PKCS#8 Ed25519 private key. */
   readonly privateKey: string;
   /** Canonical base64url raw 32-byte Ed25519 public key. */
   readonly publicKey: string;

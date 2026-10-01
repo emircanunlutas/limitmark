@@ -1,6 +1,7 @@
 import type { R2Bucket } from "@cloudflare/workers-types";
 import type { GuardOutcome } from "./dispatch-guard";
-import { boundedResult, parseControl, readBounded } from "./wire";
+import { unsignedDiagnostic } from "../../operator/attested-relay";
+import { boundedResult, parseControl, publishSignedEnvelope, readBounded } from "./wire";
 
 // Gate 2 staging capability. Only "initialize.json" is ever read here — there
 // is deliberately no staging "rotate-release.json" handling anywhere in this
@@ -31,9 +32,12 @@ export async function processStagingInitializationSlot(env: StagingMailboxEnviro
   if (artifact.charCodeAt(0) === 0xfeff) return;
   const guard = env.DISPATCH_GUARD.getByName("staging-lifecycle-dispatch-v1");
   const outcome = await guard.processInitialization(artifact);
-  if (outcome.status !== "UNAVAILABLE" && outcome.reason !== "consumed" && /^[a-f0-9]{64}$/u.test(outcome.digest))
-    await publishStaging(env.RESULT_BUCKET, `lifecycle/${outcome.digest}.json`, { ...outcome, environment: "staging",
-      authorityId: "staging-public-inquiries-v1", policyEpoch: "phase5c-i1-epoch-1", observedAtMs: Date.now() });
+  if (!/^[a-f0-9]{64}$/u.test(outcome.digest)) return;
+  const resultKey = `lifecycle/${outcome.digest}.json`;
+  // Signed evidence is stored as the Authority's exact bytes; everything else is an unsigned, never-positive diagnostic.
+  if (outcome.status === "ATTESTED") await publishSignedEnvelope(env.RESULT_BUCKET, resultKey, outcome.envelope);
+  else if (outcome.status !== "UNAVAILABLE" && outcome.reason !== "consumed")
+    await publishStaging(env.RESULT_BUCKET, resultKey, unsignedDiagnostic(outcome.digest, outcome.status, outcome.reason));
 }
 
 export async function processStagingSettlement(env: StagingMailboxEnvironment): Promise<void> {

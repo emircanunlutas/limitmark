@@ -13,7 +13,7 @@ import { createAuthorityAttestationSigner, type AuthorityAttestationSigner } fro
 import { attestationReceiptFromLifecycleReceipt, encodeResultAttestationEnvelope, makeLifecycleStatement, parseResultAttestationEnvelope,
   signResultAttestation } from "../src/lib/authority-result-attestation";
 import { parseAuthorityResultTrustManifest, verifyAuthoritySignedStatement, type ResultAttestationExpectations } from "../src/lib/authority-result-trust";
-import { healthySigner, instrumentSigner, instrumentStorage, rfcKeys, rfcSignerConfig, scriptedClock, type SignerEvents } from "./support/authority-attestation-test-signers";
+import { healthySigner, instrumentSigner, instrumentStorage, rfcKeys, rfcSignerBindings, rfcSignerConfig, scriptedClock, type SignerEvents } from "./support/authority-attestation-test-signers";
 import { AUTHORITY_OPERATOR_COMMAND_VERSION, commandDigest, executeSignedAuthorityInitialization,
   executeSignedAuthorityReleaseRotation, signAuthorityInitializationCommand, signAuthorityReleaseRotationCommand,
   type AuthorityInitializationCommand, type AuthorityReleaseRotationCommand } from "../workers/admission-service/operator-command";
@@ -158,7 +158,7 @@ test("unavailable authority inspection asserts no invented authority state", () 
 });
 
 // =====================================================================================================================
-// R06 Slice 2A: inert Authority attestation producer. Real coordinator, real transactionSync (node:sqlite), real frozen
+// R06 Slice 2A/2C: Authority attestation producer. Real coordinator, real transactionSync (node:sqlite), real frozen
 // protocol, RFC test keys only. Nothing here touches a relay, mailbox, observer, CLI, R2 object or provider.
 // =====================================================================================================================
 const T0 = 1_790_000_000_000;
@@ -851,68 +851,112 @@ before(async () => {
   admission = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString("base64")}`) as AdmissionIndex;
 });
 
-test("DO adapters: attested methods are inert without a signer, active v1 methods are unchanged, and staging has no rotation attestation", async () => {
+test("DO adapters (2C): signed-only lifecycle, signer from this environment's bindings only, no unsigned mutation method", async () => {
   const operator = await keys();
-  const environment = { AUTHORITY_OPERATOR_PUBLIC_KEY: operator.publicKey } as never;
+  const bindings = { production: await rfcSignerBindings("production"), staging: await rfcSignerBindings("staging") };
+  const envWith = (...extra: Record<string, string>[]) => Object.assign({ AUTHORITY_OPERATOR_PUBLIC_KEY: operator.publicKey }, ...extra) as never;
   const now = Date.now();
   const command = initAt("production", now);
   const signature = await signAuthorityInitializationCommand(command, operator.privateKey);
 
-  // deployed posture: the Durable Object runtime never passes a signer, so every attested method is UNAVAILABLE and storage-free
+  // The unsigned lifecycle mutation methods are GONE (deleted, not disabled); only the attested ones remain.
+  for (const method of ["initializeFromOperator", "rotateReleaseFromOperator"]) assert.equal(method in admission.ProductionAdmissionAuthority.prototype, false, method);
+  assert.equal("initializeFromOperator" in admission.StagingAdmissionAuthority.prototype, false);
+  for (const method of ["initializeFromOperatorAttested", "rotateReleaseFromOperatorAttested", "attestAppliedLifecycle", "attestReconciliation"])
+    assert.equal(method in admission.ProductionAdmissionAuthority.prototype, true, method);
+
+  // No signer binding at all: every attested method is UNAVAILABLE and storage-free. No fallback to any test or default key.
   const bareStorage = new NodeSqliteDurableStorage();
-  const bare = new admission.ProductionAdmissionAuthority({ storage: bareStorage } as never, environment);
+  const bare = new admission.ProductionAdmissionAuthority({ storage: bareStorage } as never, envWith());
   assert.deepEqual(await bare.initializeFromOperatorAttested(command, signature), { status: "UNAVAILABLE", reason: "signer-unconfigured" });
   assert.deepEqual(await bare.attestAppliedLifecycle("a".repeat(64)), { status: "UNAVAILABLE", reason: "signer-unconfigured" });
   assert.deepEqual(await bare.attestReconciliation("a".repeat(64), NONCE), { status: "UNAVAILABLE", reason: "signer-unconfigured" });
-  assert.equal(tableCount(bareStorage), 0);
-  // the active v1 method keeps its exact contract: status + receipt only, no envelope; replay is unchanged
-  const legacy = await bare.initializeFromOperator(command, signature) as { status: string; receipt?: unknown };
-  assert.equal(legacy.status, "initialized");
-  assert.deepEqual(Object.keys(legacy).sort(), ["receipt", "status"]);
-  assert.equal((await bare.initializeFromOperator(command, signature) as { status: string }).status, "already-initialized");
-  assert.deepEqual(await bare.initializeFromOperatorAttested(command, signature), { status: "UNAVAILABLE", reason: "signer-unconfigured" });
+  assert.deepEqual(await bare.rotateReleaseFromOperatorAttested(rotateAt(now), await signAuthorityReleaseRotationCommand(rotateAt(now), operator.privateKey)), { status: "UNAVAILABLE", reason: "signer-unconfigured" });
+  assert.equal(tableCount(bareStorage), 0, "signer-unconfigured touches no storage and mutates nothing");
   bareStorage.close();
 
-  // injected runtime on the real Production class: initialize and rotate, verifying under the Production trust key
+  // Misconfiguration is non-positive BEFORE any mutation: partial, empty, malformed, other-environment, both-environments.
+  const wrongFingerprint = { ...bindings.production, AUTHORITY_ATTESTATION_KEY_FINGERPRINT: "0".repeat(64) };
+  const notHex = { ...bindings.production, AUTHORITY_ATTESTATION_KEY_FINGERPRINT: "NOT-HEX" };
+  const garbagePrivate = { ...bindings.production, AUTHORITY_ATTESTATION_PRIVATE_KEY: "AAAA" };
+  const swappedPair = { ...bindings.production, AUTHORITY_ATTESTATION_PRIVATE_KEY: bindings.staging.AUTHORITY_STAGING_ATTESTATION_PRIVATE_KEY };
+  const missingPublic = Object.fromEntries(Object.entries(bindings.production).filter(([name]) => name !== "AUTHORITY_ATTESTATION_PUBLIC_KEY"));
+  const emptyPrivate = { ...bindings.production, AUTHORITY_ATTESTATION_PRIVATE_KEY: "" };
+  const cases: Array<[string, Record<string, string>[], string]> = [
+    ["fingerprint pin does not match the public key", [wrongFingerprint], "signer-not-ready"],
+    ["fingerprint is not lowercase hex", [notHex], "signer-unconfigured"],
+    ["private key is not a PKCS#8 Ed25519 key", [garbagePrivate], "signer-not-ready"],
+    ["private key does not belong to the pinned public key", [swappedPair], "signer-not-ready"],
+    ["public key binding missing", [missingPublic], "signer-unconfigured"],
+    ["private key binding empty", [emptyPrivate], "signer-unconfigured"],
+    ["only the STAGING signer is configured on the Production Authority", [bindings.staging], "signer-unconfigured"],
+    ["Production AND staging signer material both present", [bindings.production, bindings.staging], "signer-unconfigured"],
+  ];
+  for (const [name, extra, reason] of cases) {
+    const storage = new NodeSqliteDurableStorage();
+    const configured = new admission.ProductionAdmissionAuthority({ storage } as never, envWith(...extra));
+    assert.deepEqual(await configured.initializeFromOperatorAttested(command, signature), { status: "UNAVAILABLE", reason }, name);
+    assert.deepEqual(await configured.attestReconciliation("a".repeat(64), NONCE), { status: "UNAVAILABLE", reason }, name);
+    assert.equal(tableCount(storage), 0, `${name}: nothing was mutated`);
+    storage.close();
+  }
+  // ...and symmetrically the staging Authority never reads the Production names.
+  const crossStaging = new NodeSqliteDurableStorage();
+  const stagingCommand = initAt("staging", now);
+  const stagingSignature = await signAuthorityInitializationCommand(stagingCommand, operator.privateKey);
+  const stagingOnProductionKey = new admission.StagingAdmissionAuthority({ storage: crossStaging } as never, envWith(bindings.production));
+  assert.deepEqual(await stagingOnProductionKey.initializeFromOperatorAttested(stagingCommand, stagingSignature), { status: "UNAVAILABLE", reason: "signer-unconfigured" });
+  assert.equal(tableCount(crossStaging), 0);
+  crossStaging.close();
+
+  // Environment-derived signer on the real Production class: initialize and rotate, verifying under the Production trust key.
   const productionStorage = new NodeSqliteDurableStorage();
-  const production = new admission.ProductionAdmissionAuthority({ storage: productionStorage } as never, environment,
-    { signer: await healthySigner("production"), now: scriptedClock(now, now + 5).now });
+  const production = new admission.ProductionAdmissionAuthority({ storage: productionStorage } as never, envWith(bindings.production));
   const attested = await production.initializeFromOperatorAttested(command, signature);
   assert.ok(attested.status === "ATTESTED" && attested.relayDisposition === "APPLIED");
-  await verified(attested.envelope, lifecycleExpectation("production", await commandDigest(command)), now + 100);
+  assert.ok(attested.envelope instanceof Uint8Array);
+  await verified(attested.envelope, lifecycleExpectation("production", await commandDigest(command)), Date.now() + 100);
+  // replay is signed ALREADY_APPLIED and mutates nothing
+  const replay = await production.initializeFromOperatorAttested(command, signature);
+  assert.ok(replay.status === "ATTESTED" && replay.relayDisposition === "ALREADY_APPLIED");
+  assert.equal(receiptCount(productionStorage), 1);
   const rotation = rotateAt(now);
-  const rotating = new admission.ProductionAdmissionAuthority({ storage: productionStorage } as never, environment,
-    { signer: await healthySigner("production"), now: scriptedClock(now + 600, now + 610).now });
-  const rotated = await rotating.rotateReleaseFromOperatorAttested(rotation, await signAuthorityReleaseRotationCommand(rotation, operator.privateKey));
-  assert.ok(rotated.status === "ATTESTED" && rotated.relayDisposition === "APPLIED");
-  await verified(rotated.envelope, lifecycleExpectation("production", await commandDigest(rotation)), now + 700);
-  productionStorage.close();
-
-  // the real staging class: initialize attests under the staging key; there is no rotation attestation method
+  const rotated = await production.rotateReleaseFromOperatorAttested(rotation, await signAuthorityReleaseRotationCommand(rotation, operator.privateKey));
+  // rotation activation lies in the near future relative to the fresh clock; the command was issued with `now` so it is fresh
+  assert.ok(rotated.status === "ATTESTED" && rotated.relayDisposition === "APPLIED", rotated.status);
+  await verified(rotated.envelope, lifecycleExpectation("production", await commandDigest(rotation)), Date.now() + 100);
+  // a staging-signed statement does not verify as Production evidence and vice versa (distinct keys, distinct trust sections)
   const stagingStorage = new NodeSqliteDurableStorage();
-  const staging = new admission.StagingAdmissionAuthority({ storage: stagingStorage } as never, environment,
-    { signer: await healthySigner("staging"), now: scriptedClock(now, now + 5).now });
-  const stagingCommand = initAt("staging", now);
-  const stagingResult = await staging.initializeFromOperatorAttested(stagingCommand, await signAuthorityInitializationCommand(stagingCommand, operator.privateKey));
+  const staging = new admission.StagingAdmissionAuthority({ storage: stagingStorage } as never, envWith(bindings.staging));
+  const stagingResult = await staging.initializeFromOperatorAttested(stagingCommand, stagingSignature);
   assert.ok(stagingResult.status === "ATTESTED");
-  await verified(stagingResult.envelope, lifecycleExpectation("staging", await commandDigest(stagingCommand)), now + 100);
+  await verified(stagingResult.envelope, lifecycleExpectation("staging", await commandDigest(stagingCommand)), Date.now() + 100);
+  const stagingDigest = await commandDigest(stagingCommand);
+  await assert.rejects(() => verified(stagingResult.envelope, lifecycleExpectation("production", stagingDigest), Date.now() + 100), /attestation-expectation/u);
   assert.equal("rotateReleaseFromOperatorAttested" in staging, false);
   assert.deepEqual(await staging.rotateReleaseFromOperator(), { status: "refused" });
-  stagingStorage.close();
+  productionStorage.close(); stagingStorage.close();
 
-  // a wrong-environment signer injected into the real Production class is refused before any storage access
+  // the injected test seam still takes precedence and a wrong-environment signer is refused before any storage access
   const crossStorage = new NodeSqliteDurableStorage();
-  const crossed = new admission.ProductionAdmissionAuthority({ storage: crossStorage } as never, environment, { signer: await healthySigner("staging") });
+  const crossed = new admission.ProductionAdmissionAuthority({ storage: crossStorage } as never, envWith(), { signer: await healthySigner("staging") });
   assert.deepEqual(await crossed.initializeFromOperatorAttested(command, signature), { status: "UNAVAILABLE", reason: "signer-mismatch" });
   assert.equal(tableCount(crossStorage), 0);
   crossStorage.close();
 
-  // no service-binding entrypoint exposes any attested method
-  for (const entrypoint of [admission.AdmissionServiceWorker, admission.AuthorityLifecycleOnly, admission.AuthorityLifecycleReadOnly,
-    admission.StagingAuthorityLifecycleOnly, admission.StagingAuthorityLifecycleReadOnly]) {
-    for (const method of ["initializeFromOperatorAttested", "rotateReleaseFromOperatorAttested", "attestAppliedLifecycle", "attestReconciliation",
-      "initializeAuthorityFromOperatorAttested", "rotateAuthorityReleaseFromOperatorAttested"]) {
-      assert.equal(method in entrypoint.prototype, false, `${entrypoint.name}.${method}`);
-    }
+  // Entrypoints: signed-only. No unsigned lifecycle mutation name survives on any entrypoint (staging keeps only the closed rotation refusal).
+  const allEntrypoints = [admission.AdmissionServiceWorker, admission.AuthorityLifecycleOnly, admission.AuthorityLifecycleReadOnly,
+    admission.StagingAuthorityLifecycleOnly, admission.StagingAuthorityLifecycleReadOnly];
+  for (const entrypoint of allEntrypoints) {
+    assert.equal("initializeAuthorityFromOperator" in entrypoint.prototype, false, `${entrypoint.name} unsigned initialize`);
+    for (const method of ["initializeFromOperatorAttested", "rotateReleaseFromOperatorAttested"]) assert.equal(method in entrypoint.prototype, false, `${entrypoint.name}.${method}`);
   }
+  assert.equal("rotateAuthorityReleaseFromOperator" in admission.AuthorityLifecycleOnly.prototype, false);
+  assert.equal("rotateAuthorityReleaseFromOperator" in admission.AdmissionServiceWorker.prototype, false);
+  assert.deepEqual(Object.getOwnPropertyNames(admission.AuthorityLifecycleOnly.prototype).sort(),
+    ["constructor", "fetch", "initializeAuthorityFromOperatorAttested", "rotateAuthorityReleaseFromOperatorAttested"].sort());
+  assert.deepEqual(Object.getOwnPropertyNames(admission.StagingAuthorityLifecycleOnly.prototype).sort(),
+    ["constructor", "fetch", "initializeAuthorityFromOperatorAttested", "rotateAuthorityReleaseFromOperator"].sort());
+  for (const reader of [admission.AuthorityLifecycleReadOnly, admission.StagingAuthorityLifecycleReadOnly])
+    assert.deepEqual(Object.getOwnPropertyNames(reader.prototype).sort(), ["attestAppliedLifecycle", "attestReconciliation", "constructor", "fetch", "inspectLifecycle"].sort());
 });

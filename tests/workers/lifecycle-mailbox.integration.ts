@@ -10,7 +10,9 @@ import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH } from "../../workers/ad
 import { AUTHORITY_OPERATOR_COMMAND_VERSION, commandDigest, signAuthorityInitializationCommand,
   type AuthorityInitializationCommand } from "../../workers/admission-service/operator-command";
 import { processSettlement, processSlot, type MailboxEnvironment } from "../../workers/lifecycle-mailbox/processor";
-import { verifyLifecycleResult } from "../../operator/lifecycle-result";
+import { readProductionAuthorityResult } from "../../operator/authority-result-reader";
+import { authenticateSealedLifecycleArtifact } from "../../operator/lifecycle-submitter";
+import { rfcSignerBindings, rfcTrustManifest } from "../support/authority-attestation-test-signers";
 import { createCliResultHarness } from "./support/i3b-cli-result-harness";
 
 const root = process.cwd();
@@ -46,6 +48,7 @@ async function bundle(): Promise<void> {
 async function start(publicKey: string, persistence: string, dropAck = false, failBefore = false): Promise<Miniflare> {
   const date = "2026-09-13";
   const admissionBindings = {
+    ...await rfcSignerBindings("production"), // explicit TEST-ONLY signer configuration (RFC vectors) under the runtime's binding names
     AUTHORITY_OPERATOR_PUBLIC_KEY: publicKey,
     ADMISSION_CURRENT_RPC_KEY: encodeBase64url(new Uint8Array(32).fill(9)),
     ADMISSION_CURRENT_RELEASE_ID: "i3b-current", ADMISSION_CURRENT_KEY_ID: "i3b-key",
@@ -124,7 +127,9 @@ async function main(): Promise<void> {
     const results = await mf.getR2Bucket("RESULT_BUCKET", "mailbox");
     await requests.put("reconcile.json", JSON.stringify({ version: 1, digest, nonce: "c".repeat(32) }));
     await scheduled(mf, "observer");
-    assert.equal((await (await results.get(`reconciliation/${"c".repeat(32)}.json`))?.json() as { status: string }).status, "NOT_FOUND");
+    const firstBytes = new Uint8Array(await (await results.get(`reconciliation/${"c".repeat(32)}.json`))!.arrayBuffer());
+    const notFound = await readProductionAuthorityResult({ kind: "reconciliation", digest, nonce: "c".repeat(32), bytes: firstBytes, trustManifest: await rfcTrustManifest(), nowMs: Date.now() });
+    assert.deepEqual([notFound.status, (notFound as { observation: string }).observation], ["VERIFIED_NON_POSITIVE", "NOT_FOUND"], "the observer relays an Authority-signed NOT_FOUND");
     assert.equal((await sql(mf, "admission", "ProductionAdmissionAuthority", ADMISSION_AUTHORITY_ID,
       "SELECT name FROM sqlite_master WHERE type='table' AND name='authority_meta'")).length, 0);
     await requests.put("initialize.json", JSON.stringify({ command, signature: encodeBase64url(new Uint8Array(64)) }));
@@ -158,8 +163,14 @@ async function main(): Promise<void> {
     await scheduled(mf, "mailbox");
     assert.equal(await count(mf), 1, "same signed digest remains consumed after attempted RPC abuse");
     assert.equal(await admissionCount(mf), 1);
+    // The first tick lost its acknowledgement (UNCONFIRMED diagnostic). Later ticks replay the persisted request slot: the Authority's
+    // signed read-only path answers "already applied" WITHOUT a second mutation (counts below stay at 1), and the signed envelope
+    // replaces the unsigned diagnostic.
     const lifecycle = await results.get(`lifecycle/${digest}.json`);
-    assert.equal((await lifecycle?.json() as { status: string }).status, "UNCONFIRMED");
+    const sealedCommand = await authenticateSealedLifecycleArtifact(new TextEncoder().encode(JSON.stringify({ command, signature })), publicKey);
+    const lifecycleOutcome = await readProductionAuthorityResult({ kind: "lifecycle", digest, bytes: new Uint8Array(await lifecycle!.arrayBuffer()),
+      trustManifest: await rfcTrustManifest(), nowMs: Date.now(), authenticatedCommand: sealedCommand });
+    assert.equal(lifecycleOutcome.status, "POSITIVE", JSON.stringify(lifecycleOutcome));
     const different: AuthorityInitializationCommand = [command[0], command[1], command[2], command[3], command[4], command[5],
       command[6], command[7] + 1, true];
     await requests.put("initialize.json", JSON.stringify({ command: different,
@@ -174,7 +185,12 @@ async function main(): Promise<void> {
     await requests.put("reconcile.json", JSON.stringify({ version: 1, digest, nonce }));
     await scheduled(mf, "observer");
     const reconciliation = await results.get(`reconciliation/${nonce}.json`);
-    assert.equal((await reconciliation?.json() as { status: string }).status, "EXACT_RECEIPT");
+    const reconciled = await readProductionAuthorityResult({ kind: "reconciliation", digest, nonce, bytes: new Uint8Array(await reconciliation!.arrayBuffer()),
+      trustManifest: await rfcTrustManifest(), nowMs: Date.now() });
+    assert.deepEqual([reconciled.status, (reconciled as { observation: string }).observation], ["VERIFIED_NON_POSITIVE", "COMMAND_CONTEXT_REQUIRED"], "signed EXACT_RECEIPT alone is not Production positive");
+    const operatorCommand = await authenticateSealedLifecycleArtifact(new TextEncoder().encode(JSON.stringify({ command, signature })), publicKey);
+    assert.equal((await readProductionAuthorityResult({ kind: "reconciliation", digest, nonce, bytes: new Uint8Array(await (await results.get(`reconciliation/${nonce}.json`))!.arrayBuffer()),
+      trustManifest: await rfcTrustManifest(), nowMs: Date.now(), authenticatedCommand: operatorCommand })).status, "POSITIVE", "signed EXACT_RECEIPT + authenticated command is positive");
     const settlementNonce = "b".repeat(32);
     await requests.put("settle.json", JSON.stringify({ version: 1, digest, nonce: settlementNonce }));
     await scheduled(mf, "mailbox");
@@ -245,8 +261,10 @@ async function main(): Promise<void> {
       await scheduled(mf, "observer");
       const reconciliation = await faultResults.get(`reconciliation/${nonce}.json`);
       assert.ok(reconciliation, `${publicationFault}: read-only observer reconstructed a result`);
-      assert.equal(verifyLifecycleResult(new Uint8Array(await reconciliation.arrayBuffer()), "reconciliation", { digest, nonce }).status,
-        "SUCCESS", `${publicationFault}: exact receipt proves commit`);
+      assert.equal((await readProductionAuthorityResult({ kind: "reconciliation", digest, nonce, bytes: new Uint8Array(await reconciliation.arrayBuffer()),
+        trustManifest: await rfcTrustManifest(), nowMs: Date.now(), authenticatedCommand: await authenticateSealedLifecycleArtifact(
+          new TextEncoder().encode(JSON.stringify({ command, signature })), publicKey) })).status,
+      "POSITIVE", `${publicationFault}: a signed exact receipt proves commit`);
       assert.equal(await count(mf), 1, `${publicationFault}: reconstruction did not dispatch mutation`);
       assert.equal(await admissionCount(mf), 1);
       const authorityAfter = await Promise.all(["authority_meta", "active_releases", "nonces", "observations", "lifecycle_receipts"]
@@ -289,8 +307,9 @@ async function main(): Promise<void> {
     const unavailableResult = await unavailableResults.get(`reconciliation/${unavailableNonce}.json`);
     assert.ok(unavailableResult, "actual unavailable authority inspection publishes a bounded observation");
     const unavailableBytes = new Uint8Array(await unavailableResult.arrayBuffer());
-    assert.equal(verifyLifecycleResult(unavailableBytes, "reconciliation", { digest, nonce: unavailableNonce }).status,
-      "UNCONFIRMED", "unavailable authority never proves refusal");
+    assert.deepEqual(await readProductionAuthorityResult({ kind: "reconciliation", digest, nonce: unavailableNonce, bytes: unavailableBytes,
+      trustManifest: await rfcTrustManifest(), nowMs: Date.now() }), { status: "UNCONFIRMED", environment: "production", kind: "reconciliation", digest,
+      reason: "no-signed-evidence", relayStatus: "UNAVAILABLE" }, "unavailable authority never proves refusal and is an explicit unsigned diagnostic");
     assert.equal((JSON.parse(new TextDecoder().decode(unavailableBytes)) as { status: string }).status, "UNAVAILABLE");
     const cli = await createCliResultHarness();
     try {

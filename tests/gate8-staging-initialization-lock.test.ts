@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { after, before, test } from "node:test";
@@ -21,6 +21,7 @@ import { ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID } from "../worke
 import { AUTHORITY_OPERATOR_COMMAND_VERSION, commandDigest, signAuthorityInitializationCommand,
   type AuthorityInitializationCommand } from "../workers/admission-service/operator-command";
 import * as lockModule from "../operator/staging-initialization-lock";
+import { fixturesAt, trustManifestText } from "./support/authority-result-fixtures";
 
 const root = process.cwd();
 const { STAGING_INITIALIZATION_LOCK, STAGING_INITIALIZATION_REFUSAL } = lockModule;
@@ -123,6 +124,9 @@ before(async () => {
   artifactPath = join(directory, "synthetic-artifact.json");
   credentialPath = join(directory, "synthetic-credential.json");
   await writeFile(artifactPath, artifactText);
+  // R06 Slice 2C: read-result verifies against the public trust manifest at deployment/authority-result-trust.json (test manifest here).
+  await mkdir(join(directory, "deployment"));
+  await writeFile(join(directory, "deployment", "authority-result-trust.json"), await trustManifestText());
   await writeFile(credentialPath, JSON.stringify({ accessKeyId: "synthetic", secretAccessKey: "synthetic" }));
   manifest = JSON.stringify({ accountId: "a".repeat(32), requestBucket: "limitmark-lifecycle-requests-staging",
     resultBucket: "limitmark-lifecycle-results-staging", operatorPublicKey: publicKey,
@@ -238,11 +242,22 @@ test("L6: reconcile, settle and read-result remain reachable exactly as before",
   assert.equal(settlement.status, 0, settlement.stderr);
   assert.equal((JSON.parse(settlement.stdout) as { status: string }).status, "SETTLED");
   assert.deepEqual(settlement.trace, ["manifest-load", "credential-read", `transport GET settlement/${nonce}.json`]);
+  // A genuinely Authority-signed negative observation is reportable (VERIFIED_NON_POSITIVE, non-success exit); it is not a success.
+  const fx = fixturesAt(Date.now());
+  const signedNegative = await fx.reconciliation("staging", "NOT_FOUND", digest, null, { nonce, observedAtMs: Date.now() - 1_000,
+    releases: [{ releaseId: "staging-release-1", keyId: "staging-key-1", activatedMs: 1, retiredMs: null }] });
   const reconciliation = await run(cli.submit, ["read-result", "--kind", "reconciliation", "--digest", digest, "--nonce", nonce,
+    "--result-credentials", credentialPath], { GATE8_MANIFEST: manifest, GATE8_BODY: Buffer.from(signedNegative).toString("base64") });
+  assert.equal(reconciliation.status, 3, "negative observation is never a success exit");
+  const reported = JSON.parse(reconciliation.stdout) as Record<string, unknown>;
+  assert.deepEqual([reported.status, reported.environment, reported.kind, reported.digest, reported.observation],
+    ["VERIFIED_NON_POSITIVE", "staging", "reconciliation", digest, "NOT_FOUND"]);
+  // The unsigned legacy negative observation is no longer evidence at all.
+  const legacy = await run(cli.submit, ["read-result", "--kind", "reconciliation", "--digest", digest, "--nonce", nonce,
     "--result-credentials", credentialPath], { GATE8_MANIFEST: manifest, GATE8_BODY: Buffer.from(JSON.stringify({ ...base,
-    initialized: true, coverage: "COMPLETE", status: "NOT_FOUND", receipt: null, releases: [{ release_id: "staging-release-1", key_id: "staging-key-1", activated_ms: 1, retired_ms: null }] })).toString("base64") });
-  assert.equal(reconciliation.status, 3, "negative observation stays UNCONFIRMED");
-  assert.deepEqual(JSON.parse(reconciliation.stdout), { status: "UNCONFIRMED", environment: "staging", digest, observation: "NOT_FOUND" });
+    initialized: true, coverage: "COMPLETE", status: "NOT_FOUND", receipt: null, releases: [] })).toString("base64") });
+  assert.equal(legacy.status, 3);
+  assert.equal((JSON.parse(legacy.stdout) as { status: string }).status, "UNCONFIRMED");
   assert.deepEqual(reconciliation.trace, ["manifest-load", "credential-read", `transport GET reconciliation/${nonce}.json`]);
 });
 
@@ -300,7 +315,7 @@ test("L8: the Production preparer cannot mint a staging artifact and its Product
 
 test("L9: the Production submit/read script stays Production-only, staging-free and command-backed", async () => {
   const source = await readFile(join(root, "scripts", "authority-submit.ts"), "utf8");
-  const code = source.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
+  const code = source.split(String.fromCharCode(10)).filter((line) => !line.trim().startsWith("//")).join(String.fromCharCode(10));
   // Staging isolation: no staging identity, module, lock, fingerprint or canonical receipt is reachable from the Production script.
   assert.equal(/staging/iu.test(code), false, "no staging identifier in Production code");
   assert.equal(/STAGING_|Gate7|gate7|continuity|expectedReceipt/u.test(code), false, "no staging-only trust state or canonical receipt");
@@ -311,12 +326,14 @@ test("L9: the Production submit/read script stays Production-only, staging-free 
   // Submission keeps its freshness-bound parse with the default (Production) environment and the same signature check.
   assert.match(code, /const artifact = parseSealedLifecycleArtifact\(bytes, operation\);/u);
   assert.match(code, /await verifyOperatorCommand\(artifact\.command, artifact\.signature, target\.operatorPublicKey\);/u);
-  // Result reading: command-backed Production verification only. The unbound generic verifier is not imported, so the old
-  // command-less positive path has no CLI branch or fallback.
-  assert.equal(/\bverifyLifecycleResult\b/u.test(code), false, "the generic (command-less positive) verifier is not reachable");
-  assert.equal(code.match(/verifyProductionLifecycleResult\(/gu)?.length, 1, "exactly one verifier call site");
+  // Result reading (R06 Slice 2C): signed R06 evidence AND an authenticated command, through the one reader. The unsigned verifiers
+  // are not imported, so there is no command-less positive path, no unsigned positive and no fallback.
+  assert.equal(/verifyLifecycleResult|verifyProductionLifecycleResult/u.test(code), false, "no unsigned positive verifier is reachable");
+  assert.equal(code.match(/readProductionAuthorityResult\(/gu)?.length, 1, "exactly one positive-capable call site");
   assert.match(code, /authenticateSealedLifecycleArtifact\(/u);
-  assert.match(code, /\{ command \}\);/u, "the authenticated command is the only trust input passed to the verifier");
-  assert.match(code, /if \(authenticated\.digest !== digest\) fail\(\);/u, "the command must name the requested digest");
+  assert.match(code, /authenticatedCommand: command/u, "the authenticated command is the only independent evidence passed to the reader");
+  assert.match(code, /loadAuthorityResultTrustManifest\(\)/u, "the pinned public trust manifest is the verification root");
+  assert.equal(/if \(authenticated\.digest !== digest\) fail\(\);/u.test(code), false, "a mismatched optional command no longer erases a signed negative");
   assert.match(code, /if \(kind === "settlement" && args\["--command"\] !== undefined\) fail\(\);/u, "settlement takes no command context");
 });
+

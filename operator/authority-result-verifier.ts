@@ -16,9 +16,10 @@ import { isAuthenticatedLifecycleCommand, type AuthenticatedLifecycleCommand } f
 import { STAGING_GATE7_CONTINUITY } from "./staging-gate7-continuity";
 
 /**
- * R06 Slice 2B: INERT composition of a verified Authority statement with the independent evidence that Production and
- * staging positive acceptance additionally require. Nothing in the CLI, mailbox, observer, guards or R2 result flow imports this
- * module (a source-level test pins that); Slice 2C switches producer, relay and verifier atomically.
+ * R06 Slice 2B/2C: composition of a verified Authority statement with the independent evidence that Production and
+ * staging positive acceptance additionally require. Since Slice 2C its ONLY importer is operator/authority-result-reader.ts (the
+ * active Production and staging result reader); no mailbox, observer, guard, executor or R2 writer may reach it (a source-level
+ * test pins the exact reviewed callers). The composition semantics below are unchanged from 2B.
  *
  * Production POSITIVE = genuine branded R06 statement (frozen verifier) AND a genuine authenticated R07 command context whose
  * twelve command-derived fields equal the attested receipt. R06 alone is never positive.
@@ -36,8 +37,8 @@ import { STAGING_GATE7_CONTINUITY } from "./staging-gate7-continuity";
  *
  * Signed negatives (NOT_FOUND, HISTORY_INCOMPLETE) are useful on their own and need no command. A caller that nevertheless supplies
  * a genuine command for a DIFFERENT digest has presented inconsistent optional context: that is a caller contract mismatch and throws
- * `result-contract`. The throw says nothing about the Authority evidence; Slice 2C must not hide or discard the underlying signed
- * negative merely because inconsistent optional context was supplied (it remains reportable when composed without that context).
+ * `result-contract`. The throw says nothing about the Authority evidence; the 2C reader therefore composes WITHOUT the inconsistent
+ * context, keeps the underlying signed negative reportable and flags the context as MISMATCHED.
  */
 
 export type AuthorityResultKind = "lifecycle" | "reconciliation";

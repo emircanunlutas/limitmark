@@ -2,18 +2,28 @@ import { DurableObject } from "cloudflare:workers";
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { commandDigest, verifyOperatorCommand } from "../admission-service/operator-command";
 import { parseSealedLifecycleArtifact, type LifecycleOperation, type LifecycleResult } from "../../operator/lifecycle-submitter";
+import { normalizeLifecycleRelayResult, type RelayDisposition } from "../../operator/attested-relay";
 import type { LifecycleReceipt } from "../admission-service/authority";
 
 export const GUARD_OBJECT_NAME = "production-lifecycle-dispatch-v1";
 export const GUARD_CAPACITY = 4_096;
-export type GuardOutcome = { version: 1; digest: string; status: "SUCCESS" | "ALREADY_APPLIED" | "REFUSED" | "UNAVAILABLE" | "UNCONFIRMED"; reason?: string; receipt?: LifecycleReceipt };
+/** What the guard hands the mailbox. ATTESTED carries the Authority's exact signed envelope bytes, opaque to the guard; every other
+ * status is non-positive. `relayDisposition` is relay-local workflow metadata, never part of the signed statement. */
+export type GuardOutcome =
+  | { version: 1; digest: string; status: "ATTESTED"; relayDisposition: RelayDisposition; envelope: Uint8Array }
+  | { version: 1; digest: string; status: "REFUSED" | "UNAVAILABLE" | "UNCONFIRMED"; reason?: string };
 export type LifecycleExecutorBinding = {
   submitInitializationArtifact(sealedJson: string): Promise<LifecycleResult>;
   submitRotationArtifact(sealedJson: string): Promise<LifecycleResult>;
 };
-export type LifecycleReaderBinding = { inspectLifecycle(digest: string): Promise<{
-  status: string; receipt?: LifecycleReceipt | null; environment?: string; authorityId?: string; policyEpoch?: string;
-}> };
+export type LifecycleReaderBinding = {
+  /** Unsigned supervisory read. Used ONLY by settlement; it never produces result evidence. */
+  inspectLifecycle(digest: string): Promise<{
+    status: string; receipt?: LifecycleReceipt | null; environment?: string; authorityId?: string; policyEpoch?: string;
+  }>;
+  /** Authority-signed read-only recovery (also the pre-dispatch "already applied?" probe). Answers are untrusted until normalized. */
+  attestAppliedLifecycle(digest: string): Promise<unknown>;
+};
 export type GuardEnvironment = {
   LIFECYCLE_EXECUTOR: LifecycleExecutorBinding;
   LIFECYCLE_READER: LifecycleReaderBinding;
@@ -61,15 +71,15 @@ export class LifecycleDispatchGuard extends DurableObject<GuardEnvironment> {
       // This check occurs after the awaited signature/hash work and before claim.
       parseSealedLifecycleArtifact(new TextEncoder().encode(sealedJson), operation);
     } catch { return { version: 1, digest, status: "REFUSED", reason: "invalid-command" }; }
-    // A narrow authoritative read can resolve an already-applied command
-    // without entering the mutation-dispatch branch. Incomplete history closes.
+    // A narrow signed authoritative read resolves an already-applied command without entering the mutation-dispatch branch (and is
+    // how a replay after an AMBIGUOUS post-commit signing failure obtains signed evidence without a second mutation). The Authority
+    // checks its signer BEFORE it reads storage, so a signer problem is UNAVAILABLE here, before any claim is consumed. Only the
+    // Authority's explicit "receipt-not-found" (signer healthy, history complete, digest absent) proceeds to dispatch.
     try {
-      const snapshot = await this.env.LIFECYCLE_READER.inspectLifecycle(digest);
-      if (snapshot.status === "EXACT_RECEIPT" && snapshot.receipt?.digest === digest &&
-          snapshot.environment === "production" && snapshot.authorityId === "production-public-inquiries-v1" &&
-          snapshot.policyEpoch === "phase5c-i1-epoch-1")
-        return { version: 1, digest, status: "ALREADY_APPLIED", receipt: snapshot.receipt };
-      if (snapshot.status !== "NOT_FOUND") return { version: 1, digest, status: "UNAVAILABLE", reason: "authority-history" };
+      const known = normalizeLifecycleRelayResult(await this.env.LIFECYCLE_READER.attestAppliedLifecycle(digest));
+      if (known.status === "ATTESTED") return { version: 1, digest, status: "ATTESTED", relayDisposition: "ALREADY_APPLIED", envelope: known.envelope };
+      if (!(known.status === "UNAVAILABLE" && known.reason === "receipt-not-found"))
+        return { version: 1, digest, status: "UNAVAILABLE", reason: "authority-history" };
     } catch { return { version: 1, digest, status: "UNAVAILABLE", reason: "authority-read" }; }
     let won = false;
     let prior: Claim | null = null;
@@ -93,27 +103,27 @@ export class LifecycleDispatchGuard extends DurableObject<GuardEnvironment> {
     catch { return { version: 1, digest, status: "UNCONFIRMED", reason: "pre-dispatch" }; }
     try { parseSealedLifecycleArtifact(new TextEncoder().encode(sealedJson), operation); }
     catch { return { version: 1, digest, status: "UNCONFIRMED", reason: "expired-after-claim" }; }
-    let response: LifecycleResult;
+    let response: ReturnType<typeof normalizeLifecycleRelayResult>;
     try {
       await this.#localFaults.beforeExecutorCall?.();
       // Exactly one awaited call in the insert-winner branch. No retry on any error.
-      response = operation === "initialize"
+      response = normalizeLifecycleRelayResult(operation === "initialize"
         ? await this.env.LIFECYCLE_EXECUTOR.submitInitializationArtifact(sealedJson)
-        : await this.env.LIFECYCLE_EXECUTOR.submitRotationArtifact(sealedJson);
+        : await this.env.LIFECYCLE_EXECUTOR.submitRotationArtifact(sealedJson));
     } catch { return { version: 1, digest, status: "UNCONFIRMED", reason: "dispatch-ambiguous" }; }
-    const safeResponse = response && typeof response === "object" ? response : null;
-    const receipt = safeResponse && "receipt" in safeResponse ? safeResponse.receipt : undefined;
-    const positive = receipt && receipt.digest === digest && receipt.environment === "production" &&
-      receipt.authorityId === "production-public-inquiries-v1" && receipt.policyEpoch === "phase5c-i1-epoch-1";
-    const responseStatus = safeResponse && "status" in safeResponse ? safeResponse.status : undefined;
-    const status: GuardOutcome["status"] = positive && ["initialized", "rotated"].includes(String(responseStatus)) ? "SUCCESS" :
-      positive && ["already-initialized", "already-rotated"].includes(String(responseStatus)) ? "ALREADY_APPLIED" :
-      responseStatus === "refused" ? "REFUSED" : "UNCONFIRMED";
+    // The ledger note is relay-local bookkeeping: nothing (settlement included) reads it as evidence. The Authority's AMBIGUOUS
+    // (committed, not signed) and UNAVAILABLE (not mutated) answers are never refusals: both are UNCONFIRMED once the claim is consumed.
+    const ledger = response.status === "ATTESTED" ? response.relayDisposition === "APPLIED" ? "SUCCESS" : "ALREADY_APPLIED" :
+      response.status === "REFUSED" ? "REFUSED" : "UNCONFIRMED";
     try {
-      this.#ledger.sql.exec("UPDATE claims SET status=? WHERE digest=?", status, digest);
+      this.#ledger.sql.exec("UPDATE claims SET status=? WHERE digest=?", ledger, digest);
       await this.#ledger.sync();
     } catch { return { version: 1, digest, status: "UNCONFIRMED", reason: "result-durability" }; }
-    return { version: 1, digest, status, ...(positive ? { receipt: receipt as LifecycleReceipt } : {}) };
+    if (response.status === "ATTESTED") return { version: 1, digest, status: "ATTESTED", relayDisposition: response.relayDisposition, envelope: response.envelope };
+    if (response.status === "REFUSED") return { version: 1, digest, status: "REFUSED" };
+    if (response.status === "AMBIGUOUS") return { version: 1, digest, status: "UNCONFIRMED", reason: "attestation-ambiguous" };
+    if (response.status === "UNAVAILABLE") return { version: 1, digest, status: "UNCONFIRMED", reason: ("authority-" + response.reason).slice(0, 64) };
+    return { version: 1, digest, status: "UNCONFIRMED", reason: "dispatch-ambiguous" };
   }
 
   /** Positive exact receipt releases only the supervisor latch, never a claim. */

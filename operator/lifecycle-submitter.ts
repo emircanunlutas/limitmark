@@ -9,7 +9,7 @@ import {
   type AuthorityReleaseRotationCommand,
   type CommandDerivedReceipt,
 } from "../workers/admission-service/operator-command";
-import type { LifecycleReceipt } from "../workers/admission-service/authority";
+import { UNCONFIRMED_INSTRUCTION, normalizeLifecycleRelayResult, type LifecycleRelayResult } from "./attested-relay";
 
 export const MAX_SEALED_ARTIFACT_BYTES = 4_096;
 export type LifecycleOperation = "initialize" | "rotate-release";
@@ -17,16 +17,17 @@ export type SealedLifecycleArtifact = {
   command: AuthorityInitializationCommand | AuthorityReleaseRotationCommand;
   signature: string;
 };
-export type LifecycleResult =
-  | { status: "initialized" | "already-initialized" | "rotated" | "already-rotated"; receipt?: LifecycleReceipt }
-  | { status: "refused" }
-  | { status: "unconfirmed"; instruction: "Inspect authoritative state before any retry; the mutation may have committed." };
+/** The executor's answer is the relayed Authority answer (R06 Slice 2C): signed evidence bytes, a refusal, or an explicit
+ * non-positive state. There is no unsigned positive lifecycle result. */
+export type LifecycleResult = LifecycleRelayResult;
 
-/** Only these two calls can cross the private AdmissionServiceWorker binding. */
+/** Only these two attested calls can cross the private AdmissionServiceWorker binding. Answers are untrusted until normalized. */
 export type AdmissionLifecycleBinding = {
-  initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string): Promise<{ status: "initialized" | "already-initialized"; receipt?: LifecycleReceipt } | { status: "refused" }>;
-  rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string): Promise<{ status: "rotated" | "already-rotated"; receipt?: LifecycleReceipt } | { status: "refused" }>;
+  initializeAuthorityFromOperatorAttested(command: AuthorityInitializationCommand, signature: string): Promise<unknown>;
+  rotateAuthorityReleaseFromOperatorAttested(command: AuthorityReleaseRotationCommand, signature: string): Promise<unknown>;
 };
+/** Staging binds initialization only: its rotation is permanently closed (Gate 9). */
+export type StagingAdmissionLifecycleBinding = Pick<AdmissionLifecycleBinding, "initializeAuthorityFromOperatorAttested">;
 
 // The sealed format is deliberately narrower than general JSON. Each object key is
 // checked before JSON.parse, so duplicate members cannot silently override data.
@@ -152,20 +153,20 @@ export async function authenticateSealedLifecycleArtifact(bytes: Uint8Array, ope
   return authenticated;
 }
 
-/** A provider-owned private executor supplies the pinned binding and public key. */
+/** A provider-owned private executor supplies the pinned binding and public key. The Authority's answer is relayed, never
+ * rewritten: an ATTESTED envelope keeps its exact bytes. A transport exception or a malformed answer is UNCONFIRMED. */
 export async function submitSealedLifecycleArtifact(bytes: Uint8Array, operation: LifecycleOperation,
-  admission: AdmissionLifecycleBinding, operatorPublicKey: string, nowMs = Date.now(),
+  admission: AdmissionLifecycleBinding | StagingAdmissionLifecycleBinding, operatorPublicKey: string, nowMs = Date.now(),
   expectedEnvironment: "production" | "staging" = "production"): Promise<LifecycleResult> {
   const artifact = parseSealedLifecycleArtifact(bytes, operation, nowMs, expectedEnvironment);
   await verifyOperatorCommand(artifact.command, artifact.signature, operatorPublicKey);
   try {
     const response = operation === "initialize"
-      ? await admission.initializeAuthorityFromOperator(artifact.command as AuthorityInitializationCommand, artifact.signature)
-      : await admission.rotateAuthorityReleaseFromOperator(artifact.command as AuthorityReleaseRotationCommand, artifact.signature);
-    if (response.status === "refused" || operation === "initialize" && ["initialized", "already-initialized"].includes(response.status) ||
-        operation === "rotate-release" && ["rotated", "already-rotated"].includes(response.status)) return response;
+      ? await admission.initializeAuthorityFromOperatorAttested(artifact.command as AuthorityInitializationCommand, artifact.signature)
+      : await (admission as AdmissionLifecycleBinding).rotateAuthorityReleaseFromOperatorAttested(artifact.command as AuthorityReleaseRotationCommand, artifact.signature);
+    return normalizeLifecycleRelayResult(response);
   } catch {
     // A transport exception can arrive after SQLite committed. Never retry here.
   }
-  return { status: "unconfirmed", instruction: "Inspect authoritative state before any retry; the mutation may have committed." };
+  return { status: "UNCONFIRMED", instruction: UNCONFIRMED_INSTRUCTION };
 }

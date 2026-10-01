@@ -16,6 +16,9 @@ import { encodeBase64url } from "../../src/lib/ingress-protocol";
 import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID } from "../../workers/admission-service/authority";
 import { AUTHORITY_OPERATOR_COMMAND_VERSION, commandDigest, signAuthorityInitializationCommand,
   type AuthorityInitializationCommand } from "../../workers/admission-service/operator-command";
+import { verifyAuthoritySignedStatement } from "../../src/lib/authority-result-trust";
+import { readStagingAuthorityResult } from "../../operator/authority-result-reader";
+import { rfcSignerBindings, rfcTrustManifest } from "../support/authority-attestation-test-signers";
 
 const root = process.cwd();
 const runtimeRoot = join(root, ".wrangler", "tests", `i3b-staging-mailbox-${process.pid}-${randomUUID()}`);
@@ -53,6 +56,7 @@ async function bundle(): Promise<void> {
 async function start(publicKey: string, persistence: string): Promise<Miniflare> {
   const date = "2026-09-13";
   const admissionBindings = {
+    ...await rfcSignerBindings("staging"), // explicit TEST-ONLY signer configuration (RFC vectors) under the runtime's binding names
     AUTHORITY_OPERATOR_PUBLIC_KEY: publicKey,
     ADMISSION_CURRENT_RPC_KEY: encodeBase64url(new Uint8Array(32).fill(7)),
     ADMISSION_CURRENT_RELEASE_ID: "staging-current", ADMISSION_CURRENT_KEY_ID: "staging-key",
@@ -156,10 +160,16 @@ async function main(): Promise<void> {
     assert.equal(receiptRows[0].environment, "staging");
     const lifecycleResult = await results.get(`lifecycle/${digest}.json`);
     assert.ok(lifecycleResult, "the exact staging lifecycle receipt was published to the result bucket");
-    const parsedResult = await lifecycleResult!.json() as { status: string; receipt: { authorityId: string; environment: string } };
-    assert.equal(parsedResult.status, "SUCCESS");
-    assert.equal(parsedResult.receipt.authorityId, STAGING_ADMISSION_AUTHORITY_ID);
-    assert.equal(parsedResult.receipt.environment, "staging");
+    // R06 Slice 2C: the stored object is the staging Authority's exact signed envelope bytes. It verifies under the STAGING trust key for
+    // exactly this digest; the relay added nothing to it.
+    const lifecycleBytes = new Uint8Array(await lifecycleResult!.arrayBuffer());
+    const verifiedLifecycle = await verifyAuthoritySignedStatement(lifecycleBytes, { kind: "lifecycle", environment: "staging", authorityId: STAGING_ADMISSION_AUTHORITY_ID,
+      policyEpoch: ADMISSION_POLICY_EPOCH, digest }, await rfcTrustManifest(), Date.now());
+    assert.equal(verifiedLifecycle.statement.kind === "lifecycle" && verifiedLifecycle.statement.receipt.authorityId, STAGING_ADMISSION_AUTHORITY_ID);
+    assert.equal(verifiedLifecycle.statement.kind === "lifecycle" && verifiedLifecycle.statement.receipt.environment, "staging");
+    // ...and a valid staging signature alone is NOT staging positive: this digest is not the committed Gate 7 canonical evidence.
+    const notGate7 = await readStagingAuthorityResult({ kind: "lifecycle", digest, bytes: lifecycleBytes, trustManifest: await rfcTrustManifest(), nowMs: Date.now() });
+    assert.deepEqual([notGate7.status, (notGate7 as { reason: string }).reason], ["UNCONFIRMED", "result-contract"]);
 
     // Proof 4: exact replay of the identical artifact is idempotent (no second dispatch/receipt).
     await requests.put("initialize.json", JSON.stringify({ command, signature }));
@@ -175,9 +185,10 @@ async function main(): Promise<void> {
     await scheduled(mf, "observer");
     const reconciliation = await results.get(`reconciliation/${nonce}.json`);
     assert.ok(reconciliation, "the staging observer published a reconciliation result through the real read-only chain");
-    const parsedReconciliation = await reconciliation!.json() as { status: string; environment: string };
-    assert.equal(parsedReconciliation.status, "EXACT_RECEIPT");
-    assert.equal(parsedReconciliation.environment, "staging");
+    const verifiedReconciliation = await verifyAuthoritySignedStatement(new Uint8Array(await reconciliation!.arrayBuffer()), { kind: "reconciliation", environment: "staging",
+      authorityId: STAGING_ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH, digest, nonce }, await rfcTrustManifest(), Date.now());
+    assert.equal(verifiedReconciliation.statement.kind === "reconciliation" && verifiedReconciliation.statement.status, "EXACT_RECEIPT");
+    assert.equal(verifiedReconciliation.statement.environment, "staging");
 
     // Proof 9: the actual bound guard DO stub exposes no internal helpers beyond
     // its designed RPC surface. These property names are not methods on
@@ -250,9 +261,10 @@ async function main(): Promise<void> {
     await scheduled(mf, "observer");
     const reconciliationAfterRestart = await (await mf.getR2Bucket("RESULT_BUCKET", "mailbox")).get(`reconciliation/${nonceAfterRestart}.json`);
     assert.ok(reconciliationAfterRestart, "the staging observer still reconciles correctly after a full restart");
-    const parsedAfterRestart = await reconciliationAfterRestart!.json() as { status: string; environment: string };
-    assert.equal(parsedAfterRestart.status, "EXACT_RECEIPT");
-    assert.equal(parsedAfterRestart.environment, "staging");
+    const verifiedAfterRestart = await verifyAuthoritySignedStatement(new Uint8Array(await reconciliationAfterRestart!.arrayBuffer()), { kind: "reconciliation", environment: "staging",
+      authorityId: STAGING_ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH, digest, nonce: nonceAfterRestart }, await rfcTrustManifest(), Date.now());
+    assert.equal(verifiedAfterRestart.statement.kind === "reconciliation" && verifiedAfterRestart.statement.status, "EXACT_RECEIPT");
+    assert.equal(verifiedAfterRestart.statement.environment, "staging");
 
     console.log("I3B staging workerd mailbox/guard/executor/admission/observer integration: PASS " +
       "(actual staging classes, cross-worker RPC, initialization, idempotent replay, restart persistence, " +

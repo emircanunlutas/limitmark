@@ -5,6 +5,8 @@ import {
   type AuthorityAttestationSignerConfig,
 } from "../../workers/admission-service/authority-attestation-signer";
 import type { DurableStorageLike } from "../../workers/admission-service/authority";
+import { ATTESTATION_SIGNER_BINDINGS } from "../../workers/admission-service/authority-attestation-config";
+import { parseAuthorityResultTrustManifest, type AuthorityResultTrustManifest } from "../../src/lib/authority-result-trust";
 
 /**
  * Deterministic seams for the Slice 2A Authority producer tests. Key material is ONLY the RFC 8032 test vectors already frozen
@@ -23,6 +25,21 @@ export function rfcKeys(): Promise<Record<Role, RfcKey>> {
 export async function rfcSignerConfig(role: Role): Promise<AuthorityAttestationSignerConfig> {
   const key = (await rfcKeys())[role];
   return { environment: role, writerKeyFingerprint: key.fingerprint, privateKey: key.privateKeyPkcs8, publicKey: key.publicKey };
+}
+
+/** The explicit TEST-ONLY runtime configuration a local workerd/Node test hands an Authority: the RFC vectors under the same binding
+ * NAMES the active runtime reads. Nothing in the active runtime defaults to these values. */
+export async function rfcSignerBindings(role: Role): Promise<Record<string, string>> {
+  const key = (await rfcKeys())[role];
+  const names = ATTESTATION_SIGNER_BINDINGS[role];
+  return { [names.privateKey]: key.privateKeyPkcs8, [names.publicKey]: key.publicKey, [names.writerKeyFingerprint]: key.fingerprint };
+}
+
+let trust: Promise<AuthorityResultTrustManifest> | undefined;
+/** The tracked TEST trust manifest (RFC test keys for both environments), parsed by the frozen parser. */
+export function rfcTrustManifest(): Promise<AuthorityResultTrustManifest> {
+  trust ??= readFile(new URL("../fixtures/authority-result-trust-v1.test.json", import.meta.url), "utf8").then((text) => parseAuthorityResultTrustManifest(text));
+  return trust;
 }
 
 export async function healthySigner(role: Role): Promise<AuthorityAttestationSigner> {

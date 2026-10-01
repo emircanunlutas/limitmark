@@ -29,11 +29,11 @@ import type { AuthorityAttestationSigner } from "./authority-attestation-signer"
 /**
  * Authority-side producer of FROZEN R06 attestation v2 statements (Slice 2A).
  *
- * INERT: nothing in the mailbox, observer, result readers, CLI, R2 publication or deployed configuration imports this module
- * or calls the RPCs that expose it. The frozen protocol is consumed unchanged; this module only decides WHEN to sign and WHAT
- * durable Authority state to put into a statement.
+ * ACTIVE since Slice 2C: the Authority Durable Object classes (workers/admission-service/index.ts) are the only importers, and the
+ * mailbox/observer relay the envelope bytes it returns without parsing them. The frozen protocol is consumed unchanged; this
+ * module only decides WHEN to sign and WHAT durable Authority state to put into a statement.
  *
- * Ordering for a lifecycle mutation (the contract Slice 2C will rely on):
+ * Ordering for a lifecycle mutation (the contract the Slice 2C relay relies on):
  *   target/environment check -> operator authentication -> command validation + expected receipt
  *   -> signer identity check + signer.ready(preliminary Authority time)   [no storage access has happened yet]
  *   -> FRESH Authority clock reading AFTER readiness resolves = final freshness time = receipt.appliedMs
@@ -48,10 +48,11 @@ import type { AuthorityAttestationSigner } from "./authority-attestation-signer"
  *   REFUSED      the request itself was refused (operator authentication/schema/policy/state, or malformed digest/nonce).
  *   UNAVAILABLE  non-positive, nothing was mutated by this call: signer/configuration/clock/storage-state problem.
  *   AMBIGUOUS    non-positive, the lifecycle transaction DID commit but no signed evidence could be produced. State is
- *                preserved (no rollback, no compensation, no second mutation); Slice 2C must map this to UNCONFIRMED and
- *                recover through attestReconciliation / attestAppliedLifecycle. Never REFUSED.
+ *                preserved (no rollback, no compensation, no second mutation); the relay maps this to UNCONFIRMED and
+ *                recovery runs through attestReconciliation / attestAppliedLifecycle. Never REFUSED.
  */
 export type AttestationUnavailableReason =
+  | "runtime-config-invalid"
   | "signer-unconfigured"
   | "signer-mismatch"
   | "signer-not-ready"

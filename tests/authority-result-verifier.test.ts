@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   RECEIPT_FIELDS,
@@ -669,6 +669,15 @@ test("Staging: every Gate 7 receipt field is an independent pin (frozen validato
     ["activatesMs", { activatesMs: canonical.activatesMs + 1 }, "PIN"],
     ["retiresMs", { retiresMs: canonical.activatesMs + 10 }, "R06"],
   ];
+  // A refusal only proves the staging composer works if the same path ACCEPTS the canonical evidence: otherwise a composer that threw
+  // (or was a no-op) for everything would pass every `rejects` below. So the loop is anchored by a signed canonical positive control,
+  // and it must execute an explicit minimum number of signed PIN cases (each a valid, signed, R06-verified statement that only the
+  // Gate 7 pin layer can refuse) as well as the R06-layer cases.
+  for (const kind of kinds) {
+    const control = await stagingBuilders[kind](canonical);
+    assert.equal((await verifyStaging(control.bytes, control.expectations)).status, "POSITIVE", `positive control/${kind}`);
+  }
+  const executed = { R06: 0, PIN: 0 };
   for (const [field, overrides, layer] of cases) {
     const receipt = { ...canonical, ...overrides };
     for (const kind of kinds) {
@@ -676,10 +685,17 @@ test("Staging: every Gate 7 receipt field is an independent pin (frozen validato
         await rejects(`${field}/${kind}`, () => stagingBuilders[kind](receipt), /^attestation-(receipt|statement)$/u);
       } else {
         const fixture = await stagingBuilders[kind](receipt, kind === "reconciliation" ? snapshotFor(receipt) : undefined);
+        assert.ok(fixture.bytes.byteLength > 0, `${field}/${kind}: a signed envelope was actually produced for the pin layer to refuse`);
         await rejects(`${field}/${kind}`, () => verifyStaging(fixture.bytes, fixture.expectations), "result-contract");
       }
+      executed[layer]++;
     }
   }
+  const expectedPerLayer = (layer: "R06" | "PIN") => cases.filter((entry) => entry[2] === layer).length * kinds.length;
+  assert.equal(executed.PIN, expectedPerLayer("PIN"), "every PIN case ran for every kind");
+  assert.equal(executed.R06, expectedPerLayer("R06"), "every R06 case ran for every kind");
+  assert.ok(executed.PIN >= 12, `at least twelve signed Gate 7 pin cases must execute (ran ${executed.PIN}); the loop can never silently run zero`);
+  assert.equal(executed.R06 + executed.PIN, cases.length * kinds.length);
 });
 
 test("Staging: a later mutation of the imported RECEIPT_FIELDS array cannot weaken the Gate 7 pins", async () => {
@@ -885,50 +901,19 @@ test("a verified statement cannot be reused with another command, nor a command 
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Inertness
+// Activation scope (R06 Slice 2C)
 // ---------------------------------------------------------------------------------------------------------------------
-async function sourceFiles(directory: URL, accept: (name: string) => boolean): Promise<URL[]> {
-  const out: URL[] = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (entry.name === "node_modules" || entry.name === ".next" || entry.name === ".git") continue;
-    const child = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, directory);
-    if (entry.isDirectory()) out.push(...await sourceFiles(child, accept));
-    else if (accept(entry.name)) out.push(child);
-  }
-  return out;
-}
-
-test("2B is inert: no active caller imports the composer, and the active result flows are unchanged", async () => {
+test("2C: the composer module is consumed only through the reviewed reader (see tests/authority-activation-guards.test.ts)", async () => {
   const root = new URL("../", import.meta.url);
   const MODULE = /authority-result-verifier/u;
-  const activeRoots = ["scripts/", "workers/", "operator/", "deployment/", "src/", "smoke/"];
-  let scanned = 0;
-  for (const directory of activeRoots) {
-    for (const file of await sourceFiles(new URL(directory, root), (name) => /\.(?:ts|tsx|js|mjs|json|jsonc)$/u.test(name))) {
-      if (file.pathname.endsWith("/operator/authority-result-verifier.ts")) continue;
-      scanned += 1;
-      assert.equal(MODULE.test(await readFile(file, "utf8")), false, `${file.pathname} must not reference the 2B composer`);
-    }
-  }
-  assert.ok(scanned > 40, `scanned ${scanned} active files`);
-  // The named active surfaces specifically (they are also covered by the scan above).
-  for (const path of ["scripts/authority-submit.ts", "scripts/authority-staging-submit.ts", "workers/lifecycle-observer.ts", "workers/staging-lifecycle-observer.ts",
-    "workers/lifecycle-mailbox/index.ts", "workers/lifecycle-mailbox/processor.ts", "workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/staging-index.ts",
-    "workers/lifecycle-mailbox/staging-processor.ts", "workers/lifecycle-mailbox/staging-dispatch-guard.ts", "operator/r2-transport.ts", "operator/lifecycle-observation.ts"]) {
+  // Relays, guards, observers, executors and the R2 writer must not reach the composers: they never decide acceptance.
+  for (const path of ["workers/lifecycle-observer.ts", "workers/staging-lifecycle-observer.ts", "workers/lifecycle-mailbox/index.ts", "workers/lifecycle-mailbox/processor.ts",
+    "workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/staging-index.ts", "workers/lifecycle-mailbox/staging-processor.ts",
+    "workers/lifecycle-mailbox/staging-dispatch-guard.ts", "workers/operator-lifecycle-executor.ts", "workers/staging-operator-lifecycle-executor.ts",
+    "operator/r2-transport.ts", "operator/attested-relay.ts", "operator/lifecycle-submitter.ts"]) {
     const text = await readFile(new URL(path, root), "utf8");
     assert.equal(MODULE.test(text), false, path);
     assert.equal(/composeProductionAuthorityResult|composeStagingAuthorityResult|verifyProductionAuthorityResult|verifyStagingAuthorityResult/u.test(text), false, path);
-  }
-  // The R2 result flow still uses its existing verifiers, once each.
-  const production = await readFile(new URL("scripts/authority-submit.ts", root), "utf8");
-  const staging = await readFile(new URL("scripts/authority-staging-submit.ts", root), "utf8");
-  assert.equal(production.match(/verifyProductionLifecycleResult\(/gu)?.length, 1);
-  assert.equal(staging.match(/verifyLifecycleResult\(/gu)?.length, 1);
-  // Only focused tests may use the composer.
-  for (const file of await sourceFiles(new URL("tests/", root), (name) => name.endsWith(".ts"))) {
-    if (file.pathname.endsWith("/tests/authority-result-verifier.test.ts")) continue;
-    // Mentioning the path in an allowlist (the Slice 2A protocol-wiring guard) is not use; importing it is.
-    assert.equal(/(?:from|import\()\s*"[^"]*authority-result-verifier"/u.test(await readFile(file, "utf8")), false, `${file.pathname} must not import the 2B composer`);
   }
   // The composer itself imports no active transport, mailbox, observer, guard, R2 or CLI module.
   const own = await readFile(new URL("operator/authority-result-verifier.ts", root), "utf8");

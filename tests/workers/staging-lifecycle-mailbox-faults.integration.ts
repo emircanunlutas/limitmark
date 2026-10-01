@@ -21,7 +21,9 @@ import { ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID } from "../../wo
 import { AUTHORITY_OPERATOR_COMMAND_VERSION, commandDigest, signAuthorityInitializationCommand,
   type AuthorityInitializationCommand } from "../../workers/admission-service/operator-command";
 import { processStagingInitializationSlot, processStagingSettlement, type StagingMailboxEnvironment } from "../../workers/lifecycle-mailbox/staging-processor";
-import { verifyLifecycleResult } from "../../operator/lifecycle-result";
+import { verifySettlementResult } from "../../operator/lifecycle-result";
+import { verifyAuthoritySignedStatement } from "../../src/lib/authority-result-trust";
+import { rfcSignerBindings, rfcTrustManifest } from "../support/authority-attestation-test-signers";
 
 // Inherited provider variables are dropped before anything else runs.
 for (const name of Object.keys(process.env)) if (/^(CLOUDFLARE_|CF_)/iu.test(name)) delete process.env[name];
@@ -73,6 +75,7 @@ async function start(publicKey: string, state: string, faults: Faults = {}): Pro
   assert.ok(resolve(persistence).startsWith(resolve(runtimeRoot) + sep), "persistence stays under the isolated test root");
   const date = "2026-09-13";
   const admissionBindings = {
+    ...await rfcSignerBindings("staging"), // explicit TEST-ONLY signer configuration (RFC vectors) under the runtime's binding names
     AUTHORITY_OPERATOR_PUBLIC_KEY: publicKey,
     ADMISSION_CURRENT_RPC_KEY: encodeBase64url(new Uint8Array(32).fill(7)),
     ADMISSION_CURRENT_RELEASE_ID: "synthetic-current", ADMISSION_CURRENT_KEY_ID: "synthetic-key",
@@ -145,8 +148,23 @@ async function readResult(mf: Miniflare, key: string): Promise<Uint8Array | null
   const object = await (await mf.getR2Bucket("RESULT_BUCKET", "mailbox")).get(key);
   return object ? new Uint8Array(await object.arrayBuffer()) : null;
 }
-const verify = (bytes: Uint8Array, kind: "lifecycle" | "reconciliation" | "settlement", expected: { digest: string; nonce?: string }) =>
-  verifyLifecycleResult(bytes, kind, expected, Date.now(), "staging", STAGING_ADMISSION_AUTHORITY_ID);
+/** Classifies a stored object the way the reader does, minus the Gate 7 pins (these digests are synthetic): a genuine Authority-signed staging
+ * statement, or an explicit unsigned diagnostic. Anything else throws. */
+async function classify(bytes: Uint8Array, kind: "lifecycle" | "reconciliation", expected: { digest: string; nonce?: string }) {
+  try {
+    const verified = await verifyAuthoritySignedStatement(bytes, { kind, environment: "staging", authorityId: STAGING_ADMISSION_AUTHORITY_ID,
+      policyEpoch: ADMISSION_POLICY_EPOCH, digest: expected.digest, ...(kind === "reconciliation" ? { nonce: expected.nonce as string } : {}) } as never,
+      await rfcTrustManifest(), Date.now());
+    const statement = verified.statement;
+    if (statement.kind === "lifecycle") return { status: "SIGNED_APPLIED", observation: undefined as string | undefined, raw: { status: "APPLIED", receipt: statement.receipt } };
+    if (statement.status === "EXACT_RECEIPT") return { status: "SIGNED_EXACT_RECEIPT", observation: undefined, raw: { status: statement.status, receipt: statement.receipt } };
+    return { status: "VERIFIED_NON_POSITIVE", observation: statement.status as string, raw: { status: statement.status, receipt: null } };
+  } catch {
+    const diagnostic = JSON.parse(new TextDecoder().decode(bytes)) as { status: string; receipt?: null };
+    assert.deepEqual(Object.keys(diagnostic).filter((key) => !["version", "digest", "nonce", "status", "reason"].includes(key)), [], "an unsigned diagnostic carries no Authority semantics");
+    return { status: "UNCONFIRMED", observation: diagnostic.status, raw: { status: diagnostic.status, receipt: null } };
+  }
+}
 async function put(mf: Miniflare, key: string, value: object): Promise<void> {
   await (await mf.getR2Bucket("REQUEST_BUCKET", "mailbox")).put(key, JSON.stringify(value));
 }
@@ -155,8 +173,8 @@ async function reconcile(mf: Miniflare, digest: string, nonce: string) {
   await scheduled(mf, "observer");
   const bytes = await readResult(mf, `reconciliation/${nonce}.json`);
   assert.ok(bytes, "observer published a reconciliation result");
-  return { raw: JSON.parse(new TextDecoder().decode(bytes)) as { status: string; receipt: { sequence: number } | null },
-    verified: verify(bytes, "reconciliation", { digest, nonce }) };
+  const verified = await classify(bytes, "reconciliation", { digest, nonce });
+  return { raw: verified.raw as { status: string; receipt: { sequence: number } | null }, verified };
 }
 async function settle(mf: Miniflare, digest: string, nonce: string): Promise<boolean> {
   await put(mf, "settle.json", { version: 1, digest, nonce });
@@ -198,12 +216,16 @@ async function main(): Promise<void> {
       "an ambiguous dispatch leaves the consumed claim CLAIMED (never reset)");
     const lostAck = await readResult(mf, `lifecycle/${first.digest}.json`);
     assert.ok(lostAck);
-    assert.equal(verify(lostAck, "lifecycle", { digest: first.digest }).status, "UNCONFIRMED", "lost ack stays ambiguous at transport");
+    // Concurrent ticks race: either the unsigned UNCONFIRMED diagnostic of the tick that lost its ack, or (if a sibling tick's signed probe ran
+    // after the commit) already the Authority's signed APPLIED. It is never REFUSED and never an unsigned positive.
+    assert.ok(["UNCONFIRMED", "SIGNED_APPLIED"].includes((await classify(lostAck, "lifecycle", { digest: first.digest })).status), "lost ack is ambiguous at transport");
 
-    // --- 9. Exact replay: resolved by the read path, never a second dispatch.
+    // --- 9. Exact replay: resolved by the Authority's signed read path, never a second dispatch.
     await scheduled(mf, "mailbox");
     await scheduled(mf, "mailbox");
     assert.deepEqual(await counts(mf), [1, 1], "exact replay does not redispatch");
+    assert.equal((await classify((await readResult(mf, `lifecycle/${first.digest}.json`))!, "lifecycle", { digest: first.digest })).status, "SIGNED_APPLIED",
+      "the replay obtained Authority-signed evidence for the committed digest without a second mutation");
 
     // A different command while the first is unresolved is blocked by the latch.
     await put(mf, "initialize.json", second.artifact);
@@ -221,11 +243,11 @@ async function main(): Promise<void> {
     const beforeReads = await authorityTables(mf);
     const exact = await reconcile(mf, first.digest, "1".repeat(32));
     assert.equal(exact.raw.status, "EXACT_RECEIPT");
-    assert.equal(exact.verified.status, "SUCCESS", "exact receipt proves commit despite the lost ack");
+    assert.equal(exact.verified.status, "SIGNED_EXACT_RECEIPT", "a signed exact receipt proves commit despite the lost ack");
     assert.equal(exact.raw.receipt?.sequence, 1);
     const synthetic = await reconcile(mf, "d".repeat(64), "2".repeat(32));
     assert.equal(synthetic.raw.status, "NOT_FOUND");
-    assert.deepEqual([synthetic.verified.status, (synthetic.verified as { observation?: string }).observation], ["UNCONFIRMED", "NOT_FOUND"]);
+    assert.deepEqual([synthetic.verified.status, synthetic.verified.observation], ["VERIFIED_NON_POSITIVE", "NOT_FOUND"]);
     assert.deepEqual(await authorityTables(mf), beforeReads, "reconciliation wrote no authority state");
     assert.deepEqual(await counts(mf), [1, 1], "reconciliation dispatched nothing");
 
@@ -273,7 +295,7 @@ async function main(): Promise<void> {
     assert.deepEqual(await authoritySql(mf, "SELECT * FROM authority_meta"), metaBefore, "authority metadata unchanged");
     assert.deepEqual(await authoritySql(mf, "SELECT digest,sequence FROM lifecycle_receipts"), receiptsBefore,
       "authority still holds exactly the original receipt, sequence 1");
-    assert.equal((await reconcile(mf, first.digest, "7".repeat(32))).verified.status, "SUCCESS");
+    assert.equal((await reconcile(mf, first.digest, "7".repeat(32))).verified.status, "SIGNED_EXACT_RECEIPT");
     await mf.dispose(); mf = undefined;
 
     // --- 2/3. Consumed-before-call: the executor is never reached.
@@ -288,7 +310,7 @@ async function main(): Promise<void> {
       "authority never initialized");
     const precall = await readResult(mf, `lifecycle/${first.digest}.json`);
     assert.ok(precall);
-    assert.equal(verify(precall, "lifecycle", { digest: first.digest }).status, "UNCONFIRMED");
+    assert.equal((await classify(precall, "lifecycle", { digest: first.digest })).status, "UNCONFIRMED");
     assert.equal(await settle(mf, first.digest, "8".repeat(32)), false, "no receipt: cannot settle");
     await mf.dispose(); mf = undefined;
     mf = await start(publicKey, "precall-state");
@@ -327,7 +349,7 @@ async function main(): Promise<void> {
       assert.deepEqual(await counts(mf), [1, 1], `${fault}: repeated polling does not redispatch`);
       const tablesBefore = await authorityTables(mf);
       const recovered = await reconcile(mf, first.digest, publicationNonces[fault]);
-      assert.equal(recovered.verified.status, "SUCCESS", `${fault}: authoritative truth recovered through read-only reconciliation`);
+      assert.equal(recovered.verified.status, "SIGNED_EXACT_RECEIPT", `${fault}: authoritative truth recovered through signed read-only reconciliation`);
       assert.deepEqual(await authorityTables(mf), tablesBefore, `${fault}: reconciliation wrote no authority state`);
       assert.deepEqual(await counts(mf), [1, 1]);
       if (fault === "5xx") {
@@ -343,7 +365,7 @@ async function main(): Promise<void> {
         await scheduled(mf, "mailbox");
         const settlement = await readResult(mf, `settlement/${nonce}.json`);
         assert.ok(settlement);
-        assert.equal(verify(settlement, "settlement", { digest: first.digest, nonce }).status, "SETTLED",
+        assert.equal(verifySettlementResult(settlement, { digest: first.digest, nonce }, Date.now(), "staging", STAGING_ADMISSION_AUTHORITY_ID).status, "SETTLED",
           "repeated settlement after restart recovers the durable positive status");
         assert.equal((await guardSql(mf, "SELECT * FROM claims")).length, 1);
         assert.deepEqual(await counts(mf), [0, 0], "restart and settlement recovery do not redispatch");
@@ -365,7 +387,8 @@ async function main(): Promise<void> {
       const nonce = state === "unavailable-state" ? "a1".repeat(16) : "b2".repeat(16);
       const observation = await reconcile(mf, first.digest, nonce);
       assert.equal(observation.raw.status, observed);
-      assert.deepEqual([observation.verified.status, (observation.verified as { observation?: string }).observation], ["UNCONFIRMED", observed],
+      // UNAVAILABLE: no signed evidence, an explicit unsigned diagnostic. HISTORY_INCOMPLETE: the Authority signed that observation.
+      assert.deepEqual([observation.verified.status, observation.verified.observation], [observed === "UNAVAILABLE" ? "UNCONFIRMED" : "VERIFIED_NON_POSITIVE", observed],
         `${observed} never proves refusal or rollback`);
       await put(mf, "initialize.json", first.artifact);
       await scheduled(mf, "mailbox");

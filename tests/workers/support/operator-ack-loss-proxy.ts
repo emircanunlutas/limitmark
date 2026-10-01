@@ -3,8 +3,8 @@ import type { AuthorityInitializationCommand, AuthorityReleaseRotationCommand } 
 
 type Environment = {
   ADMISSION_SERVICE: {
-    initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string): Promise<unknown>;
-    rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string): Promise<unknown>;
+    initializeAuthorityFromOperatorAttested(command: AuthorityInitializationCommand, signature: string): Promise<unknown>;
+    rotateAuthorityReleaseFromOperatorAttested(command: AuthorityReleaseRotationCommand, signature: string): Promise<unknown>;
   };
 };
 
@@ -17,9 +17,9 @@ export class OperatorAckLossProxy extends WorkerEntrypoint<Environment> {
 
   getDispatchCount(): number { return dispatchCount; }
 
-  async initializeAuthorityFromOperator(command: AuthorityInitializationCommand, signature: string) {
+  async initializeAuthorityFromOperatorAttested(command: AuthorityInitializationCommand, signature: string) {
     dispatchCount += 1;
-    const result = await this.env.ADMISSION_SERVICE.initializeAuthorityFromOperator(command, signature);
+    const result = await this.env.ADMISSION_SERVICE.initializeAuthorityFromOperatorAttested(command, signature);
     if (dropNextAcknowledgement) {
       dropNextAcknowledgement = false;
       throw new Error("test-acknowledgement-lost-after-commit");
@@ -27,9 +27,9 @@ export class OperatorAckLossProxy extends WorkerEntrypoint<Environment> {
     return result;
   }
 
-  async rotateAuthorityReleaseFromOperator(command: AuthorityReleaseRotationCommand, signature: string) {
+  async rotateAuthorityReleaseFromOperatorAttested(command: AuthorityReleaseRotationCommand, signature: string) {
     dispatchCount += 1;
-    return this.env.ADMISSION_SERVICE.rotateAuthorityReleaseFromOperator(command, signature);
+    return this.env.ADMISSION_SERVICE.rotateAuthorityReleaseFromOperatorAttested(command, signature);
   }
 }
 

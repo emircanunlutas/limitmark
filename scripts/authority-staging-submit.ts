@@ -4,9 +4,10 @@ import { commandDigest, verifyOperatorCommand } from "../workers/admission-servi
 import { oneR2Request } from "../operator/r2-transport";
 import { boundedFile, loadStagingLifecycleTransportManifest, readStagingR2Credential } from "../operator/staging-credential-io";
 import { parseControl } from "../workers/lifecycle-mailbox/wire";
-import { verifyLifecycleResult } from "../operator/lifecycle-result";
+import { verifySettlementResult } from "../operator/lifecycle-result";
+import { readStagingAuthorityResult } from "../operator/authority-result-reader";
+import { loadAuthorityResultTrustManifest } from "../operator/authority-trust-loader";
 import { refuseClosedStagingInitialization } from "../operator/staging-initialization-lock";
-import { STAGING_GATE7_CONTINUITY, STAGING_GATE7_KEY_FINGERPRINT } from "../operator/staging-gate7-continuity";
 
 // Gate 2 staging capability. Structurally mirrors scripts/authority-submit.ts
 // (Production) but is a separate, explicitly self-identifying tool: its only
@@ -17,10 +18,11 @@ import { STAGING_GATE7_CONTINUITY, STAGING_GATE7_KEY_FINGERPRINT } from "../oper
 // file exposes, so it fails at argument dispatch, before any transport call.
 // Since Gate 8 Phase 0 the `initialize` action itself is permanently refused
 // (operator/staging-initialization-lock.ts); submitInitialize is retained as
-// the historical Gate 7 implementation and is never reached. Since Gate 8
-// Phase 1A, read-result pins every receipt to the exact full Gate 7 operator
-// public-key fingerprint (operator/staging-gate7-continuity.ts); result objects
-// are untrusted transport data and settlements carry no receipt.
+// the historical Gate 7 implementation and is never reached. Since R06 Slice 2C,
+// read-result accepts a positive only from Authority-signed staging evidence that
+// also satisfies the Gate 7 canonical pins (receipt, exact operator fingerprint,
+// release row) inside operator/authority-result-verifier.ts; result objects are
+// untrusted transport data and settlements carry no receipt.
 
 const digestPattern = /^[a-f0-9]{64}$/u;
 const noncePattern = /^[a-f0-9]{32}$/u;
@@ -47,9 +49,11 @@ function pathArg(args: Record<string, string | true>, key: string): string {
 }
 function staging(args: Record<string, string | true>): void { if (args["--confirm-staging"] !== true) fail(); }
 function print(value: object): void { process.stdout.write(`${JSON.stringify(value)}\n`); }
-function terminal(status: "SUCCESS" | "ALREADY_APPLIED" | "REFUSED" | "UNAVAILABLE" | "UNCONFIRMED", value: object): void {
+type Terminal = "POSITIVE" | "VERIFIED_NON_POSITIVE" | "REFUSED" | "UNAVAILABLE" | "UNCONFIRMED";
+/** Only POSITIVE exits 0. A signed-but-not-success observation and an unconfirmed one both exit 3; local input failures exit 2. */
+function terminal(status: Terminal, value: object): void {
   print({ status, environment: "staging", ...value });
-  if (status !== "SUCCESS" && status !== "ALREADY_APPLIED") process.exitCode = status === "UNCONFIRMED" ? 3 : 2;
+  if (status !== "POSITIVE") process.exitCode = status === "UNCONFIRMED" || status === "VERIFIED_NON_POSITIVE" ? 3 : 2;
 }
 async function submitInitialize(): Promise<void> {
   const args = argsFor(["--command", "--request-credentials", "--confirm-staging", "--inspect"]);
@@ -98,24 +102,26 @@ async function readResult(): Promise<void> {
       kind === "lifecycle" && (typeof digest !== "string" || !digestPattern.test(digest) || nonce !== undefined) ||
       kind !== "lifecycle" && (typeof nonce !== "string" || !noncePattern.test(nonce) || typeof digest !== "string" || !digestPattern.test(digest))) fail();
   const target = await loadStagingLifecycleTransportManifest();
+  const trust = kind === "settlement" ? undefined : await loadAuthorityResultTrustManifest();
   const token = await readStagingR2Credential(pathArg(args, "--result-credentials"));
   const key = kind === "lifecycle" ? `lifecycle/${digest}.json` : `${kind}/${nonce}.json`;
   let result;
   try { result = await oneR2Request("GET", { accountId: target.accountId, bucket: target.resultBucket }, token, key, undefined, 8_192); }
   catch { terminal("UNCONFIRMED", { kind }); return; }
   if (result.statusCode !== 200) { terminal("UNCONFIRMED", { kind }); return; }
-  let verified: ReturnType<typeof verifyLifecycleResult>;
-  try {
-    verified = verifyLifecycleResult(result.body, kind as "lifecycle" | "reconciliation" | "settlement",
-      kind === "lifecycle" ? { digest: digest as string } : { digest: digest as string, nonce: nonce as string }, Date.now(),
-      "staging", "staging-public-inquiries-v1", STAGING_GATE7_KEY_FINGERPRINT, "initialize", STAGING_GATE7_CONTINUITY.receipt);
-  } catch {
-    terminal("UNCONFIRMED", { kind });
+  if (kind === "settlement") {
+    let settlement: ReturnType<typeof verifySettlementResult>;
+    try { settlement = verifySettlementResult(result.body, { digest: digest as string, nonce: nonce as string }, Date.now(), "staging", "staging-public-inquiries-v1"); }
+    catch { terminal("UNCONFIRMED", { kind }); return; }
+    if (settlement.status === "SETTLED") print({ ...settlement, environment: "staging" });
+    else terminal("UNCONFIRMED", settlement);
     return;
   }
-  if (verified.status === "SETTLED") print({ ...verified, environment: "staging" });
-  else if (verified.status === "SUCCESS" || verified.status === "ALREADY_APPLIED") terminal(verified.status, verified);
-  else terminal("UNCONFIRMED", verified);
+  // The stored object is untrusted: only a genuine Authority-signed staging envelope that also satisfies the Gate 7 pins can be positive.
+  const outcome = await readStagingAuthorityResult({ kind: kind as "lifecycle" | "reconciliation", digest: digest as string,
+    ...(kind === "reconciliation" ? { nonce: nonce as string } : {}), bytes: result.body, trustManifest: trust!, nowMs: Date.now() });
+  // `terminal` stamps the environment itself.
+  terminal(outcome.status, Object.fromEntries(Object.entries(outcome).filter(([key]) => key !== "status" && key !== "environment")));
 }
 async function main(): Promise<void> {
   const action = process.argv[2];
