@@ -1,0 +1,37 @@
+{
+  "manifestVersion": 1,
+  "attestationVersion": 2,
+  "trustEpoch": 1,
+  "environments": [
+    {
+      "environment": "production",
+      "authorityId": "production-public-inquiries-v1",
+      "policyEpoch": "phase5c-i1-epoch-1",
+      "currentKeyFingerprint": "__REQUIRED_PRODUCTION_WRITER_KEY_FINGERPRINT__",
+      "keys": [
+        {
+          "keyFingerprint": "__REQUIRED_PRODUCTION_WRITER_KEY_FINGERPRINT__",
+          "publicKey": "__REQUIRED_PRODUCTION_WRITER_ED25519_PUBLIC_KEY__",
+          "status": "active",
+          "notBeforeMs": "__REQUIRED_PRODUCTION_NOT_BEFORE_MS__",
+          "notAfterMs": null
+        }
+      ]
+    },
+    {
+      "environment": "staging",
+      "authorityId": "staging-public-inquiries-v1",
+      "policyEpoch": "phase5c-i1-epoch-1",
+      "currentKeyFingerprint": "__REQUIRED_STAGING_WRITER_KEY_FINGERPRINT__",
+      "keys": [
+        {
+          "keyFingerprint": "__REQUIRED_STAGING_WRITER_KEY_FINGERPRINT__",
+          "publicKey": "__REQUIRED_STAGING_WRITER_ED25519_PUBLIC_KEY__",
+          "status": "active",
+          "notBeforeMs": "__REQUIRED_STAGING_NOT_BEFORE_MS__",
+          "notAfterMs": null
+        }
+      ]
+    }
+  ]
+}

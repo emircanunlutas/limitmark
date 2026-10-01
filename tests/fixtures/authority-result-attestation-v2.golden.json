@@ -1,0 +1,708 @@
+{
+  "fixtureVersion": 1,
+  "protocol": "limitmark-authority-result-attestation",
+  "attestationVersion": 2,
+  "trustEpoch": 1,
+  "warning": "TEST KEY — NEVER PROVISION. Every private key in this file is a public RFC 8032 test vector. Never provision, reuse or trust these keys.",
+  "regenerate": "Frozen and reviewed. Tests only verify this file; nothing rewrites it.",
+  "signingDomain": {
+    "text": "limitmark:authority-result-attestation:ed25519:v2 followed by one NUL byte",
+    "hex": "6c696d69746d61726b3a617574686f726974792d726573756c742d6174746573746174696f6e3a656432353531393a763200"
+  },
+  "baseTimeMs": 1790000000000,
+  "keys": {
+    "production": {
+      "warning": "TEST KEY — NEVER PROVISION",
+      "source": "RFC 8032 section 7.1 TEST 1",
+      "seedHex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "privateKeyPkcs8": "MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v_VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g",
+      "publicKeyHex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "publicKey": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "fingerprint": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+    },
+    "staging": {
+      "warning": "TEST KEY — NEVER PROVISION",
+      "source": "RFC 8032 section 7.1 TEST 2",
+      "seedHex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "privateKeyPkcs8": "MC4CAQAwBQYDK2VwBCIEIEzNCJso_5banbbDRuwRTg9bijGfNaumJNqM9u1PuKb7",
+      "publicKeyHex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "publicKey": "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw",
+      "fingerprint": "39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f"
+    }
+  },
+  "vectors": [
+    {
+      "name": "production-lifecycle-initialize",
+      "keyRole": "production",
+      "kind": "lifecycle",
+      "input": {
+        "trustEpoch": 1,
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "945dff149ac9bff0682a62f0e2516cb43e0bc83bf44f50a583cd7177dbe234c8",
+        "observedAtMs": 1790000001000,
+        "writerKeyFingerprint": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9",
+        "receipt": {
+          "digest": "945dff149ac9bff0682a62f0e2516cb43e0bc83bf44f50a583cd7177dbe234c8",
+          "version": 1,
+          "environment": "production",
+          "authorityId": "production-public-inquiries-v1",
+          "policyEpoch": "phase5c-i1-epoch-1",
+          "operatorKeyFingerprint": "3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a",
+          "operation": "initialize",
+          "sequence": 1,
+          "appliedMs": 1789999900000,
+          "currentReleaseId": "release-2026-01",
+          "nextReleaseId": "release-2026-01",
+          "nextKeyId": "key_2026_01",
+          "activatesMs": 1789999900000,
+          "retiresMs": null
+        }
+      },
+      "expectations": {
+        "kind": "lifecycle",
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "945dff149ac9bff0682a62f0e2516cb43e0bc83bf44f50a583cd7177dbe234c8"
+      },
+      "verifyAtMs": 1790000002000,
+      "tuple": [
+        2,
+        1,
+        "production",
+        "production-public-inquiries-v1",
+        "phase5c-i1-epoch-1",
+        "lifecycle",
+        "945dff149ac9bff0682a62f0e2516cb43e0bc83bf44f50a583cd7177dbe234c8",
+        "APPLIED",
+        [
+          "945dff149ac9bff0682a62f0e2516cb43e0bc83bf44f50a583cd7177dbe234c8",
+          1,
+          "initialize",
+          "production",
+          "production-public-inquiries-v1",
+          "phase5c-i1-epoch-1",
+          "3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a",
+          1,
+          1789999900000,
+          "release-2026-01",
+          "release-2026-01",
+          "key_2026_01",
+          1789999900000,
+          null
+        ],
+        1790000001000,
+        "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+      ],
+      "tupleJson": "[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"lifecycle\",\"945dff149ac9bff0682a62f0e2516cb43e0bc83bf44f50a583cd7177dbe234c8\",\"APPLIED\",[\"945dff149ac9bff0682a62f0e2516cb43e0bc83bf44f50a583cd7177dbe234c8\",1,\"initialize\",\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a\",1,1789999900000,\"release-2026-01\",\"release-2026-01\",\"key_2026_01\",1789999900000,null],1790000001000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"]",
+      "signingBytesHex": "6c696d69746d61726b3a617574686f726974792d726573756c742d6174746573746174696f6e3a656432353531393a7632005b322c312c2270726f64756374696f6e222c2270726f64756374696f6e2d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c226c6966656379636c65222c2239343564666631343961633962666630363832613632663065323531366362343365306263383362663434663530613538336364373137376462653233346338222c224150504c494544222c5b2239343564666631343961633962666630363832613632663065323531366362343365306263383362663434663530613538336364373137376462653233346338222c312c22696e697469616c697a65222c2270726f64756374696f6e222c2270726f64756374696f6e2d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c2233383236626261363662393131613733303137636635623137626235373339376435333765333639353337326665333738616438643336373462376131653961222c312c313738393939393930303030302c2272656c656173652d323032362d3031222c2272656c656173652d323032362d3031222c226b65795f323032365f3031222c313738393939393930303030302c6e756c6c5d2c313739303030303030313030302c2232316665333164666131353461323631363236626638353430343666643232373162376265643462366162653435616135383837376566343766393732316239225d",
+      "signingBytesSha256": "bb3bb02155435288ec182e3399a05bcdea42291e324c86318307f770a4115e90",
+      "signature": "uViu6rlE4so4c8D5hbk8DMbdj8F95nVC7UXNx-VIGw8gs2QFqMgrM7fZxMF28UA1d_w9GxRsSDq_cXUCZnOyCw",
+      "envelope": "{\"statement\":[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"lifecycle\",\"945dff149ac9bff0682a62f0e2516cb43e0bc83bf44f50a583cd7177dbe234c8\",\"APPLIED\",[\"945dff149ac9bff0682a62f0e2516cb43e0bc83bf44f50a583cd7177dbe234c8\",1,\"initialize\",\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a\",1,1789999900000,\"release-2026-01\",\"release-2026-01\",\"key_2026_01\",1789999900000,null],1790000001000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"],\"signature\":\"uViu6rlE4so4c8D5hbk8DMbdj8F95nVC7UXNx-VIGw8gs2QFqMgrM7fZxMF28UA1d_w9GxRsSDq_cXUCZnOyCw\"}"
+    },
+    {
+      "name": "production-lifecycle-rotate",
+      "keyRole": "production",
+      "kind": "lifecycle",
+      "input": {
+        "trustEpoch": 1,
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "60e801291dbfd8ecc5a33ef9e892eb1a4c445c3ab90e253da963fb43ac013038",
+        "observedAtMs": 1790000002000,
+        "writerKeyFingerprint": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9",
+        "receipt": {
+          "digest": "60e801291dbfd8ecc5a33ef9e892eb1a4c445c3ab90e253da963fb43ac013038",
+          "version": 1,
+          "environment": "production",
+          "authorityId": "production-public-inquiries-v1",
+          "policyEpoch": "phase5c-i1-epoch-1",
+          "operatorKeyFingerprint": "3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a",
+          "operation": "rotate-release",
+          "sequence": 2,
+          "appliedMs": 1789999940000,
+          "currentReleaseId": "release-2026-01",
+          "nextReleaseId": "release-2026-02",
+          "nextKeyId": "key_2026_02",
+          "activatesMs": 1789999950000,
+          "retiresMs": 1790000190000
+        }
+      },
+      "expectations": {
+        "kind": "lifecycle",
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "60e801291dbfd8ecc5a33ef9e892eb1a4c445c3ab90e253da963fb43ac013038"
+      },
+      "verifyAtMs": 1790000003000,
+      "tuple": [
+        2,
+        1,
+        "production",
+        "production-public-inquiries-v1",
+        "phase5c-i1-epoch-1",
+        "lifecycle",
+        "60e801291dbfd8ecc5a33ef9e892eb1a4c445c3ab90e253da963fb43ac013038",
+        "APPLIED",
+        [
+          "60e801291dbfd8ecc5a33ef9e892eb1a4c445c3ab90e253da963fb43ac013038",
+          1,
+          "rotate-release",
+          "production",
+          "production-public-inquiries-v1",
+          "phase5c-i1-epoch-1",
+          "3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a",
+          2,
+          1789999940000,
+          "release-2026-01",
+          "release-2026-02",
+          "key_2026_02",
+          1789999950000,
+          1790000190000
+        ],
+        1790000002000,
+        "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+      ],
+      "tupleJson": "[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"lifecycle\",\"60e801291dbfd8ecc5a33ef9e892eb1a4c445c3ab90e253da963fb43ac013038\",\"APPLIED\",[\"60e801291dbfd8ecc5a33ef9e892eb1a4c445c3ab90e253da963fb43ac013038\",1,\"rotate-release\",\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a\",2,1789999940000,\"release-2026-01\",\"release-2026-02\",\"key_2026_02\",1789999950000,1790000190000],1790000002000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"]",
+      "signingBytesHex": "6c696d69746d61726b3a617574686f726974792d726573756c742d6174746573746174696f6e3a656432353531393a7632005b322c312c2270726f64756374696f6e222c2270726f64756374696f6e2d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c226c6966656379636c65222c2236306538303132393164626664386563633561333365663965383932656231613463343435633361623930653235336461393633666234336163303133303338222c224150504c494544222c5b2236306538303132393164626664386563633561333365663965383932656231613463343435633361623930653235336461393633666234336163303133303338222c312c22726f746174652d72656c65617365222c2270726f64756374696f6e222c2270726f64756374696f6e2d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c2233383236626261363662393131613733303137636635623137626235373339376435333765333639353337326665333738616438643336373462376131653961222c322c313738393939393934303030302c2272656c656173652d323032362d3031222c2272656c656173652d323032362d3032222c226b65795f323032365f3032222c313738393939393935303030302c313739303030303139303030305d2c313739303030303030323030302c2232316665333164666131353461323631363236626638353430343666643232373162376265643462366162653435616135383837376566343766393732316239225d",
+      "signingBytesSha256": "3a8d3c56300d698cf4236bc716a88c9f21d3a4199f7ffa911241a0948648e556",
+      "signature": "QiSvnsxJaZtkrWNMtituU06NT8pnCnEGAO6s7SUa3ROfyNJ-YNW1yXQvkmcbIjgi-HWrBIletUrozu3E3h5rDA",
+      "envelope": "{\"statement\":[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"lifecycle\",\"60e801291dbfd8ecc5a33ef9e892eb1a4c445c3ab90e253da963fb43ac013038\",\"APPLIED\",[\"60e801291dbfd8ecc5a33ef9e892eb1a4c445c3ab90e253da963fb43ac013038\",1,\"rotate-release\",\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a\",2,1789999940000,\"release-2026-01\",\"release-2026-02\",\"key_2026_02\",1789999950000,1790000190000],1790000002000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"],\"signature\":\"QiSvnsxJaZtkrWNMtituU06NT8pnCnEGAO6s7SUa3ROfyNJ-YNW1yXQvkmcbIjgi-HWrBIletUrozu3E3h5rDA\"}"
+    },
+    {
+      "name": "staging-lifecycle-initialize",
+      "keyRole": "staging",
+      "kind": "lifecycle",
+      "input": {
+        "trustEpoch": 1,
+        "environment": "staging",
+        "authorityId": "staging-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "65aba7ed2de6a99b89e80e216f8d4f86a3258c0b1178dd674d919d44eadc9b93",
+        "observedAtMs": 1790000003000,
+        "writerKeyFingerprint": "39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f",
+        "receipt": {
+          "digest": "65aba7ed2de6a99b89e80e216f8d4f86a3258c0b1178dd674d919d44eadc9b93",
+          "version": 1,
+          "environment": "staging",
+          "authorityId": "staging-public-inquiries-v1",
+          "policyEpoch": "phase5c-i1-epoch-1",
+          "operatorKeyFingerprint": "3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a",
+          "operation": "initialize",
+          "sequence": 1,
+          "appliedMs": 1789999900000,
+          "currentReleaseId": "release-2026-01",
+          "nextReleaseId": "release-2026-01",
+          "nextKeyId": "key_2026_01",
+          "activatesMs": 1789999900000,
+          "retiresMs": null
+        }
+      },
+      "expectations": {
+        "kind": "lifecycle",
+        "environment": "staging",
+        "authorityId": "staging-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "65aba7ed2de6a99b89e80e216f8d4f86a3258c0b1178dd674d919d44eadc9b93"
+      },
+      "verifyAtMs": 1790000004000,
+      "tuple": [
+        2,
+        1,
+        "staging",
+        "staging-public-inquiries-v1",
+        "phase5c-i1-epoch-1",
+        "lifecycle",
+        "65aba7ed2de6a99b89e80e216f8d4f86a3258c0b1178dd674d919d44eadc9b93",
+        "APPLIED",
+        [
+          "65aba7ed2de6a99b89e80e216f8d4f86a3258c0b1178dd674d919d44eadc9b93",
+          1,
+          "initialize",
+          "staging",
+          "staging-public-inquiries-v1",
+          "phase5c-i1-epoch-1",
+          "3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a",
+          1,
+          1789999900000,
+          "release-2026-01",
+          "release-2026-01",
+          "key_2026_01",
+          1789999900000,
+          null
+        ],
+        1790000003000,
+        "39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f"
+      ],
+      "tupleJson": "[2,1,\"staging\",\"staging-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"lifecycle\",\"65aba7ed2de6a99b89e80e216f8d4f86a3258c0b1178dd674d919d44eadc9b93\",\"APPLIED\",[\"65aba7ed2de6a99b89e80e216f8d4f86a3258c0b1178dd674d919d44eadc9b93\",1,\"initialize\",\"staging\",\"staging-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a\",1,1789999900000,\"release-2026-01\",\"release-2026-01\",\"key_2026_01\",1789999900000,null],1790000003000,\"39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f\"]",
+      "signingBytesHex": "6c696d69746d61726b3a617574686f726974792d726573756c742d6174746573746174696f6e3a656432353531393a7632005b322c312c2273746167696e67222c2273746167696e672d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c226c6966656379636c65222c2236356162613765643264653661393962383965383065323136663864346638366133323538633062313137386464363734643931396434346561646339623933222c224150504c494544222c5b2236356162613765643264653661393962383965383065323136663864346638366133323538633062313137386464363734643931396434346561646339623933222c312c22696e697469616c697a65222c2273746167696e67222c2273746167696e672d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c2233383236626261363662393131613733303137636635623137626235373339376435333765333639353337326665333738616438643336373462376131653961222c312c313738393939393930303030302c2272656c656173652d323032362d3031222c2272656c656173652d323032362d3031222c226b65795f323032365f3031222c313738393939393930303030302c6e756c6c5d2c313739303030303030333030302c2233396637313364306136343432353366303435323934323162396635316239623038393739643038323935393539633466333939306565363137663531333966225d",
+      "signingBytesSha256": "17fec313eee5fe5ec6eb637c20fe39c30581361872c9ba2635ec9acd1e196842",
+      "signature": "QIf6_wJQPxPQ5ILw90tdoha78IzRrnlKP8twB7dWw6mxO9ZP5Uw2swL7UF_3ykAkLubzeMr4dpmTFEpe7GVZDQ",
+      "envelope": "{\"statement\":[2,1,\"staging\",\"staging-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"lifecycle\",\"65aba7ed2de6a99b89e80e216f8d4f86a3258c0b1178dd674d919d44eadc9b93\",\"APPLIED\",[\"65aba7ed2de6a99b89e80e216f8d4f86a3258c0b1178dd674d919d44eadc9b93\",1,\"initialize\",\"staging\",\"staging-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a\",1,1789999900000,\"release-2026-01\",\"release-2026-01\",\"key_2026_01\",1789999900000,null],1790000003000,\"39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f\"],\"signature\":\"QIf6_wJQPxPQ5ILw90tdoha78IzRrnlKP8twB7dWw6mxO9ZP5Uw2swL7UF_3ykAkLubzeMr4dpmTFEpe7GVZDQ\"}"
+    },
+    {
+      "name": "production-reconciliation-exact-receipt",
+      "keyRole": "production",
+      "kind": "reconciliation",
+      "input": {
+        "trustEpoch": 1,
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "16d6dbbd421a97e6959b509eefdf94dbd76fa2b1a718820e5e9da56a789a1815",
+        "observedAtMs": 1790000004000,
+        "writerKeyFingerprint": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9",
+        "nonce": "f5429debab559ab33bd308824a4ac748",
+        "initialized": true,
+        "coverage": "COMPLETE",
+        "status": "EXACT_RECEIPT",
+        "receipt": {
+          "digest": "16d6dbbd421a97e6959b509eefdf94dbd76fa2b1a718820e5e9da56a789a1815",
+          "version": 1,
+          "environment": "production",
+          "authorityId": "production-public-inquiries-v1",
+          "policyEpoch": "phase5c-i1-epoch-1",
+          "operatorKeyFingerprint": "3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a",
+          "operation": "rotate-release",
+          "sequence": 2,
+          "appliedMs": 1789999940000,
+          "currentReleaseId": "release-2026-01",
+          "nextReleaseId": "release-2026-02",
+          "nextKeyId": "key_2026_02",
+          "activatesMs": 1789999950000,
+          "retiresMs": 1790000190000
+        },
+        "releases": [
+          {
+            "releaseId": "release-2026-01",
+            "keyId": "key_2026_01",
+            "activatedMs": 1789999900000,
+            "retiredMs": 1790000190000
+          },
+          {
+            "releaseId": "release-2026-02",
+            "keyId": "key_2026_02",
+            "activatedMs": 1789999950000,
+            "retiredMs": null
+          }
+        ]
+      },
+      "expectations": {
+        "kind": "reconciliation",
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "16d6dbbd421a97e6959b509eefdf94dbd76fa2b1a718820e5e9da56a789a1815",
+        "nonce": "f5429debab559ab33bd308824a4ac748"
+      },
+      "verifyAtMs": 1790000005000,
+      "tuple": [
+        2,
+        1,
+        "production",
+        "production-public-inquiries-v1",
+        "phase5c-i1-epoch-1",
+        "reconciliation",
+        "16d6dbbd421a97e6959b509eefdf94dbd76fa2b1a718820e5e9da56a789a1815",
+        "f5429debab559ab33bd308824a4ac748",
+        true,
+        "COMPLETE",
+        "EXACT_RECEIPT",
+        [
+          "16d6dbbd421a97e6959b509eefdf94dbd76fa2b1a718820e5e9da56a789a1815",
+          1,
+          "rotate-release",
+          "production",
+          "production-public-inquiries-v1",
+          "phase5c-i1-epoch-1",
+          "3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a",
+          2,
+          1789999940000,
+          "release-2026-01",
+          "release-2026-02",
+          "key_2026_02",
+          1789999950000,
+          1790000190000
+        ],
+        [
+          [
+            "release-2026-01",
+            "key_2026_01",
+            1789999900000,
+            1790000190000
+          ],
+          [
+            "release-2026-02",
+            "key_2026_02",
+            1789999950000,
+            null
+          ]
+        ],
+        1790000004000,
+        "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+      ],
+      "tupleJson": "[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"16d6dbbd421a97e6959b509eefdf94dbd76fa2b1a718820e5e9da56a789a1815\",\"f5429debab559ab33bd308824a4ac748\",true,\"COMPLETE\",\"EXACT_RECEIPT\",[\"16d6dbbd421a97e6959b509eefdf94dbd76fa2b1a718820e5e9da56a789a1815\",1,\"rotate-release\",\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a\",2,1789999940000,\"release-2026-01\",\"release-2026-02\",\"key_2026_02\",1789999950000,1790000190000],[[\"release-2026-01\",\"key_2026_01\",1789999900000,1790000190000],[\"release-2026-02\",\"key_2026_02\",1789999950000,null]],1790000004000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"]",
+      "signingBytesHex": "6c696d69746d61726b3a617574686f726974792d726573756c742d6174746573746174696f6e3a656432353531393a7632005b322c312c2270726f64756374696f6e222c2270726f64756374696f6e2d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c227265636f6e63696c696174696f6e222c2231366436646262643432316139376536393539623530396565666466393464626437366661326231613731383832306535653964613536613738396131383135222c226635343239646562616235353961623333626433303838323461346163373438222c747275652c22434f4d504c455445222c2245584143545f52454345495054222c5b2231366436646262643432316139376536393539623530396565666466393464626437366661326231613731383832306535653964613536613738396131383135222c312c22726f746174652d72656c65617365222c2270726f64756374696f6e222c2270726f64756374696f6e2d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c2233383236626261363662393131613733303137636635623137626235373339376435333765333639353337326665333738616438643336373462376131653961222c322c313738393939393934303030302c2272656c656173652d323032362d3031222c2272656c656173652d323032362d3032222c226b65795f323032365f3032222c313738393939393935303030302c313739303030303139303030305d2c5b5b2272656c656173652d323032362d3031222c226b65795f323032365f3031222c313738393939393930303030302c313739303030303139303030305d2c5b2272656c656173652d323032362d3032222c226b65795f323032365f3032222c313738393939393935303030302c6e756c6c5d5d2c313739303030303030343030302c2232316665333164666131353461323631363236626638353430343666643232373162376265643462366162653435616135383837376566343766393732316239225d",
+      "signingBytesSha256": "eddbc2425ccd29539a660b6da68e740882a209f4821669aa5847a34bdc55f254",
+      "signature": "YDQWAAujZ1F-iD3xO4nOFbGOhBULhP5svdYKkjAusIWXUFutWhkVhkxaEuEjVvT-AObYSa3Nu4pIdzbOuwORAg",
+      "envelope": "{\"statement\":[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"16d6dbbd421a97e6959b509eefdf94dbd76fa2b1a718820e5e9da56a789a1815\",\"f5429debab559ab33bd308824a4ac748\",true,\"COMPLETE\",\"EXACT_RECEIPT\",[\"16d6dbbd421a97e6959b509eefdf94dbd76fa2b1a718820e5e9da56a789a1815\",1,\"rotate-release\",\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a\",2,1789999940000,\"release-2026-01\",\"release-2026-02\",\"key_2026_02\",1789999950000,1790000190000],[[\"release-2026-01\",\"key_2026_01\",1789999900000,1790000190000],[\"release-2026-02\",\"key_2026_02\",1789999950000,null]],1790000004000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"],\"signature\":\"YDQWAAujZ1F-iD3xO4nOFbGOhBULhP5svdYKkjAusIWXUFutWhkVhkxaEuEjVvT-AObYSa3Nu4pIdzbOuwORAg\"}"
+    },
+    {
+      "name": "production-reconciliation-initialized-not-found",
+      "keyRole": "production",
+      "kind": "reconciliation",
+      "input": {
+        "trustEpoch": 1,
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "3f6caf592b7fc0a044471bd2014117bca8acdcf577ebc21e69aff0e7c924e31e",
+        "observedAtMs": 1790000005000,
+        "writerKeyFingerprint": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9",
+        "nonce": "84227633ddd095ca62bcee3b4ecbe695",
+        "initialized": true,
+        "coverage": "COMPLETE",
+        "status": "NOT_FOUND",
+        "receipt": null,
+        "releases": [
+          {
+            "releaseId": "release-2026-01",
+            "keyId": "key_2026_01",
+            "activatedMs": 1789999900000,
+            "retiredMs": null
+          }
+        ]
+      },
+      "expectations": {
+        "kind": "reconciliation",
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "3f6caf592b7fc0a044471bd2014117bca8acdcf577ebc21e69aff0e7c924e31e",
+        "nonce": "84227633ddd095ca62bcee3b4ecbe695"
+      },
+      "verifyAtMs": 1790000006000,
+      "tuple": [
+        2,
+        1,
+        "production",
+        "production-public-inquiries-v1",
+        "phase5c-i1-epoch-1",
+        "reconciliation",
+        "3f6caf592b7fc0a044471bd2014117bca8acdcf577ebc21e69aff0e7c924e31e",
+        "84227633ddd095ca62bcee3b4ecbe695",
+        true,
+        "COMPLETE",
+        "NOT_FOUND",
+        null,
+        [
+          [
+            "release-2026-01",
+            "key_2026_01",
+            1789999900000,
+            null
+          ]
+        ],
+        1790000005000,
+        "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+      ],
+      "tupleJson": "[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"3f6caf592b7fc0a044471bd2014117bca8acdcf577ebc21e69aff0e7c924e31e\",\"84227633ddd095ca62bcee3b4ecbe695\",true,\"COMPLETE\",\"NOT_FOUND\",null,[[\"release-2026-01\",\"key_2026_01\",1789999900000,null]],1790000005000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"]",
+      "signingBytesHex": "6c696d69746d61726b3a617574686f726974792d726573756c742d6174746573746174696f6e3a656432353531393a7632005b322c312c2270726f64756374696f6e222c2270726f64756374696f6e2d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c227265636f6e63696c696174696f6e222c2233663663616635393262376663306130343434373162643230313431313762636138616364636635373765626332316536396166663065376339323465333165222c223834323237363333646464303935636136326263656533623465636265363935222c747275652c22434f4d504c455445222c224e4f545f464f554e44222c6e756c6c2c5b5b2272656c656173652d323032362d3031222c226b65795f323032365f3031222c313738393939393930303030302c6e756c6c5d5d2c313739303030303030353030302c2232316665333164666131353461323631363236626638353430343666643232373162376265643462366162653435616135383837376566343766393732316239225d",
+      "signingBytesSha256": "af60914d6b112ca209e4a5b3aae9216da2f83e56389f7cab8d95c44346a3738a",
+      "signature": "X6cXswSpL-gQpXBZ2xuUaxtHGl4knI4xGIZk5z5V8WlArAelBeWnn7I3laatOzX2V75HdPH6_dcMlNgWWra6Bw",
+      "envelope": "{\"statement\":[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"3f6caf592b7fc0a044471bd2014117bca8acdcf577ebc21e69aff0e7c924e31e\",\"84227633ddd095ca62bcee3b4ecbe695\",true,\"COMPLETE\",\"NOT_FOUND\",null,[[\"release-2026-01\",\"key_2026_01\",1789999900000,null]],1790000005000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"],\"signature\":\"X6cXswSpL-gQpXBZ2xuUaxtHGl4knI4xGIZk5z5V8WlArAelBeWnn7I3laatOzX2V75HdPH6_dcMlNgWWra6Bw\"}"
+    },
+    {
+      "name": "production-reconciliation-uninitialized-not-found",
+      "keyRole": "production",
+      "kind": "reconciliation",
+      "input": {
+        "trustEpoch": 1,
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "17855690eb6d376b4bbf9d9ba5799662833638fce7673d515c208ad52a0a6a63",
+        "observedAtMs": 1790000006000,
+        "writerKeyFingerprint": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9",
+        "nonce": "1a48cc77f42ba0a7770bb1e93f88d3cd",
+        "initialized": false,
+        "coverage": "COMPLETE",
+        "status": "NOT_FOUND",
+        "receipt": null,
+        "releases": []
+      },
+      "expectations": {
+        "kind": "reconciliation",
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "17855690eb6d376b4bbf9d9ba5799662833638fce7673d515c208ad52a0a6a63",
+        "nonce": "1a48cc77f42ba0a7770bb1e93f88d3cd"
+      },
+      "verifyAtMs": 1790000007000,
+      "tuple": [
+        2,
+        1,
+        "production",
+        "production-public-inquiries-v1",
+        "phase5c-i1-epoch-1",
+        "reconciliation",
+        "17855690eb6d376b4bbf9d9ba5799662833638fce7673d515c208ad52a0a6a63",
+        "1a48cc77f42ba0a7770bb1e93f88d3cd",
+        false,
+        "COMPLETE",
+        "NOT_FOUND",
+        null,
+        [],
+        1790000006000,
+        "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+      ],
+      "tupleJson": "[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"17855690eb6d376b4bbf9d9ba5799662833638fce7673d515c208ad52a0a6a63\",\"1a48cc77f42ba0a7770bb1e93f88d3cd\",false,\"COMPLETE\",\"NOT_FOUND\",null,[],1790000006000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"]",
+      "signingBytesHex": "6c696d69746d61726b3a617574686f726974792d726573756c742d6174746573746174696f6e3a656432353531393a7632005b322c312c2270726f64756374696f6e222c2270726f64756374696f6e2d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c227265636f6e63696c696174696f6e222c2231373835353639306562366433373662346262663964396261353739393636323833333633386663653736373364353135633230386164353261306136613633222c223161343863633737663432626130613737373062623165393366383864336364222c66616c73652c22434f4d504c455445222c224e4f545f464f554e44222c6e756c6c2c5b5d2c313739303030303030363030302c2232316665333164666131353461323631363236626638353430343666643232373162376265643462366162653435616135383837376566343766393732316239225d",
+      "signingBytesSha256": "ca396397befad2f47906455caef2fc8f7ffbfb5b1861da548b861d9d43338ea4",
+      "signature": "1h2hbCz_F_9r1lVYH7N6_79Fy3oPOZ3NBvPvl5X5-EVZmh0Rmyc_NtqYZzQtSkv2neaM_2SUp9dPsjFB7BscAA",
+      "envelope": "{\"statement\":[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"17855690eb6d376b4bbf9d9ba5799662833638fce7673d515c208ad52a0a6a63\",\"1a48cc77f42ba0a7770bb1e93f88d3cd\",false,\"COMPLETE\",\"NOT_FOUND\",null,[],1790000006000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"],\"signature\":\"1h2hbCz_F_9r1lVYH7N6_79Fy3oPOZ3NBvPvl5X5-EVZmh0Rmyc_NtqYZzQtSkv2neaM_2SUp9dPsjFB7BscAA\"}"
+    },
+    {
+      "name": "staging-reconciliation-history-incomplete",
+      "keyRole": "staging",
+      "kind": "reconciliation",
+      "input": {
+        "trustEpoch": 1,
+        "environment": "staging",
+        "authorityId": "staging-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "d2e68c23e089c1bb7122e54d39bbdf652715991abb9f77224e2f7d205edaf171",
+        "observedAtMs": 1790000007000,
+        "writerKeyFingerprint": "39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f",
+        "nonce": "59672ff3c8d9065317cda543752b5ac2",
+        "initialized": true,
+        "coverage": "INCOMPLETE",
+        "status": "HISTORY_INCOMPLETE",
+        "receipt": null,
+        "releases": [
+          {
+            "releaseId": "release-2026-01",
+            "keyId": "key_2026_01",
+            "activatedMs": 1789999900000,
+            "retiredMs": null
+          }
+        ]
+      },
+      "expectations": {
+        "kind": "reconciliation",
+        "environment": "staging",
+        "authorityId": "staging-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "d2e68c23e089c1bb7122e54d39bbdf652715991abb9f77224e2f7d205edaf171",
+        "nonce": "59672ff3c8d9065317cda543752b5ac2"
+      },
+      "verifyAtMs": 1790000008000,
+      "tuple": [
+        2,
+        1,
+        "staging",
+        "staging-public-inquiries-v1",
+        "phase5c-i1-epoch-1",
+        "reconciliation",
+        "d2e68c23e089c1bb7122e54d39bbdf652715991abb9f77224e2f7d205edaf171",
+        "59672ff3c8d9065317cda543752b5ac2",
+        true,
+        "INCOMPLETE",
+        "HISTORY_INCOMPLETE",
+        null,
+        [
+          [
+            "release-2026-01",
+            "key_2026_01",
+            1789999900000,
+            null
+          ]
+        ],
+        1790000007000,
+        "39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f"
+      ],
+      "tupleJson": "[2,1,\"staging\",\"staging-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"d2e68c23e089c1bb7122e54d39bbdf652715991abb9f77224e2f7d205edaf171\",\"59672ff3c8d9065317cda543752b5ac2\",true,\"INCOMPLETE\",\"HISTORY_INCOMPLETE\",null,[[\"release-2026-01\",\"key_2026_01\",1789999900000,null]],1790000007000,\"39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f\"]",
+      "signingBytesHex": "6c696d69746d61726b3a617574686f726974792d726573756c742d6174746573746174696f6e3a656432353531393a7632005b322c312c2273746167696e67222c2273746167696e672d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c227265636f6e63696c696174696f6e222c2264326536386332336530383963316262373132326535346433396262646636353237313539393161626239663737323234653266376432303565646166313731222c223539363732666633633864393036353331376364613534333735326235616332222c747275652c22494e434f4d504c455445222c22484953544f52595f494e434f4d504c455445222c6e756c6c2c5b5b2272656c656173652d323032362d3031222c226b65795f323032365f3031222c313738393939393930303030302c6e756c6c5d5d2c313739303030303030373030302c2233396637313364306136343432353366303435323934323162396635316239623038393739643038323935393539633466333939306565363137663531333966225d",
+      "signingBytesSha256": "b704eed67797caa04941402c0cbff288a1a3e097b6e4a5d18823943e8b9a825c",
+      "signature": "YD5_wv1nkVyXNVpdddgkxBnZRRX-K_CYC04k3yQtfjbM6ugIqR2F4ko9BEiVYAGNMySsx8PBZuoACnh7kk2VDQ",
+      "envelope": "{\"statement\":[2,1,\"staging\",\"staging-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"d2e68c23e089c1bb7122e54d39bbdf652715991abb9f77224e2f7d205edaf171\",\"59672ff3c8d9065317cda543752b5ac2\",true,\"INCOMPLETE\",\"HISTORY_INCOMPLETE\",null,[[\"release-2026-01\",\"key_2026_01\",1789999900000,null]],1790000007000,\"39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f\"],\"signature\":\"YD5_wv1nkVyXNVpdddgkxBnZRRX-K_CYC04k3yQtfjbM6ugIqR2F4ko9BEiVYAGNMySsx8PBZuoACnh7kk2VDQ\"}"
+    },
+    {
+      "name": "staging-reconciliation-exact-receipt-one-row",
+      "keyRole": "staging",
+      "kind": "reconciliation",
+      "input": {
+        "trustEpoch": 1,
+        "environment": "staging",
+        "authorityId": "staging-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "b8e492901faf5f42cc9f68fd1d5ff17ad149b310dc0316b378324c7ce209b6b5",
+        "observedAtMs": 1790000008000,
+        "writerKeyFingerprint": "39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f",
+        "nonce": "bf9a5af884ab1d517753a9500a25a9d7",
+        "initialized": true,
+        "coverage": "COMPLETE",
+        "status": "EXACT_RECEIPT",
+        "receipt": {
+          "digest": "b8e492901faf5f42cc9f68fd1d5ff17ad149b310dc0316b378324c7ce209b6b5",
+          "version": 1,
+          "environment": "staging",
+          "authorityId": "staging-public-inquiries-v1",
+          "policyEpoch": "phase5c-i1-epoch-1",
+          "operatorKeyFingerprint": "3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a",
+          "operation": "initialize",
+          "sequence": 1,
+          "appliedMs": 1789999900000,
+          "currentReleaseId": "release-2026-01",
+          "nextReleaseId": "release-2026-01",
+          "nextKeyId": "key_2026_01",
+          "activatesMs": 1789999900000,
+          "retiresMs": null
+        },
+        "releases": [
+          {
+            "releaseId": "release-2026-01",
+            "keyId": "key_2026_01",
+            "activatedMs": 1789999900000,
+            "retiredMs": null
+          }
+        ]
+      },
+      "expectations": {
+        "kind": "reconciliation",
+        "environment": "staging",
+        "authorityId": "staging-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "b8e492901faf5f42cc9f68fd1d5ff17ad149b310dc0316b378324c7ce209b6b5",
+        "nonce": "bf9a5af884ab1d517753a9500a25a9d7"
+      },
+      "verifyAtMs": 1790000009000,
+      "tuple": [
+        2,
+        1,
+        "staging",
+        "staging-public-inquiries-v1",
+        "phase5c-i1-epoch-1",
+        "reconciliation",
+        "b8e492901faf5f42cc9f68fd1d5ff17ad149b310dc0316b378324c7ce209b6b5",
+        "bf9a5af884ab1d517753a9500a25a9d7",
+        true,
+        "COMPLETE",
+        "EXACT_RECEIPT",
+        [
+          "b8e492901faf5f42cc9f68fd1d5ff17ad149b310dc0316b378324c7ce209b6b5",
+          1,
+          "initialize",
+          "staging",
+          "staging-public-inquiries-v1",
+          "phase5c-i1-epoch-1",
+          "3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a",
+          1,
+          1789999900000,
+          "release-2026-01",
+          "release-2026-01",
+          "key_2026_01",
+          1789999900000,
+          null
+        ],
+        [
+          [
+            "release-2026-01",
+            "key_2026_01",
+            1789999900000,
+            null
+          ]
+        ],
+        1790000008000,
+        "39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f"
+      ],
+      "tupleJson": "[2,1,\"staging\",\"staging-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"b8e492901faf5f42cc9f68fd1d5ff17ad149b310dc0316b378324c7ce209b6b5\",\"bf9a5af884ab1d517753a9500a25a9d7\",true,\"COMPLETE\",\"EXACT_RECEIPT\",[\"b8e492901faf5f42cc9f68fd1d5ff17ad149b310dc0316b378324c7ce209b6b5\",1,\"initialize\",\"staging\",\"staging-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a\",1,1789999900000,\"release-2026-01\",\"release-2026-01\",\"key_2026_01\",1789999900000,null],[[\"release-2026-01\",\"key_2026_01\",1789999900000,null]],1790000008000,\"39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f\"]",
+      "signingBytesHex": "6c696d69746d61726b3a617574686f726974792d726573756c742d6174746573746174696f6e3a656432353531393a7632005b322c312c2273746167696e67222c2273746167696e672d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c227265636f6e63696c696174696f6e222c2262386534393239303166616635663432636339663638666431643566663137616431343962333130646330333136623337383332346337636532303962366235222c226266396135616638383461623164353137373533613935303061323561396437222c747275652c22434f4d504c455445222c2245584143545f52454345495054222c5b2262386534393239303166616635663432636339663638666431643566663137616431343962333130646330333136623337383332346337636532303962366235222c312c22696e697469616c697a65222c2273746167696e67222c2273746167696e672d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c2233383236626261363662393131613733303137636635623137626235373339376435333765333639353337326665333738616438643336373462376131653961222c312c313738393939393930303030302c2272656c656173652d323032362d3031222c2272656c656173652d323032362d3031222c226b65795f323032365f3031222c313738393939393930303030302c6e756c6c5d2c5b5b2272656c656173652d323032362d3031222c226b65795f323032365f3031222c313738393939393930303030302c6e756c6c5d5d2c313739303030303030383030302c2233396637313364306136343432353366303435323934323162396635316239623038393739643038323935393539633466333939306565363137663531333966225d",
+      "signingBytesSha256": "6668eecea2937dd762fb3b213e45d55b134efa3d12ed5c316c6384958da15243",
+      "signature": "1d5J5I4Jj1q7ju-D6ctPYbkwU3mEEiWo8uK7XnGgaKM4ME8eTmItxit58VQbtw2xM_TBvuBTcFu9AxABAqMyBA",
+      "envelope": "{\"statement\":[2,1,\"staging\",\"staging-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"b8e492901faf5f42cc9f68fd1d5ff17ad149b310dc0316b378324c7ce209b6b5\",\"bf9a5af884ab1d517753a9500a25a9d7\",true,\"COMPLETE\",\"EXACT_RECEIPT\",[\"b8e492901faf5f42cc9f68fd1d5ff17ad149b310dc0316b378324c7ce209b6b5\",1,\"initialize\",\"staging\",\"staging-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"3826bba66b911a73017cf5b17bb57397d537e3695372fe378ad8d3674b7a1e9a\",1,1789999900000,\"release-2026-01\",\"release-2026-01\",\"key_2026_01\",1789999900000,null],[[\"release-2026-01\",\"key_2026_01\",1789999900000,null]],1790000008000,\"39f713d0a644253f04529421b9f51b9b08979d08295959c4f3990ee617f5139f\"],\"signature\":\"1d5J5I4Jj1q7ju-D6ctPYbkwU3mEEiWo8uK7XnGgaKM4ME8eTmItxit58VQbtw2xM_TBvuBTcFu9AxABAqMyBA\"}"
+    },
+    {
+      "name": "production-reconciliation-two-rows-tie-order",
+      "keyRole": "production",
+      "kind": "reconciliation",
+      "input": {
+        "trustEpoch": 1,
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "3b4ef015106085e7715e50d48cca90799eedbb3f4628ef5b0205f7c8b1d55f7a",
+        "observedAtMs": 1790000009000,
+        "writerKeyFingerprint": "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9",
+        "nonce": "7d3743b0df823711ee3b530d45e15540",
+        "initialized": true,
+        "coverage": "COMPLETE",
+        "status": "NOT_FOUND",
+        "receipt": null,
+        "releases": [
+          {
+            "releaseId": "release-b",
+            "keyId": "key_b",
+            "activatedMs": 1790000000000,
+            "retiredMs": 1790000120000
+          },
+          {
+            "releaseId": "release-a",
+            "keyId": "key_a",
+            "activatedMs": 1790000000000,
+            "retiredMs": null
+          }
+        ]
+      },
+      "expectations": {
+        "kind": "reconciliation",
+        "environment": "production",
+        "authorityId": "production-public-inquiries-v1",
+        "policyEpoch": "phase5c-i1-epoch-1",
+        "digest": "3b4ef015106085e7715e50d48cca90799eedbb3f4628ef5b0205f7c8b1d55f7a",
+        "nonce": "7d3743b0df823711ee3b530d45e15540"
+      },
+      "verifyAtMs": 1790000010000,
+      "tuple": [
+        2,
+        1,
+        "production",
+        "production-public-inquiries-v1",
+        "phase5c-i1-epoch-1",
+        "reconciliation",
+        "3b4ef015106085e7715e50d48cca90799eedbb3f4628ef5b0205f7c8b1d55f7a",
+        "7d3743b0df823711ee3b530d45e15540",
+        true,
+        "COMPLETE",
+        "NOT_FOUND",
+        null,
+        [
+          [
+            "release-a",
+            "key_a",
+            1790000000000,
+            null
+          ],
+          [
+            "release-b",
+            "key_b",
+            1790000000000,
+            1790000120000
+          ]
+        ],
+        1790000009000,
+        "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+      ],
+      "tupleJson": "[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"3b4ef015106085e7715e50d48cca90799eedbb3f4628ef5b0205f7c8b1d55f7a\",\"7d3743b0df823711ee3b530d45e15540\",true,\"COMPLETE\",\"NOT_FOUND\",null,[[\"release-a\",\"key_a\",1790000000000,null],[\"release-b\",\"key_b\",1790000000000,1790000120000]],1790000009000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"]",
+      "signingBytesHex": "6c696d69746d61726b3a617574686f726974792d726573756c742d6174746573746174696f6e3a656432353531393a7632005b322c312c2270726f64756374696f6e222c2270726f64756374696f6e2d7075626c69632d696e717569726965732d7631222c22706861736535632d69312d65706f63682d31222c227265636f6e63696c696174696f6e222c2233623465663031353130363038356537373135653530643438636361393037393965656462623366343632386566356230323035663763386231643535663761222c223764333734336230646638323337313165653362353330643435653135353430222c747275652c22434f4d504c455445222c224e4f545f464f554e44222c6e756c6c2c5b5b2272656c656173652d61222c226b65795f61222c313739303030303030303030302c6e756c6c5d2c5b2272656c656173652d62222c226b65795f62222c313739303030303030303030302c313739303030303132303030305d5d2c313739303030303030393030302c2232316665333164666131353461323631363236626638353430343666643232373162376265643462366162653435616135383837376566343766393732316239225d",
+      "signingBytesSha256": "a2e0882d0c3c134466a45135032e6d1a0bf9667bd4df82f2b0750955130feb31",
+      "signature": "bBkBJawdUVH6O7GuuX6i-JUMSxfCPdWynBg8CpziIS9jJrT9fR5V7HqpIWNgM-QuJUAzamss4-auCdkVI8coDw",
+      "envelope": "{\"statement\":[2,1,\"production\",\"production-public-inquiries-v1\",\"phase5c-i1-epoch-1\",\"reconciliation\",\"3b4ef015106085e7715e50d48cca90799eedbb3f4628ef5b0205f7c8b1d55f7a\",\"7d3743b0df823711ee3b530d45e15540\",true,\"COMPLETE\",\"NOT_FOUND\",null,[[\"release-a\",\"key_a\",1790000000000,null],[\"release-b\",\"key_b\",1790000000000,1790000120000]],1790000009000,\"21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"],\"signature\":\"bBkBJawdUVH6O7GuuX6i-JUMSxfCPdWynBg8CpziIS9jJrT9fR5V7HqpIWNgM-QuJUAzamss4-auCdkVI8coDw\"}"
+    }
+  ]
+}
