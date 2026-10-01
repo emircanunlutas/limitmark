@@ -1368,19 +1368,37 @@ test("trust manifest hygiene: UTF-8 byte size, distinct placeholders, current-ke
 // ---------------------------------------------------------------------------------------------------------------------
 // Scope guards
 // ---------------------------------------------------------------------------------------------------------------------
-test("the protocol is not wired into any runtime, and ships no operational key material", async () => {
+test("the protocol is wired only into the inert Slice 2A Authority producer, and ships no operational key material", async () => {
   const root = new URL("../", import.meta.url);
   const own = new Set(["src/lib/authority-result-attestation.ts", "src/lib/authority-result-trust.ts", "tests/authority-result-attestation.test.ts"]);
+  // Slice 2A: the only files that may reference the frozen protocol besides itself. Everything else (relay, mailbox, observer,
+  // result writer/reader, CLI, deployment, public routes) must not reference it yet.
+  const producer = new Set(["workers/admission-service/authority-attestation.ts", "workers/admission-service/authority-attestation-signer.ts",
+    "tests/i3b-authority.test.ts", "tests/support/authority-attestation-test-signers.ts"]);
+  // The producer's own surface: no other file may import the producer modules or invoke the attested Authority RPCs.
+  const producerSurface = new Set([...producer, "workers/admission-service/index.ts"]);
   const offenders: string[] = [];
+  const producerLeaks: string[] = [];
   for (const directory of ["src", "workers", "operator", "scripts", "deployment", "tests"]) {
     for (const entry of await readdir(new URL(directory, root), { recursive: true })) {
       const name = entry.replaceAll("\\", "/");
       const relative = `${directory}/${name}`;
       if (own.has(relative) || !/\.(ts|tsx|mts|js|mjs|json|jsonc)$/u.test(name) || name.includes("fixtures/")) continue;
-      if (/authority-result-(attestation|trust)/u.test(await readFile(new URL(relative, root), "utf8"))) offenders.push(relative);
+      const text = await readFile(new URL(relative, root), "utf8");
+      if (/authority-result-(attestation|trust)/u.test(text) && !producer.has(relative)) offenders.push(relative);
+      if (/authority-attestation|FromOperatorAttested|attestAppliedLifecycle|attestReconciliation|AuthorityAttestationCoordinator/u.test(text) &&
+          !producerSurface.has(relative)) producerLeaks.push(relative);
     }
   }
   assert.deepEqual(offenders, []);
+  assert.deepEqual(producerLeaks, [], "no relay/mailbox/observer/CLI/result caller imports or invokes the attested Authority RPCs");
+  // The Authority-side producer never learns the relay layer: it imports only the frozen protocol, the authority core and the command module.
+  for (const file of ["workers/admission-service/authority-attestation.ts", "workers/admission-service/authority-attestation-signer.ts"]) {
+    const imports = [...(await readFile(new URL(file, root), "utf8")).matchAll(/from "([^"]+)"/gu)].map((match) => match[1]);
+    for (const specifier of imports) {
+      assert.match(specifier, /^(?:\.\.\/\.\.\/src\/lib\/(?:authority-result-attestation|ingress-protocol)|\.\/(?:authority|operator-command|authority-attestation-signer))$/u, `${file} imports ${specifier}`);
+    }
+  }
   // the only private key material in the fixtures is the two public RFC 8032 test seeds
   const { golden, manifestText } = await load();
   const fixtureText = JSON.stringify(golden);
