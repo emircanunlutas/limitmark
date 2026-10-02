@@ -9,8 +9,12 @@ import * as schema from "../src/lib/db/schema";
 import { PostgresInquiryRepository } from "../src/lib/inquiry-repository";
 import { createPayloadFingerprint } from "../src/lib/payload-fingerprint";
 import { requestSchema } from "../src/lib/request-schema";
+import { disposableTestDatabase } from "./support/test-database-guard";
 
-const databaseUrl = process.env.TEST_DATABASE_URL;
+// Fail-closed: a set-but-unproven TEST_DATABASE_URL throws here and every hook below
+// re-asserts the positive disposable-database proof before any migration or TRUNCATE.
+const testDatabase = disposableTestDatabase();
+const databaseUrl = testDatabase.url;
 const integration = { skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured" } as const;
 const client = databaseUrl ? postgres(databaseUrl, { max: 12, prepare: false }) : null;
 const database = client ? drizzle(client, { schema }) : null;
@@ -43,11 +47,13 @@ async function totals() {
 
 before(async () => {
   if (!database) return;
+  await testDatabase.assertProven();
   await migrate(database, { migrationsFolder: "drizzle" });
 });
 
 beforeEach(async () => {
   if (!client) return;
+  await testDatabase.assertProven();
   await client`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`;
 });
 

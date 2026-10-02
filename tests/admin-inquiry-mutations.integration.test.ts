@@ -8,8 +8,12 @@ import postgres, { type TransactionSql } from "postgres";
 import { PostgresAdminInquiryMutationRepository } from "../src/lib/admin-inquiry-mutation-repository";
 import { adminNotes, inquiries, inquiryEvents } from "../src/lib/db/schema";
 import * as schema from "../src/lib/db/schema";
+import { disposableTestDatabase } from "./support/test-database-guard";
 
-const databaseUrl = process.env.TEST_DATABASE_URL;
+// Fail-closed: a set-but-unproven TEST_DATABASE_URL throws here and every hook below
+// re-asserts the positive disposable-database proof before any migration or TRUNCATE.
+const testDatabase = disposableTestDatabase();
+const databaseUrl = testDatabase.url;
 const integration = { skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured" } as const;
 const client = databaseUrl ? postgres(databaseUrl, { max: 12, prepare: false }) : null;
 const database = client ? drizzle(client, { schema }) : null;
@@ -17,8 +21,16 @@ const repository = database ? new PostgresAdminInquiryMutationRepository(databas
 const inquiryId = "00000000-0000-4000-8000-000000000042";
 const adminIdentity = { actorIdentifier: "verified-admin@example.test" } as const;
 
-before(async () => { if (database) await migrate(database, { migrationsFolder: "drizzle" }); });
-beforeEach(async () => { if (client) await client`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`; });
+before(async () => {
+  if (!database) return;
+  await testDatabase.assertProven();
+  await migrate(database, { migrationsFolder: "drizzle" });
+});
+beforeEach(async () => {
+  if (!client) return;
+  await testDatabase.assertProven();
+  await client`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`;
+});
 after(async () => { if (client) await client.end(); });
 
 function row(overrides: Partial<typeof inquiries.$inferInsert> = {}): typeof inquiries.$inferInsert {

@@ -7,15 +7,27 @@ import { ADMIN_INQUIRY_PAGE_SIZE, type AdminInquiryQuery } from "../src/lib/admi
 import { PostgresAdminInquiryReadRepository } from "../src/lib/admin-inquiry-repository";
 import { adminNotes, inquiries, inquiryEvents, notificationOutbox } from "../src/lib/db/schema";
 import * as schema from "../src/lib/db/schema";
+import { disposableTestDatabase } from "./support/test-database-guard";
 
-const databaseUrl = process.env.TEST_DATABASE_URL;
+// Fail-closed: a set-but-unproven TEST_DATABASE_URL throws here and every hook below
+// re-asserts the positive disposable-database proof before any migration or TRUNCATE.
+const testDatabase = disposableTestDatabase();
+const databaseUrl = testDatabase.url;
 const integration = { skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured" } as const;
 const client = databaseUrl ? postgres(databaseUrl, { max: 8, prepare: false }) : null;
 const database = client ? drizzle(client, { schema }) : null;
 const repository = database ? new PostgresAdminInquiryReadRepository(database) : null;
 
-before(async () => { if (database) await migrate(database, { migrationsFolder: "drizzle" }); });
-beforeEach(async () => { if (client) await client`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`; });
+before(async () => {
+  if (!database) return;
+  await testDatabase.assertProven();
+  await migrate(database, { migrationsFolder: "drizzle" });
+});
+beforeEach(async () => {
+  if (!client) return;
+  await testDatabase.assertProven();
+  await client`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`;
+});
 after(async () => { if (client) await client.end(); });
 
 function query(overrides: Partial<AdminInquiryQuery> = {}): AdminInquiryQuery {
