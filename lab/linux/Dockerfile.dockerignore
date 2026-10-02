@@ -1,0 +1,12 @@
+# .git is kept: several repository tests ask git which files are tracked/ignored.
+node_modules
+.next
+artifacts
+.npm-cache
+.playwright
+.wrangler
+test-results
+playwright-report
+*.tsbuildinfo
+.env*
+!.env.example

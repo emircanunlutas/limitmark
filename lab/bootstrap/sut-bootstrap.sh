@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# LimitMark field-lab: bootstrap of a DISPOSABLE Ubuntu VM that will act as the system under test.
+#
+# Runs ON the VM, as root, after the operator has created and reached it. It never creates, changes
+# or queries any cloud/provider resource, never reads provider metadata, and embeds no credential.
+# It is idempotent: re-running converges to the same state. Use --dry-run to print every action.
+#
+#   sudo ./sut-bootstrap.sh --i-am-a-disposable-lab-vm [--dry-run]
+#
+# Required environment (all operator-supplied, none stored here):
+#   LAB_REPO_URL          https URL of the repository (no userinfo / credentials)
+#   LAB_REPO_COMMIT       full 40-hex commit to build (exact, reproducible)
+#   LAB_APP_ORIGIN        http://<VM IPv4>:3000  (used as the demo-mode Origin)
+#   LAB_SSH_ALLOW_CIDRS   comma-separated CIDRs allowed to reach SSH (never /0)
+#   LAB_LOADGEN_CIDRS     comma-separated CIDRs of the authorised load generators (never /0)
+# Pins: lab/bootstrap/pins.env must contain real Node digests (placeholders are refused).
+set -euo pipefail
+IFS=$'\n\t'
+umask 027
+
+DRY_RUN=0
+ACK=0
+for argument in "$@"; do
+  case "$argument" in
+    --dry-run) DRY_RUN=1 ;;
+    --i-am-a-disposable-lab-vm) ACK=1 ;;
+    *) echo "unknown argument: $argument" >&2; exit 64 ;;
+  esac
+done
+
+LAB_ROOT=/opt/limitmark-lab
+LAB_USER=limitmark-lab
+STATE_DIR=/etc/limitmark-lab
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+log() { printf '[bootstrap] %s\n' "$*"; }
+die() { printf '[bootstrap] REFUSED: %s\n' "$*" >&2; exit 2; }
+# Every state-changing command goes through run(), so --dry-run prints instead of executing.
+run() {
+  if [ "$DRY_RUN" = 1 ]; then printf '[dry-run] %s\n' "$*"; else "$@"; fi
+}
+
+# ---------------------------------------------------------------- validation (no side effects)
+[ "$ACK" = 1 ] || die "pass --i-am-a-disposable-lab-vm to confirm this VM is disposable and holds nothing of value"
+[ "$(uname -s)" = Linux ] || die "Linux only"
+if [ "$DRY_RUN" = 0 ]; then
+  [ "$(id -u)" = 0 ] || die "run as root (sudo)"
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  [ "${ID:-}" = ubuntu ] || die "Ubuntu only (found ${ID:-unknown})"
+  case "${VERSION_ID:-}" in 22.04|24.04) ;; *) die "Ubuntu 22.04 or 24.04 only (found ${VERSION_ID:-unknown})" ;; esac
+fi
+
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/pins.env"
+case "$(uname -m)" in
+  x86_64) NODE_ARCH=x64; NODE_SHA256="${NODE_SHA256_LINUX_X64:-}" ;;
+  aarch64) NODE_ARCH=arm64; NODE_SHA256="${NODE_SHA256_LINUX_ARM64:-}" ;;
+  *) die "unsupported architecture $(uname -m)" ;;
+esac
+[[ "${NODE_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "NODE_VERSION in pins.env is not a plain x.y.z version"
+if ! [[ "$NODE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  # A dry run may print the plan with placeholder pins; a real run never proceeds without a real digest.
+  [ "$DRY_RUN" = 1 ] || die "Node tarball digest for this architecture is still a placeholder in pins.env"
+  log "WARNING: Node digest is a placeholder (dry-run only)"
+fi
+
+: "${LAB_REPO_URL:?LAB_REPO_URL is required}"
+: "${LAB_REPO_COMMIT:?LAB_REPO_COMMIT is required}"
+: "${LAB_APP_ORIGIN:?LAB_APP_ORIGIN is required}"
+: "${LAB_SSH_ALLOW_CIDRS:?LAB_SSH_ALLOW_CIDRS is required}"
+: "${LAB_LOADGEN_CIDRS:?LAB_LOADGEN_CIDRS is required}"
+[[ "$LAB_REPO_URL" =~ ^https://[A-Za-z0-9._/-]+$ ]] || die "LAB_REPO_URL must be a plain https URL without credentials"
+[[ "$LAB_REPO_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "LAB_REPO_COMMIT must be a full 40-hex commit"
+[[ "$LAB_APP_ORIGIN" =~ ^http://([0-9]{1,3}\.){3}[0-9]{1,3}:3000$ ]] || die "LAB_APP_ORIGIN must look like http://203.0.113.10:3000"
+validate_cidrs() {
+  local list="$1" cidr
+  local -a items
+  IFS=',' read -r -a items <<< "$list"
+  [ "${#items[@]}" -ge 1 ] || die "empty CIDR list"
+  for cidr in "${items[@]}"; do
+    [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] || die "invalid CIDR: $cidr"
+    case "$cidr" in */0) die "a /0 CIDR opens the port to the world: $cidr" ;; esac
+  done
+}
+validate_cidrs "$LAB_SSH_ALLOW_CIDRS"
+validate_cidrs "$LAB_LOADGEN_CIDRS"
+
+log "validated; dry-run=$DRY_RUN"
+
+# ---------------------------------------------------------------- packages
+install_packages() {
+  log "installing OS packages (git, docker, sysstat, ufw, ...)"
+  run env DEBIAN_FRONTEND=noninteractive apt-get update -y
+  # docker.io + compose v2 come from the Ubuntu archive: no third-party apt key is added.
+  run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates curl git jq xz-utils sysstat ufw docker.io docker-compose-v2 iproute2 procps
+}
+
+# ---------------------------------------------------------------- node (pinned, digest-verified)
+install_node() {
+  local target="$LAB_ROOT/node-v${NODE_VERSION}-linux-${NODE_ARCH}"
+  if [ -x "$target/bin/node" ] && [ "$("$target/bin/node" --version)" = "v${NODE_VERSION}" ]; then
+    log "node v${NODE_VERSION} already present"
+  else
+    log "installing node v${NODE_VERSION}"
+    local tarball="/tmp/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
+    run curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      --output "$tarball" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
+    if [ "$DRY_RUN" = 1 ]; then
+      printf '[dry-run] verify sha256 of %s equals the pinned digest, then extract into %s\n' "$tarball" "$LAB_ROOT"
+    else
+      echo "${NODE_SHA256}  ${tarball}" | sha256sum --check --status || die "Node tarball digest mismatch"
+      tar -xJf "$tarball" -C "$LAB_ROOT"
+      rm -f "$tarball"
+    fi
+  fi
+  run ln -sfn "$target/bin/node" /usr/local/bin/node
+  run ln -sfn "$target/bin/npm" /usr/local/bin/npm
+  run ln -sfn "$target/bin/npx" /usr/local/bin/npx
+}
+
+# ---------------------------------------------------------------- user and directories
+prepare_host() {
+  log "creating the unprivileged lab user and directories"
+  if ! id "$LAB_USER" >/dev/null 2>&1; then
+    run useradd --system --create-home --home-dir "$LAB_ROOT/home" --shell /usr/sbin/nologin "$LAB_USER"
+  fi
+  run install -d -m 0750 -o "$LAB_USER" -g "$LAB_USER" "$LAB_ROOT" "$LAB_ROOT/evidence" "$LAB_ROOT/metrics" "$LAB_ROOT/bin"
+  run install -d -m 0755 "$STATE_DIR"
+  # The lab user drives the lab PostgreSQL container through Docker (root-equivalent on this VM).
+  run usermod -aG docker "$LAB_USER"
+  run install -m 0644 /dev/null "$STATE_DIR/DISPOSABLE"
+}
+
+# ---------------------------------------------------------------- application
+build_application() {
+  log "fetching and building commit ${LAB_REPO_COMMIT}"
+  local app="$LAB_ROOT/app"
+  if [ ! -d "$app/.git" ]; then
+    run install -d -m 0750 -o "$LAB_USER" -g "$LAB_USER" "$app"
+    run runuser -u "$LAB_USER" -- git -C "$app" init --quiet
+    run runuser -u "$LAB_USER" -- git -C "$app" remote add origin "$LAB_REPO_URL"
+  fi
+  run runuser -u "$LAB_USER" -- git -C "$app" fetch --quiet --depth 1 origin "$LAB_REPO_COMMIT"
+  run runuser -u "$LAB_USER" -- git -C "$app" checkout --quiet --detach FETCH_HEAD
+  if [ "$DRY_RUN" = 0 ]; then
+    [ "$(runuser -u "$LAB_USER" -- git -C "$app" rev-parse HEAD)" = "$LAB_REPO_COMMIT" ] || die "checked-out commit differs from LAB_REPO_COMMIT"
+  fi
+  run runuser -u "$LAB_USER" -- bash -c "cd '$app' && npm ci --no-audit --no-fund && npm run build"
+}
+
+install_app_service() {
+  log "installing the application systemd unit"
+  local unit=/etc/systemd/system/limitmark-lab-app.service
+  if [ "$DRY_RUN" = 1 ]; then printf '[dry-run] write %s\n' "$unit"; else
+    cat > "$unit" <<UNIT
+[Unit]
+Description=LimitMark field-lab application (system under test)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=${LAB_USER}
+WorkingDirectory=${LAB_ROOT}/app
+# Non-persistent demo adapter only; no database URL, no provider key, no secret of any kind.
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=REQUEST_SUBMISSION_MODE=demo
+Environment=ALLOW_DEMO_SUBMISSIONS=true
+Environment=PUBLIC_DEMO_ORIGIN=${LAB_APP_ORIGIN}
+Environment=PUBLIC_ORIGIN_PROTECTION=disabled
+Environment=ENABLE_PERSISTENT_SUBMISSIONS=false
+Environment=ENABLE_REAL_NOTIFICATIONS=false
+ExecStart=/usr/local/bin/node node_modules/next/dist/bin/next start --hostname 0.0.0.0 --port 3000
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${LAB_ROOT}/app/.next
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  fi
+  run systemctl daemon-reload
+  run systemctl enable --now limitmark-lab-app.service
+}
+
+# ---------------------------------------------------------------- host metrics
+install_metrics() {
+  log "installing the bounded host-metrics collector"
+  run install -m 0755 -o root -g root "$SCRIPT_DIR/host-metrics.sh" "$LAB_ROOT/bin/host-metrics.sh"
+  run systemctl enable --now sysstat.service
+}
+
+# ---------------------------------------------------------------- firewall
+# GCP VPC firewall rules remain the primary perimeter (see README). This is the host-level second layer.
+# Note: Docker-published ports bypass ufw; the lab PostgreSQL is published on 127.0.0.1 ONLY.
+configure_firewall() {
+  log "configuring ufw: default deny inbound; SSH and the app port only from the supplied CIDRs"
+  local -a ssh_cidrs load_cidrs
+  IFS=',' read -r -a ssh_cidrs <<< "$LAB_SSH_ALLOW_CIDRS"
+  IFS=',' read -r -a load_cidrs <<< "$LAB_LOADGEN_CIDRS"
+  run ufw --force default deny incoming
+  run ufw --force default allow outgoing
+  local cidr
+  for cidr in "${ssh_cidrs[@]}"; do run ufw allow from "$cidr" to any port 22 proto tcp comment 'limitmark-lab ssh'; done
+  for cidr in "${load_cidrs[@]}"; do run ufw allow from "$cidr" to any port 3000 proto tcp comment 'limitmark-lab app'; done
+  run ufw --force enable
+}
+
+# ---------------------------------------------------------------- run
+install_packages
+run install -d -m 0755 "$LAB_ROOT"
+install_node
+prepare_host
+build_application
+install_app_service
+install_metrics
+configure_firewall
+log "done. Next (operator): from a trusted lab machine run the lab runner against this VM's target definition."
+log "Teardown: sudo lab/bootstrap/sut-teardown.sh --i-am-a-disposable-lab-vm, then delete the VM in the cloud console."
