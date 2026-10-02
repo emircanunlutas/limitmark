@@ -67,6 +67,15 @@
     "test:edge-origin": "playwright test --config=playwright.edge-origin.config.ts",
     "test:closed-intake": "playwright test --config=playwright.configuration.config.ts",
     "test:blockers": "playwright test --config=playwright.blockers.config.ts",
+    "lab:test": "tsx --conditions=react-server --test tests/lab-*.test.ts",
+    "lab:run": "tsx --conditions=react-server lab/run.ts",
+    "lab:db:up": "tsx --conditions=react-server lab/postgres/lab-db.ts up",
+    "lab:db:down": "tsx --conditions=react-server lab/postgres/lab-db.ts down",
+    "lab:db:status": "tsx --conditions=react-server lab/postgres/lab-db.ts status",
+    "lab:db:test": "tsx --conditions=react-server lab/postgres/run-db-tests.ts",
+    "lab:db:guard-selftest": "tsx --conditions=react-server lab/postgres/guard-selftest.ts",
+    "lab:concurrency": "tsx --conditions=react-server lab/concurrency/harness.ts",
+    "lab:parity": "tsx --conditions=react-server lab/linux/parity.ts",
     "check": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "engines": {
