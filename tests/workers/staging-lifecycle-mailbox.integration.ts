@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { build, type Plugin } from "esbuild";
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare, type V4MiniflareOptions } from "miniflare";
 import { encodeBase64url } from "../../src/lib/ingress-protocol";
@@ -104,7 +104,7 @@ async function sql(mf: Miniflare, script: string, className: string, name: strin
 
 async function main(): Promise<void> {
   const resolved = resolve(runtimeRoot);
-  assert.ok(resolved.startsWith(resolve(root, ".wrangler", "tests") + "\\"));
+  assert.ok(resolved.startsWith(resolve(root, ".wrangler", "tests") + sep));
   await mkdir(runtimeRoot, { recursive: true });
   process.env.WRANGLER_SEND_METRICS = "false";
   const pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
