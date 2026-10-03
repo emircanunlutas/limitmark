@@ -6,8 +6,10 @@
  *    non-persistent demo adapter.
  *  - Refuses to start if anything already listens on the port, and only ever kills the
  *    process tree it started itself.
+ *  - Interruption cleanup: every started tree is tracked; SIGINT/SIGTERM/SIGHUP and a normal process exit kill all
+ *    tracked trees synchronously. A detached (own process group) Linux child would otherwise outlive an interrupted run.
  */
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -44,6 +46,48 @@ export function scrubbedAppEnvironment(port: number): Record<string, string> {
   return environment;
 }
 
+// ---------------------------------------------------------------------------
+// Interruption cleanup
+// ---------------------------------------------------------------------------
+
+const trackedPids = new Set<number>();
+let handlersInstalled = false;
+
+/** Synchronously kills one process tree: the whole group on POSIX (the child is its own group leader), taskkill /T on Windows. */
+export function killTreeSync(pid: number, kill: (pid: number, signal: NodeJS.Signals) => void = process.kill, platform: string = process.platform): void {
+  try {
+    if (platform === "win32") execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    else kill(-pid, "SIGKILL");
+  } catch { /* already gone */ }
+}
+
+export function trackChildTree(pid: number): void {
+  trackedPids.add(pid);
+  installCleanupHandlers();
+}
+
+export function untrackChildTree(pid: number): void { trackedPids.delete(pid); }
+
+export function trackedChildTrees(): number[] { return [...trackedPids]; }
+
+/** Kills every tracked tree; used by the exit/signal handlers and by tests. */
+export function killTrackedTreesSync(kill?: (pid: number, signal: NodeJS.Signals) => void, platform?: string): void {
+  for (const pid of [...trackedPids]) { killTreeSync(pid, kill, platform); trackedPids.delete(pid); }
+}
+
+function installCleanupHandlers(): void {
+  if (handlersInstalled) return;
+  handlersInstalled = true;
+  process.on("exit", () => killTrackedTreesSync());
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => {
+      killTrackedTreesSync();
+      // A listener suppresses Node's default termination. If nobody else handles the signal, finish the job.
+      if (process.listenerCount(signal) <= 1) process.exit(128 + ({ SIGHUP: 1, SIGINT: 2, SIGTERM: 15 }[signal]));
+    });
+  }
+}
+
 export class LocalApp {
   private child: ChildProcess | null = null;
 
@@ -62,8 +106,10 @@ export class LocalApp {
       cwd: REPOSITORY_ROOT, env: scrubbedAppEnvironment(this.port) as NodeJS.ProcessEnv, stdio: ["ignore", "ignore", "ignore"],
       detached: process.platform !== "win32", windowsHide: true,
     });
-    child.on("exit", () => { if (this.child === child) this.child = null; });
+    child.on("exit", () => { if (this.child === child) this.child = null; if (child.pid) untrackChildTree(child.pid); });
     this.child = child;
+    // Tracked from the moment it exists: an interruption between here and kill() still removes the whole tree.
+    if (child.pid) trackChildTree(child.pid);
   }
 
   /** Abrupt termination of the whole tree this object started. */
@@ -71,6 +117,7 @@ export class LocalApp {
     const child = this.child;
     if (!child?.pid) return;
     this.child = null;
+    untrackChildTree(child.pid);
     if (process.platform === "win32") {
       await new Promise<void>((resolve) => execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => resolve()));
     } else {
@@ -82,7 +129,12 @@ export class LocalApp {
   async waitUntilListening(timeoutMs = 60_000): Promise<number> {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
-      if (await portIsListening(this.port)) return Date.now() - started;
+      // A listener only counts if it is OUR process: if the child already exited, whatever answers is something else.
+      if (!this.running) throw new Error("the lab-started application exited before it was listening");
+      if (await portIsListening(this.port)) {
+        if (!this.running) throw new Error("the lab-started application exited before it was listening");
+        return Date.now() - started;
+      }
       await new Promise((r) => setTimeout(r, 100));
     }
     throw new Error("application did not start listening in time");

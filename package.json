@@ -77,7 +77,8 @@
     "lab:concurrency": "tsx --conditions=react-server lab/concurrency/harness.ts",
     "lab:parity": "tsx --conditions=react-server lab/linux/parity.ts",
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
-    "lab:k6:selftest": "tsx --conditions=react-server lab/load/k6-selftest.ts"
+    "lab:k6:selftest": "tsx --conditions=react-server lab/load/k6-selftest.ts",
+    "lab:cancel:selftest": "tsx --conditions=react-server lab/failure/cancel-selftest.ts"
   },
   "engines": {
     "node": ">=22.0.0"

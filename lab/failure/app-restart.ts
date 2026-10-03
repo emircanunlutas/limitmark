@@ -16,10 +16,11 @@ export async function runAppRestart(run: AuthorizedRun, set: ThresholdSet): Prom
   const base = set.http["latency-measurement"];
   const thresholds: HttpThresholds = { ...base, phaseRules: { down: "expect-failures", recovery: "expect-failures" } };
   const app = new LocalApp(run.target.port);
-  await app.start();
-  await app.waitUntilListening();
   let killedAt = 0, startedAt = 0, firstFailureAt: number | null = null, firstOkAt: number | null = null, consecutiveOk = 0, maxDown = 0;
+  // Startup AND readiness are inside the cleanup scope: a failed or timed-out start still kills whatever was spawned.
   try {
+    await app.start();
+    await app.waitUntilListening();
     const engine = await executeHttpWorkload({
       run, thresholds,
       onPhaseStart: async (phase) => {

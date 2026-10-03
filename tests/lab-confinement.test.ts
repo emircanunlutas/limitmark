@@ -161,6 +161,26 @@ function runFor(port: number, phases: EffectiveLimits["phases"], extra: Partial<
 const phase = (over: Partial<EffectiveLimits["phases"][number]> = {}) => ({ name: "p", durationSeconds: 2, ratePerSecond: 10, concurrency: 2, timeoutMs: 1000, ...over });
 const lenient: HttpThresholds = { ...THRESHOLD_SETS["local-loopback-v1"].http["latency-measurement"], stop: { errorRate: 2, afterSamples: 1_000_000, consecutiveFailures: 1_000_000, p99Ms: 1e9 } };
 
+test("F2 regression: authorization is re-checked for the whole run; a lapsed target stops dispatch immediately", async () => {
+  const server = await listen((_request, response) => response.end("ok"));
+  let expired = false;
+  const base = runFor(server.port, [phase({ durationSeconds: 5, ratePerSecond: 20, concurrency: 2 })], { maxTotalRequests: 1000 });
+  // The authorization lapses 400 ms into the run.
+  setTimeout(() => { expired = true; }, 400);
+  const run: AuthorizedRun = {
+    ...base,
+    assertStillAuthorized: () => { if (expired) throw new PolicyRefusal("target-expired", "the target authorization expired while the run was in progress"); },
+  };
+  const started = Date.now();
+  const result = await executeHttpWorkload({ run, thresholds: lenient });
+  assert.equal(result.stopReason, "target authorization expired during the run");
+  assert.ok(Date.now() - started < 2_000, "the run must end near the expiry, not at the end of the phase");
+  const reached = server.count();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(server.count(), reached, "no request may leave after the expiry");
+  assert.ok(reached > 0 && reached < 40);
+});
+
 test("F2: the policy's own authorization lapses with its clock, for requests and for the run", () => {
   let clock = Date.parse("2030-01-01T00:00:00Z");
   const now = new Date(clock);
@@ -178,12 +198,68 @@ test("F2: the policy's own authorization lapses with its clock, for requests and
 });
 
 // ------------------------------------------------------------------------------------------------ strict deadline
+test("F3: the deadline is strict: nothing is sent after it and in-flight requests are cancelled, not awaited for their full timeout", async () => {
+  const hang = await listen(() => undefined);
+  const started = Date.now();
+  // 10 s request timeouts, a 1 s run: the old engine waited for every request's own timeout (up to 10 s).
+  const result = await executeHttpWorkload({ run: runFor(hang.port, [phase({ durationSeconds: 60, ratePerSecond: 5, concurrency: 2, timeoutMs: 10_000 })], { maxDurationSeconds: 1 }), thresholds: lenient });
+  const elapsed = Date.now() - started;
+  assert.equal(result.stopReason, "global deadline reached");
+  assert.ok(elapsed < 1_000 + SETUP_ALLOWANCE_MS + DRAIN_GRACE_MS + 1_500, `elapsed ${elapsed}ms`);
+  assert.ok(elapsed < 8_000, "far below the 10 s request timeouts");
+  assert.ok((result.phases[0].outcomes.aborted ?? 0) > 0, "in-flight requests are cancelled at the drain limit");
+});
+
+test("F3 (parity finding): a workload whose phase fills its whole duration budget completes (PASS path), it is not stopped by the deadline", async () => {
+  const server = await listen((_request, response) => response.end("ok"));
+  // One phase of exactly the duration ceiling, plus a per-phase set-up that takes time (the container ownership re-check).
+  const result = await executeHttpWorkload({
+    run: runFor(server.port, [phase({ durationSeconds: 1, ratePerSecond: 4, concurrency: 1 })], { maxDurationSeconds: 1, maxTotalRequests: 4 }), thresholds: lenient,
+    onPhaseStart: async () => { await new Promise((resolve) => setTimeout(resolve, 300)); },
+  });
+  assert.equal(result.stopReason, null);
+  assert.ok(result.phases[0].attempted <= 4);
+});
+
+test("F3 regression: a 1 s phase at 2 req/s emits at most 2 requests (never rate x duration + 1)", async () => {
+  let sent = 0;
+  const send = async () => { sent++; return { outcome: "ok" as const, status: 200, latencyMs: 1, bytes: 1 }; };
+  const result = await executeHttpWorkload({ run: runFor(1, [phase({ durationSeconds: 1, ratePerSecond: 2, concurrency: 1 })], { maxTotalRequests: 100 }), thresholds: lenient, send });
+  assert.ok(sent <= 2, `sent ${sent}`);
+  assert.equal(result.phases[0].attempted, sent);
+});
+
+test("F3: cancelling the run's signal cancels in-flight requests at once", async () => {
+  const hang = await listen(() => undefined);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 300);
+  const started = Date.now();
+  const result = await executeHttpWorkload({ run: runFor(hang.port, [phase({ durationSeconds: 30, ratePerSecond: 5, concurrency: 2, timeoutMs: 10_000 })]), thresholds: lenient, signal: controller.signal });
+  assert.ok(Date.now() - started < 2_000, "must not wait for the 10 s timeouts");
+  assert.equal(result.aborted, true);
+});
+
 // ------------------------------------------------------------------------------------------------ F5: interruption cleanup of detached trees
+test("F5: tracked process trees are killed on interruption cleanup (the group on POSIX, taskkill /T on Windows)", () => {
+  const calls: string[] = [];
+  trackChildTree(424242); trackChildTree(424243);
+  assert.deepEqual(trackedChildTrees().sort(), [424242, 424243]);
+  untrackChildTree(424243);
+  killTrackedTreesSync((pid, signal) => { calls.push(`${pid}:${signal}`); }, "linux");
+  assert.deepEqual(calls, ["-424242:SIGKILL"], "kill(-pid) addresses the whole detached group");
+  assert.deepEqual(trackedChildTrees(), []);
+  const posix: string[] = [];
+  killTreeSync(77, (pid, signal) => { posix.push(`${pid}:${signal}`); }, "darwin");
+  assert.deepEqual(posix, ["-77:SIGKILL"]);
+  assert.doesNotThrow(() => killTreeSync(78, () => { throw new Error("ESRCH"); }, "linux"));
+});
+
 // ------------------------------------------------------------------------------------------------ round 2: ONE Docker confinement
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { bindToEndpoint, confinedDockerInvocationSync, resetDockerEndpointCache, resolveLocalDockerEndpointSync } from "../lab/host/docker";
 import { collectEnvironment } from "../lab/evidence/manifest";
+
 
 test("F2 round 2 regression: an ACTIVE remote context (no DOCKER_HOST / DOCKER_CONTEXT) is refused by the synchronous path too", () => {
   const inspect = (answer: string) => () => `${answer}\n`;
@@ -247,74 +323,6 @@ test("F2 round 2: the evidence version probe never asks a daemon the lab did not
   process.env.DOCKER_HOST = "tcp://203.0.113.9:2375";
   try { assert.equal(collectEnvironment().dockerVersion, null); }
   finally { if (previous === undefined) delete process.env.DOCKER_HOST; else process.env.DOCKER_HOST = previous; }
-});
-
-test("F2 round 2 (variant): variables that select a REMOTE BUILDER or re-point compose are not inherited, and the parity build names the local default builder", () => {
-  const scrubbed = dockerCliEnvironment({}, { PATH: "/bin", BUILDX_BUILDER: "remote-farm", BUILDKIT_HOST: "tcp://203.0.113.9:1234", COMPOSE_FILE: "/tmp/evil.yaml", COMPOSE_PROJECT_NAME: "evil", HOME: "/h" });
-  assert.deepEqual(scrubbed, { PATH: "/bin", HOME: "/h" });
-  const parity = readFileSync(path.join(__dirname, "..", "lab", "linux", "parity.ts"), "utf8");
-  assert.match(parity, /"build", "--builder", "default"/);
-});
-
-test("F2 regression: authorization is re-checked for the whole run; a lapsed target stops dispatch immediately", async () => {
-  const server = await listen((_request, response) => response.end("ok"));
-  let expired = false;
-  const base = runFor(server.port, [phase({ durationSeconds: 5, ratePerSecond: 20, concurrency: 2 })], { maxTotalRequests: 1000 });
-  // The authorization lapses 400 ms into the run.
-  setTimeout(() => { expired = true; }, 400);
-  const run: AuthorizedRun = {
-    ...base,
-    assertStillAuthorized: () => { if (expired) throw new PolicyRefusal("target-expired", "the target authorization expired while the run was in progress"); },
-  };
-  const started = Date.now();
-  const result = await executeHttpWorkload({ run, thresholds: lenient });
-  assert.equal(result.stopReason, "target authorization expired during the run");
-  assert.ok(Date.now() - started < 2_000, "the run must end near the expiry, not at the end of the phase");
-  const reached = server.count();
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.equal(server.count(), reached, "no request may leave after the expiry");
-  assert.ok(reached > 0 && reached < 40);
-});
-
-test("F3: the deadline is strict: nothing is sent after it and in-flight requests are cancelled, not awaited for their full timeout", async () => {
-  const hang = await listen(() => undefined);
-  const started = Date.now();
-  // 10 s request timeouts, a 1 s run: the old engine waited for every request's own timeout (up to 10 s).
-  const result = await executeHttpWorkload({ run: runFor(hang.port, [phase({ durationSeconds: 60, ratePerSecond: 5, concurrency: 2, timeoutMs: 10_000 })], { maxDurationSeconds: 1 }), thresholds: lenient });
-  const elapsed = Date.now() - started;
-  assert.equal(result.stopReason, "global deadline reached");
-  assert.ok(elapsed < 1_000 + SETUP_ALLOWANCE_MS + DRAIN_GRACE_MS + 1_500, `elapsed ${elapsed}ms`);
-  assert.ok(elapsed < 8_000, "far below the 10 s request timeouts");
-  assert.ok((result.phases[0].outcomes.aborted ?? 0) > 0, "in-flight requests are cancelled at the drain limit");
-});
-
-test("F3 (parity finding): a workload whose phase fills its whole duration budget completes (PASS path), it is not stopped by the deadline", async () => {
-  const server = await listen((_request, response) => response.end("ok"));
-  // One phase of exactly the duration ceiling, plus a per-phase set-up that takes time (the container ownership re-check).
-  const result = await executeHttpWorkload({
-    run: runFor(server.port, [phase({ durationSeconds: 1, ratePerSecond: 4, concurrency: 1 })], { maxDurationSeconds: 1, maxTotalRequests: 4 }), thresholds: lenient,
-    onPhaseStart: async () => { await new Promise((resolve) => setTimeout(resolve, 300)); },
-  });
-  assert.equal(result.stopReason, null);
-  assert.ok(result.phases[0].attempted <= 4);
-});
-
-test("F3 regression: a 1 s phase at 2 req/s emits at most 2 requests (never rate x duration + 1)", async () => {
-  let sent = 0;
-  const send = async () => { sent++; return { outcome: "ok" as const, status: 200, latencyMs: 1, bytes: 1 }; };
-  const result = await executeHttpWorkload({ run: runFor(1, [phase({ durationSeconds: 1, ratePerSecond: 2, concurrency: 1 })], { maxTotalRequests: 100 }), thresholds: lenient, send });
-  assert.ok(sent <= 2, `sent ${sent}`);
-  assert.equal(result.phases[0].attempted, sent);
-});
-
-test("F3: cancelling the run's signal cancels in-flight requests at once", async () => {
-  const hang = await listen(() => undefined);
-  const controller = new AbortController();
-  setTimeout(() => controller.abort(), 300);
-  const started = Date.now();
-  const result = await executeHttpWorkload({ run: runFor(hang.port, [phase({ durationSeconds: 30, ratePerSecond: 5, concurrency: 2, timeoutMs: 10_000 })]), thresholds: lenient, signal: controller.signal });
-  assert.ok(Date.now() - started < 2_000, "must not wait for the 10 s timeouts");
-  assert.equal(result.aborted, true);
 });
 
 // ------------------------------------------------------------------------------------------------ round 2: ownership DURING a phase
@@ -407,4 +415,11 @@ test("F2 round 2: the runner wires the lease for --app-container with the contai
   assert.match(source, /destination: containerGate === undefined \? undefined : \{ verify: async \(\) => \{ await verifyAppContainer\(containerGate, run\.target\.port, appContainerId\)/);
   assert.doesNotMatch(source, /onPhaseStart: args\.appContainer/);
   assert.match(source, /appContainerId = await verifyAppContainer/);
+});
+
+test("F2 round 2 (variant): variables that select a REMOTE BUILDER or re-point compose are not inherited, and the parity build names the local default builder", () => {
+  const scrubbed = dockerCliEnvironment({}, { PATH: "/bin", BUILDX_BUILDER: "remote-farm", BUILDKIT_HOST: "tcp://203.0.113.9:1234", COMPOSE_FILE: "/tmp/evil.yaml", COMPOSE_PROJECT_NAME: "evil", HOME: "/h" });
+  assert.deepEqual(scrubbed, { PATH: "/bin", HOME: "/h" });
+  const parity = readFileSync(path.join(__dirname, "..", "lab", "linux", "parity.ts"), "utf8");
+  assert.match(parity, /"build", "--builder", "default"/);
 });

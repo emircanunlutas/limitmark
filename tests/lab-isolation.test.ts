@@ -6,15 +6,23 @@ import { test } from "node:test";
 const root = path.join(__dirname, "..");
 const SKIP = new Set(["node_modules", ".next", "artifacts", ".git", ".npm-cache", ".wrangler", ".playwright", "test-results", "playwright-report", "lab", "tests"]);
 
+// Other test files create and delete rendered deployment files while this suite runs; an entry that disappears between
+// readdir and stat/read is not runtime code and must not fail the scan (it made the suite flaky under the parallel runner).
 function walk(directory: string, extensions: readonly string[]): string[] {
   const found: string[] = [];
   for (const entry of readdirSync(directory)) {
     if (SKIP.has(entry)) continue;
     const full = path.join(directory, entry);
-    if (statSync(full).isDirectory()) found.push(...walk(full, extensions));
+    let isDirectory: boolean;
+    try { isDirectory = statSync(full).isDirectory(); } catch { continue; }
+    if (isDirectory) found.push(...walk(full, extensions));
     else if (extensions.some((extension) => entry.endsWith(extension))) found.push(full);
   }
   return found;
+}
+
+function readIfPresent(file: string): string {
+  try { return readFileSync(file, "utf8"); } catch { return ""; }
 }
 
 // Everything that is application runtime, build, deploy or operator code: i.e. everything except lab/ and tests/.
@@ -24,7 +32,7 @@ const importsLab = /(?:from\s+|import\s*\(\s*|require\s*\(\s*|import\s+)["'`](?:
 
 test("no application, worker, operator, deployment or script file imports from lab/", () => {
   assert.ok(runtimeFiles.length > 100, "the scan must actually see the codebase");
-  const offenders = runtimeFiles.filter((file) => importsLab.test(readFileSync(file, "utf8"))).map((file) => path.relative(root, file));
+  const offenders = runtimeFiles.filter((file) => importsLab.test(readIfPresent(file))).map((file) => path.relative(root, file));
   assert.deepEqual(offenders, []);
 });
 
@@ -33,14 +41,14 @@ test("no runtime file references lab-only identifiers (proof schema, lab paths, 
   const offenders: string[] = [];
   // package.json holds the sanctioned `lab:*` launch scripts; the next test pins what they may run.
   for (const file of runtimeFiles.filter((candidate) => path.basename(candidate) !== "package.json")) {
-    const text = readFileSync(file, "utf8");
+    const text = readIfPresent(file);
     for (const needle of needles) if (text.includes(needle)) offenders.push(`${path.relative(root, file)}: ${needle}`);
   }
   assert.deepEqual(offenders, []);
 });
 
 test("no runtime file imports test support code", () => {
-  const offenders = runtimeFiles.filter((file) => /from\s+["'][^"']*(?:\/|^)tests\/support/.test(readFileSync(file, "utf8"))).map((file) => path.relative(root, file));
+  const offenders = runtimeFiles.filter((file) => /from\s+["'][^"']*(?:\/|^)tests\/support/.test(readIfPresent(file))).map((file) => path.relative(root, file));
   assert.deepEqual(offenders, []);
 });
 
