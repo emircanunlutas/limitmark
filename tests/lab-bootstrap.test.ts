@@ -39,7 +39,9 @@ test("bootstrap scripts embed no credential, key, token, password or address", (
   ];
   for (const name of scripts.concat("pins.env")) {
     // `203.0.113.10` appears only in a documentation example inside an error message.
-    const body = code(name).replace(/http:\/\/203\.0\.113\.10:3000/g, "<example>").replace(/--hostname 0\.0\.0\.0/g, "<bind>");
+    // The two pinned Node tarball SHA-256 digests in pins.env are public integrity values, not secrets.
+    const body = code(name).replace(/http:\/\/203\.0\.113\.10:3000/g, "<example>").replace(/--hostname 0\.0\.0\.0/g, "<bind>")
+      .replace(/^(NODE_SHA256_LINUX_(?:X64|ARM64))=[0-9a-f]{64}$/gm, "$1=<pinned-digest>");
     for (const [label, pattern] of secrets) assert.doesNotMatch(body, pattern, `${name}: ${label}`);
   }
 });
@@ -90,11 +92,14 @@ test("every state-changing command in bootstrap and teardown goes through run() 
   }
 });
 
-test("pins.env holds only placeholders for digests, and the script refuses placeholders outside --dry-run", () => {
+test("pins.env digests are each a real SHA-256 or a refused placeholder, and the script refuses placeholders outside --dry-run", () => {
   const pins = text("pins.env");
   assert.match(pins, /^NODE_VERSION=\d+\.\d+\.\d+$/m);
-  assert.match(pins, /NODE_SHA256_LINUX_X64=__REQUIRED_/);
-  assert.match(pins, /NODE_SHA256_LINUX_ARM64=__REQUIRED_/);
+  const digest = (name: string) => new RegExp(`^${name}=(__REQUIRED_[A-Z0-9_]+__|[0-9a-f]{64})$`, "m").exec(pins)?.[1];
+  const x64 = digest("NODE_SHA256_LINUX_X64");
+  const arm64 = digest("NODE_SHA256_LINUX_ARM64");
+  assert.ok(x64 && arm64, "each digest is a 64-hex SHA-256 or an explicit __REQUIRED_ placeholder");
+  assert.notEqual(x64, arm64, "the two architectures cannot share a digest");
   assert.match(code("sut-bootstrap.sh"), /placeholder in pins\.env/);
 });
 
