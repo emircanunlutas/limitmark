@@ -12,7 +12,7 @@ const text = (name: string) => readFileSync(path.join(directory, name), "utf8");
 const code = (name: string) => text(name).split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
 
 test("the bootstrap directory contains exactly the reviewed files", () => {
-  assert.deepEqual([...files].sort(), ["README.md", "host-metrics.sh", "pins.env", "sut-bootstrap.sh", "sut-teardown.sh"]);
+  assert.deepEqual([...files].sort(), ["README.md", "host-metrics.sh", "lib-net.sh", "pins.env", "sut-bootstrap.sh", "sut-teardown.sh"]);
 });
 
 test("bootstrap scripts contain no provider CLI, provider API call, metadata access or remote mutation", () => {
@@ -58,7 +58,8 @@ test("bootstrap is reviewable and fail-closed: strict mode, explicit disposable 
   const bootstrap = code("sut-bootstrap.sh");
   for (const required of ["LAB_REPO_URL", "LAB_REPO_COMMIT", "LAB_APP_ORIGIN", "LAB_SSH_ALLOW_CIDRS", "LAB_LOADGEN_CIDRS"]) assert.match(bootstrap, new RegExp(`:\\s*"\\$\\{${required}:\\?`), required);
   assert.match(bootstrap, /\{40\}/, "commit must be pinned to a full SHA");
-  assert.match(bootstrap, /\*\/0\) die/, "a /0 CIDR must be refused");
+  assert.match(bootstrap, /cidr_list_check "\$LAB_SSH_ALLOW_CIDRS" "LAB_SSH_ALLOW_CIDRS" \|\| die/, "SSH CIDRs go through the strict validator");
+  assert.match(bootstrap, /cidr_list_check "\$LAB_LOADGEN_CIDRS" "LAB_LOADGEN_CIDRS" \|\| die/, "load-generator CIDRs go through the strict validator");
   assert.match(bootstrap, /Ubuntu only/);
   assert.match(bootstrap, /sha256sum --check/, "Node tarball must be digest-verified");
   assert.match(bootstrap, /--proto '=https'/);
@@ -66,7 +67,7 @@ test("bootstrap is reviewable and fail-closed: strict mode, explicit disposable 
   // The only hosts the script downloads from.
   const urls = [...bootstrap.matchAll(/https?:\/\/[^\s"'$)]+/g)].map((match) => match[0]);
   // The only other `http://` strings are a bash validation regex and a documentation example.
-  for (const url of urls.filter((candidate) => !candidate.startsWith("http://(") && !candidate.startsWith("https://[") && !candidate.startsWith("http://203.0.113.10"))) {
+  for (const url of urls.filter((candidate) => !candidate.startsWith("http://(") && !candidate.startsWith("https://[") && !candidate.startsWith("http://203.0.113.10") && !candidate.startsWith("http://localhost:3000/"))) {
     assert.match(url, /^https:\/\/nodejs\.org\/dist\//, url);
   }
   assert.doesNotMatch(bootstrap, /git clone/, "fetches an exact commit instead of cloning a moving branch");
@@ -124,6 +125,188 @@ function hasBash(): boolean {
   try { execFileSync("bash", ["--version"], { stdio: "ignore" }); return true; } catch { return false; }
 }
 
+// ---------------------------------------------------------------------------------------------- Codex F6 regressions
+import { spawnSync } from "node:child_process";
+
+const toBashPath = (file: string) => file.replace(/\\/g, "/");
+const lib = toBashPath(path.join(directory, "lib-net.sh"));
+const bashAvailable = hasBash();
+const bashSkip = bashAvailable ? false : "bash not available";
+
+/** Runs a snippet with lib-net.sh sourced. Returns the exit status and what the snippet printed. */
+function bash(snippet: string): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync("bash", ["-c", `set -u; . "${lib}"; ${snippet}`], { encoding: "utf8" });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+test("F6 regression: invalid CIDRs are refused (999.999.999.999/32 was accepted)", { skip: bashSkip }, () => {
+  const invalid = [
+    "999.999.999.999/32", "256.0.0.0/16", "1.2.3.256/32", "1.2.3/24", "1.2.3.4.5/32", "01.2.3.4/32", "1.02.3.4/32", "203.0.113.0/33", "203.0.113.0/", "203.0.113.0", "/24", "203.0.113.0/-1", "203.0.113.0/24x",
+    "203.0.113.0/024", "abc/24", "203.0.113.0/2e1", "1.2.3.4/ 32", " 1.2.3.4/32", "1.2.3.4/32 ", "::1/128", "2001:db8::/32", "203.0.113.0/0", "0.0.0.0/0",
+  ];
+  for (const cidr of invalid) assert.notEqual(bash(`cidr_check '${cidr}'`).status, 0, cidr);
+});
+
+test("F6 regression: complementary broad networks that together cover all of IPv4 are refused (a bare /0 ban was not enough)", { skip: bashSkip }, () => {
+  assert.notEqual(bash(`cidr_list_check '0.0.0.0/1,128.0.0.0/1' X`).status, 0);
+  assert.notEqual(bash(`cidr_list_check '0.0.0.0/2,64.0.0.0/2,128.0.0.0/2,192.0.0.0/2' X`).status, 0);
+  for (const cidr of ["0.0.0.0/1", "128.0.0.0/1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/15", "203.0.0.0/8"]) assert.notEqual(bash(`cidr_check '${cidr}'`).status, 0, cidr);
+  // Sixteen /16s is still not "the world", but the list is bounded as well.
+  const nine = Array.from({ length: 9 }, (_, index) => `198.${index}.0.0/16`).join(",");
+  assert.notEqual(bash(`cidr_list_check '${nine}' X`).status, 0, "more than 8 entries");
+  const eight = Array.from({ length: 8 }, (_, index) => `198.${index}.0.0/16`).join(",");
+  assert.equal(bash(`cidr_list_check '${eight}' X`).status, 0);
+});
+
+test("F6: host bits, reserved ranges, empty entries and whitespace are refused; ordinary operator ranges pass", { skip: bashSkip }, () => {
+  for (const cidr of ["203.0.113.7/24", "203.0.113.1/31", "198.51.100.128/24"]) assert.notEqual(bash(`cidr_check '${cidr}'`).status, 0, `host bits ${cidr}`);
+  for (const cidr of ["0.0.0.0/32", "0.1.0.0/16", "127.0.0.1/32", "127.255.0.0/16", "169.254.0.0/16", "169.254.169.0/24", "224.0.0.0/24", "240.0.0.0/16", "255.255.255.255/32"]) {
+    assert.notEqual(bash(`cidr_check '${cidr}'`).status, 0, `reserved ${cidr}`);
+  }
+  for (const list of ["", ",", "203.0.113.0/24,", ",203.0.113.0/24", "203.0.113.0/24,,198.51.100.0/24", "203.0.113.0/24, 198.51.100.0/24", "203.0.113.0/24 198.51.100.0/24"]) {
+    assert.notEqual(bash(`cidr_list_check '${list}' X`).status, 0, JSON.stringify(list));
+  }
+  for (const cidr of ["203.0.113.0/24", "198.51.100.7/32", "192.0.0.0/16", "100.64.0.0/16", "10.20.0.0/16", "172.17.0.0/16"]) assert.equal(bash(`cidr_check '${cidr}'`).status, 0, cidr);
+  assert.equal(bash(`cidr_list_check '203.0.113.0/24,198.51.100.7/32' X`).status, 0);
+  // The refusal names the problem and never silently normalises.
+  assert.match(bash(`cidr_check '203.0.113.7/24'`).stderr, /host bits are set/);
+});
+
+const UFW_STATUS = [
+  "Status: active", "", "     To                         Action      From", "     --                         ------      ----",
+  "[ 1] 22/tcp                     ALLOW IN    198.51.100.7               # limitmark-lab ssh",
+  "[ 2] 80/tcp                     ALLOW IN    Anywhere                   # something else",
+  "[ 3] 3000/tcp                   ALLOW IN    203.0.113.0/24             # limitmark-lab app",
+  "[ 4] 3000/tcp                   ALLOW IN    192.0.2.0/24               # limitmark-lab app",
+  "[ 5] 22/tcp                     ALLOW IN    192.0.2.0/24",
+  "[10] 3000/tcp                   ALLOW IN    100.64.0.0/16              # limitmark-lab app", "",
+].join("\n");
+
+test("F6 regression: ufw rule numbers are parsed for single-digit AND two-digit numbering (the old awk lost `[ 1]`)", { skip: bashSkip }, () => {
+  const numbers = bash(`ufw_lab_rule_numbers <<'STATUS'\n${UFW_STATUS}\nSTATUS`);
+  assert.equal(numbers.status, 0);
+  assert.deepEqual(numbers.stdout.trim().split("\n"), ["10", "4", "3", "1"], "every lab rule, highest first, and no foreign rule");
+  const records = bash(`ufw_lab_rules <<'STATUS'\n${UFW_STATUS}\nSTATUS`).stdout.trim().split("\n");
+  assert.deepEqual(records, ["1|22|198.51.100.7", "3|3000|203.0.113.0/24", "4|3000|192.0.2.0/24", "10|3000|100.64.0.0/16"]);
+  // The pre-fix teardown extraction, for the record: `[ 1]` splits into "[" and "1]", so single-digit rules vanish.
+  const legacy = spawnSync("bash", ["-c", `awk '/limitmark-lab/ {gsub(/[\\[\\]]/,"",$1); print $1}' <<'STATUS'\n${UFW_STATUS}\nSTATUS`], { encoding: "utf8" });
+  assert.ok(!legacy.stdout.split("\n").some((line) => line === "1"), "the legacy parser dropped rule 1 (this is what the regression pins)");
+});
+
+test("F6 regression: rules for CIDRs that are no longer supplied are identified as stale; supplied ones are kept (a /32 is printed bare by ufw)", { skip: bashSkip }, () => {
+  const stale = bash(`ufw_stale_lab_rule_numbers '22|198.51.100.7' '3000|203.0.113.0/24' <<'STATUS'\n${UFW_STATUS}\nSTATUS`);
+  assert.deepEqual(stale.stdout.trim().split("\n"), ["10", "4"]);
+  assert.equal(bash(`ufw_stale_lab_rule_numbers '22|198.51.100.7' '3000|203.0.113.0/24' '3000|192.0.2.0/24' '3000|100.64.0.0/16' <<'STATUS'\n${UFW_STATUS}\nSTATUS`).stdout.trim(), "");
+  // Everything lab-tagged is stale when nothing is desired; foreign rules are never touched.
+  assert.deepEqual(bash(`ufw_stale_lab_rule_numbers 'none|none' <<'STATUS'\n${UFW_STATUS}\nSTATUS`).stdout.trim().split("\n"), ["10", "4", "3", "1"]);
+  assert.equal(bash(`ufw_normalize_cidr 198.51.100.7/32`).stdout.trim(), "198.51.100.7");
+  assert.equal(bash(`ufw_normalize_cidr 203.0.113.0/24`).stdout.trim(), "203.0.113.0/24");
+  // Same port, different source: a rule whose PORT matches but whose source changed is stale.
+  assert.deepEqual(bash(`ufw_stale_lab_rule_numbers '3000|203.0.113.0/24' '22|198.51.100.7' <<'STATUS'\n${UFW_STATUS}\nSTATUS`).stdout.trim().split("\n"), ["10", "4"]);
+});
+
+const runOrder = (source: string) => {
+  const section = source.slice(source.indexOf("# ---------------------------------------------------------------- run"));
+  return section.split("\n").map((line) => line.trim()).filter((line) => /^[a-z_]+$/.test(line) || /^install_node$/.test(line));
+};
+
+test("F6 regression: the firewall is configured BEFORE the application is built or started, and the recovery marker is written before anything else", () => {
+  const order = runOrder(text("sut-bootstrap.sh"));
+  assert.deepEqual(order, ["write_marker", "install_packages", "install_node", "prepare_host", "configure_firewall", "build_application", "install_app_service", "install_metrics"]);
+  assert.ok(order.indexOf("configure_firewall") < order.indexOf("install_app_service"), "port 3000 must never listen before the firewall is up");
+});
+
+test("F6 regression: a rebuilt or reconfigured application is RESTARTED and proven ready (`enable --now` does not restart a running service)", () => {
+  const body = code("sut-bootstrap.sh");
+  assert.match(body, /run systemctl restart limitmark-lab-app\.service/);
+  assert.doesNotMatch(body, /enable --now limitmark-lab-app/);
+  assert.match(body, /run systemctl enable limitmark-lab-app\.service/);
+  assert.match(body, /verify_app_ready \|\| die "the application did not become ready after the restart"/);
+  assert.match(body, /systemctl is-active --quiet limitmark-lab-app\.service && curl --fail/);
+  assert.ok(body.indexOf("systemctl restart") > body.indexOf("daemon-reload"), "restart follows the unit rewrite");
+});
+
+test("F6 regression: stale lab firewall rules are removed after the desired rules are added (add first, then delete: never a window without SSH)", () => {
+  const body = code("sut-bootstrap.sh");
+  const firewall = body.slice(body.indexOf("configure_firewall() {"), body.indexOf("build_application() {"));
+  assert.match(firewall, /ufw_stale_lab_rule_numbers "\$\{desired\[@\]\}"/);
+  assert.ok(firewall.indexOf("ufw allow from") < firewall.indexOf("ufw_stale_lab_rule_numbers"), "desired rules first");
+  assert.ok(firewall.indexOf("ufw_stale_lab_rule_numbers") < firewall.indexOf("ufw --force enable"));
+  assert.match(firewall, /run ufw --force delete "\$number"/);
+  assert.match(firewall, /desired\+=\("22\|\$\(ufw_normalize_cidr "\$cidr"\)"\)/);
+  assert.match(firewall, /desired\+=\("3000\|\$\(ufw_normalize_cidr "\$cidr"\)"\)/);
+});
+
+test("F6 regression: an existing Node install is re-verified against digests recorded at install time, and lives where the service user cannot replace it", () => {
+  const body = code("sut-bootstrap.sh");
+  assert.match(body, /NODE_ROOT=\/opt\/limitmark-node/);
+  assert.ok(!"/opt/limitmark-node".startsWith("/opt/limitmark-lab"), "outside the lab user's tree");
+  assert.match(body, /node_install_verified\(\)/);
+  assert.match(body, /sha256sum --check --quiet --strict "\$sums"/);
+  assert.match(body, /find \. -type f \| wc -l/, "files that are not in the recorded manifest are also refused");
+  assert.match(body, /chown -R root:root "\$target"/);
+  assert.match(body, /tar -xJf "\$tarball" -C "\$NODE_ROOT" --no-same-owner/);
+  assert.match(body, /Node tarball digest mismatch/);
+  assert.doesNotMatch(body, /\[ -x "\$target\/bin\/node" \] && \[ "\$\("\$target\/bin\/node" --version\)" = "v\$\{NODE_VERSION\}" \]; then/, "a version string alone is no longer accepted as integrity");
+  assert.doesNotMatch(body, /\$LAB_ROOT\/node-v/);
+});
+
+test("F6 regression: teardown reports every failure, keeps the recovery marker when anything failed, and only removes lab-labelled resources", () => {
+  const body = code("sut-teardown.sh");
+  assert.doesNotMatch(body, /\|\| true/, "no failure is suppressed");
+  assert.doesNotMatch(body, /\|\| \{ *:|2>\/dev\/null \|\| true/);
+  assert.match(body, /FAILURES\+=\("\$\*"\)/);
+  assert.match(body, /INCOMPLETE: %d step\(s\) failed; the recovery marker %s\/DISPOSABLE was KEPT/);
+  const exitIncomplete = body.indexOf("exit 1");
+  assert.ok(exitIncomplete > 0 && exitIncomplete < body.indexOf('run rm -rf "$STATE_DIR"'), "the state directory (and marker) is removed only after the failure check");
+  const library = code("lib-net.sh");
+  assert.match(library, /label_of()/);
+  assert.match(library, /[ "$(label_of "$name")" = disposable ]/);
+  assert.match(library, /network_label_of limitmark-lab_lab/);
+  assert.match(body, /ufw_lab_rule_numbers/);
+  assert.match(body, /\. "\$SCRIPT_DIR\/lib-net\.sh"/);
+  assert.match(body, /limitmark-lab-disposable-v1/);
+  // Only symlinks that point into the lab's own Node tree are removed.
+  assert.match(body, /readlink "\$link"/);
+});
+
+test("F6: the recovery marker has content that teardown verifies, and is never created after other state", () => {
+  assert.match(code("sut-bootstrap.sh"), /printf 'limitmark-lab-disposable-v1\\n' > "\$STATE_DIR\/DISPOSABLE"/);
+  assert.doesNotMatch(code("sut-bootstrap.sh"), /install -m 0644 \/dev\/null "\$STATE_DIR\/DISPOSABLE"/);
+});
+
+test("F6: teardown --dry-run lists every step without executing and says the marker is conditional", { skip: bashSkip }, () => {
+  const result = spawnSync("bash", [toBashPath(path.join(directory, "sut-teardown.sh")), "--i-am-a-disposable-lab-vm", "--dry-run"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /remove limitmark-lab-pg16 only if it carries the limitmark\.lab=disposable label/);
+  assert.match(result.stdout, /delete every ufw rule carrying the limitmark-lab comment, highest number first/);
+  assert.match(result.stdout, /only if every step above succeeded/);
+  assert.doesNotMatch(result.stdout + result.stderr, /FAILED/);
+});
+
+test("F6: on Linux the bootstrap dry run validates CIDRs before any action and prints the new order, restart and stale-rule steps", { skip: process.platform === "linux" ? false : "the bootstrap refuses to run anywhere but Linux; exercised in the Linux parity container" }, () => {
+  const environment = { PATH: process.env.PATH ?? "", LAB_REPO_URL: "https://example.invalid/repo", LAB_REPO_COMMIT: "a".repeat(40), LAB_APP_ORIGIN: "http://203.0.113.10:3000", LAB_SSH_ALLOW_CIDRS: "198.51.100.0/24", LAB_LOADGEN_CIDRS: "203.0.113.0/24" };
+  const run = (override: Record<string, string>) => spawnSync("bash", [toBashPath(path.join(directory, "sut-bootstrap.sh")), "--i-am-a-disposable-lab-vm", "--dry-run"], { encoding: "utf8", env: { ...environment, ...override } as unknown as NodeJS.ProcessEnv });
+  const ok = run({});
+  assert.equal(ok.status, 0, ok.stderr);
+  const lines = ok.stdout.split("\n");
+  const at = (pattern: RegExp) => lines.findIndex((line) => pattern.test(line));
+  assert.ok(at(/ufw allow from 203\.0\.113\.0\/24 to any port 3000/) > 0);
+  assert.ok(at(/delete every limitmark-lab ufw rule whose port and source are not in/) > at(/ufw allow from 203\.0\.113\.0\/24/));
+  assert.ok(at(/ufw --force enable/) < at(/npm ci --no-audit/), "firewall before the build");
+  assert.ok(at(/systemctl restart limitmark-lab-app\.service/) > at(/write \/etc\/systemd\/system\/limitmark-lab-app\.service/));
+  assert.ok(at(/write \/etc\/limitmark-lab\/DISPOSABLE/) < at(/apt-get update/), "marker first");
+  for (const bad of ["999.999.999.999/32", "0.0.0.0/1,128.0.0.0/1", "203.0.113.7/24", "10.0.0.0/8", "203.0.113.0/24,"]) {
+    for (const key of ["LAB_SSH_ALLOW_CIDRS", "LAB_LOADGEN_CIDRS"]) {
+      const refused = run({ [key]: bad });
+      assert.equal(refused.status, 2, `${key}=${bad}`);
+      assert.doesNotMatch(refused.stdout, /\[dry-run\]/, "refusal precedes every action");
+    }
+  }
+  const badOrigin = run({ LAB_APP_ORIGIN: "http://999.1.1.1:3000" });
+  assert.equal(badOrigin.status, 2);
+});
+
 // ---------------------------------------------------------------------------------------------- F4: the build context is a confidentiality boundary
 test("F4: the image restates the one non-secret git setting that the excluded .git/config contributed", () => {
   const dockerfile = readFileSync(path.join(__dirname, "..", "lab", "linux", "Dockerfile"), "utf8");
@@ -145,4 +328,101 @@ test("F4: the parity image's build context excludes everything .gitignore lists 
   const tracked = execFileSync("git", ["ls-files"], { cwd: path.join(__dirname, ".."), encoding: "utf8" }).split("\n").filter(Boolean);
   const credentialLike = /\.(pem|key|p12|pfx|jks|keystore|kdbx|tfvars|tfstate)$|(^|\/)\.(ssh|gnupg|aws|azure|gcloud|docker|kube|netrc|pgpass|vercel|cloudflared)(\/|$)|(^|\/)id_(rsa|dsa|ecdsa|ed25519)|service-account|client_secret|(^|\/)credentials\.json$|\.dev\.vars/;
   assert.deepEqual(tracked.filter((file) => credentialLike.test(file)), []);
+});
+
+test("F6 (probe finding): only lines carrying the EXACT lab comment tags are treated as lab firewall rules", { skip: bashSkip }, () => {
+  const status = [
+    "[ 1] 22/tcp                     ALLOW IN    198.51.100.7               # limitmark-lab ssh",
+    "[ 2] 22/tcp                     ALLOW IN    192.0.2.0/24               # limitmark-labx ssh",
+    "[ 3] 3000/tcp                   ALLOW IN    192.0.2.0/24               # limitmark-lab-other app",
+    "[ 4] 3000/tcp                   ALLOW IN    192.0.2.0/24               # not limitmark-lab app",
+    "[ 5] 3000/tcp                   ALLOW IN    203.0.113.0/24             # limitmark-lab app",
+  ].join("\n");
+  assert.deepEqual(bash(`ufw_lab_rule_numbers <<'STATUS'\n${status}\nSTATUS`).stdout.trim().split("\n"), ["5", "1"]);
+});
+
+test("F6 (probe finding): dry-run lines are single readable lines (IFS is a newline in these scripts)", { skip: bashSkip }, () => {
+  const result = spawnSync("bash", [toBashPath(path.join(directory, "sut-teardown.sh")), "--i-am-a-disposable-lab-vm", "--dry-run"], { encoding: "utf8" });
+  assert.match(result.stdout, /^\[dry-run\] systemctl disable --now limitmark-lab-app\.service$/m);
+  assert.match(result.stdout, /^\[dry-run\] rm -rf \/opt\/limitmark-lab$/m);
+});
+
+// ---------------------------------------------------------------------------------------------- round 2: UNKNOWN is never ABSENT
+import { chmodSync, mkdtempSync, rmSync as removeTree, writeFileSync as writeText } from "node:fs";
+import os from "node:os";
+
+/** A fake `docker` on PATH. FAKE_DOCKER_MODE: down (every command fails) | flaky (info ok, listings fail) | empty | foreign | lab. */
+function withFakeDocker<T>(mode: string, body: (environment: NodeJS.ProcessEnv, logFile: string) => T): T {
+  const folder = mkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
+  const logFile = path.join(folder, "calls.log");
+  const script = [
+    "#!/usr/bin/env bash",
+    `echo "$*" >> "${toBashPath(logFile)}"`,
+    'case "$FAKE_DOCKER_MODE" in down) exit 1 ;; esac',
+    'case "$1" in',
+    "  info) exit 0 ;;",
+    '  ps) case "$FAKE_DOCKER_MODE" in flaky) exit 1 ;; empty) exit 0 ;; *) echo limitmark-lab-pg16 ;; esac ;;',
+    '  network) case "$2" in ls) [ "$FAKE_DOCKER_MODE" = flaky ] && exit 1; exit 0 ;; inspect) exit 1 ;; *) exit 0 ;; esac ;;',
+    '  inspect) if [ "$FAKE_DOCKER_MODE" = lab ]; then echo disposable; else echo ""; fi ;;',
+    "  rm) exit 0 ;;",
+    "esac",
+  ].join("\n");
+  writeText(path.join(folder, "docker"), `${script}\n`);
+  try { chmodSync(path.join(folder, "docker"), 0o755); } catch { /* best effort on Windows */ }
+  try { return body({ ...process.env, PATH: `${toBashPath(folder)}:${process.env.PATH ?? ""}`, FAKE_DOCKER_MODE: mode } as NodeJS.ProcessEnv, logFile); }
+  finally { removeTree(folder, { recursive: true, force: true }); }
+}
+
+function runTeardownFunction(environment: NodeJS.ProcessEnv): { status: number | null; stdout: string; stderr: string } {
+  const snippet = `set -u; . "${lib}"; FAILURES=(); log() { :; }; run() { "$@" || FAILURES+=("$*"); }; teardown_lab_containers; echo "failures=\${#FAILURES[@]}"`;
+  const result = spawnSync("bash", ["-c", snippet], { encoding: "utf8", env: environment });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+test("F6 round 2 regression: an unreachable Docker daemon is a FAILURE (recovery state kept), never 'there are no containers'", { skip: bashSkip }, () => {
+  withFakeDocker("down", (environment, logFile) => {
+    const result = runTeardownFunction(environment);
+    assert.match(result.stdout, /failures=1/);
+    assert.match(result.stderr, /daemon is unreachable.*unknown is not absent/);
+    assert.doesNotMatch(readFileSync(logFile, "utf8"), /\brm\b/, "nothing is removed on a guess");
+  });
+  // docker_cli_state distinguishes the three worlds.
+  withFakeDocker("down", (environment) => assert.equal(spawnSync("bash", ["-c", `. "${lib}"; docker_cli_state`], { encoding: "utf8", env: environment }).stdout.trim(), "down"));
+  withFakeDocker("empty", (environment) => assert.equal(spawnSync("bash", ["-c", `. "${lib}"; docker_cli_state`], { encoding: "utf8", env: environment }).stdout.trim(), "up"));
+  const bare = spawnSync("bash", ["-c", `PATH=/usr/bin:/bin; . "${lib}"; docker_cli_state`], { encoding: "utf8" });
+  assert.equal(bare.stdout.trim(), "no-cli");
+});
+
+test("F6 round 2 regression: a daemon that dies mid-teardown (listing fails) is UNKNOWN per object and a failure, not absence", { skip: bashSkip }, () => {
+  withFakeDocker("flaky", (environment, logFile) => {
+    const result = runTeardownFunction(environment);
+    const failures = Number(/failures=(\d+)/.exec(result.stdout)?.[1]);
+    assert.equal(failures, 4, "three containers and the network could not be determined");
+    assert.match(result.stderr, /could not determine whether container limitmark-lab-pg16 exists/);
+    assert.match(result.stderr, /could not determine whether network limitmark-lab_lab exists/);
+    assert.doesNotMatch(readFileSync(logFile, "utf8"), /\brm\b/);
+  });
+});
+
+test("F6 round 2: with a healthy daemon, absence is absence, a foreign container is left alone as a failure, and a lab-labelled one is removed", { skip: bashSkip }, () => {
+  withFakeDocker("empty", (environment) => assert.match(runTeardownFunction(environment).stdout, /failures=0/));
+  withFakeDocker("foreign", (environment, logFile) => {
+    const result = runTeardownFunction(environment);
+    assert.match(result.stdout, /failures=3/);
+    assert.match(result.stderr, /exists but its lab label could not be confirmed/);
+    assert.doesNotMatch(readFileSync(logFile, "utf8"), /\brm -f/);
+  });
+  withFakeDocker("lab", (environment, logFile) => {
+    assert.match(runTeardownFunction(environment).stdout, /failures=0/);
+    assert.match(readFileSync(logFile, "utf8"), /rm -f -v limitmark-lab-pg16/);
+  });
+});
+
+test("F6 round 2: teardown uses only the state-aware container path, and its dry run states the daemon rule", { skip: bashSkip }, () => {
+  const body = code("sut-teardown.sh");
+  assert.match(body, /teardown_lab_containers/);
+  assert.doesNotMatch(body, /docker_available|docker inspect --type container "\$name" >\/dev\/null 2>&1/);
+  assert.match(code("lib-net.sh"), /docker_object_state\(\)/);
+  const dry = spawnSync("bash", [toBashPath(path.join(directory, "sut-teardown.sh")), "--i-am-a-disposable-lab-vm", "--dry-run"], { encoding: "utf8" });
+  assert.match(dry.stdout, /unreachable docker daemon is a FAILURE/);
 });

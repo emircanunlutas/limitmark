@@ -18,7 +18,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import * as schema from "../../src/lib/db/schema";
 import { PROOF_PURPOSE, PROOF_SCHEMA, PROOF_TABLE, verifyDisposableDatabase } from "../../tests/support/test-database-guard";
-import { containerExists, docker } from "../host/docker";
+import { containerExists, docker, removeLabContainer } from "../host/docker";
 import { REPOSITORY_ROOT } from "../evidence/manifest";
 import { isPostgresJsNullSocketWrite, libraryFaults } from "./known-faults";
 
@@ -144,13 +144,33 @@ async function selfCheck(state: PgLabState): Promise<void> {
   await verifyDisposableDatabase(migratorUrl(state), state.proofToken);
 }
 
+/** The compose network both lab versions share; removed only when no container is attached to it. */
+const LAB_NETWORK = "limitmark-lab_lab";
+
+/**
+ * Removes THIS version's lab container and nothing else.
+ *
+ * The compose project is shared by pg16 and pg17, so `compose down` (which removes every service, the network and the
+ * volumes of the project) would destroy the other version's running lab and leave its state file behind. Instead the one
+ * container is removed by id after its LABELS prove the lab owns it (disposable marker, postgres role), together with its
+ * anonymous volume; the shared network is removed only when it has no attached container left. The state file is deleted
+ * only once the container is verifiably gone, so state and container never contradict each other.
+ */
 export async function labDbDown(version: PgVersion): Promise<void> {
   const service = `pg${version}`;
-  // `down` only needs the variable to interpolate; no secret is required to remove containers.
-  await docker(["compose", "-f", COMPOSE_FILE, "rm", "-f", "-s", "-v", service], { env: composeEnv("teardown-placeholder"), timeoutMs: 120_000 });
-  await docker(["compose", "-f", COMPOSE_FILE, "down", "--remove-orphans", "--volumes"], { env: composeEnv("teardown-placeholder"), timeoutMs: 120_000 }).catch(() => undefined);
+  const container = `limitmark-lab-${service}`;
+  await removeLabContainer(container, "postgres");
+  await removeSharedNetworkIfUnused();
   rmSync(statePath(version), { force: true });
-  if (await containerExists(`limitmark-lab-${service}`)) throw new Error("teardown incomplete: container still exists");
+}
+
+async function removeSharedNetworkIfUnused(): Promise<void> {
+  try {
+    const { stdout } = await docker(["network", "inspect", LAB_NETWORK, "--format", "{{json .Labels}}|{{len .Containers}}"]);
+    const [labels, attached] = stdout.trim().split("|");
+    const parsed = JSON.parse(labels || "{}") as Record<string, string> | null;
+    if (parsed?.["limitmark.lab"] === "disposable" && Number(attached) === 0) await docker(["network", "rm", LAB_NETWORK]);
+  } catch { /* the network does not exist, or another lab container just attached: leaving it is correct */ }
 }
 
 /** Any crash path (unhandled rejection, SIGINT) still removes the disposable container. */
