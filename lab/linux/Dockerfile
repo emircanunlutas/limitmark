@@ -11,6 +11,10 @@ COPY package.json package-lock.json .npmrc ./
 RUN npm ci --no-audit --no-fund
 
 COPY . .
+# The host's .git/config is deliberately NOT in the build context (it can carry a remote URL with a token). Repository tests still
+# ask git whether files differ from HEAD, and files copied from a Windows checkout have no meaningful executable bits, so the one
+# non-secret setting that config contributed is restated here.
+RUN git config --system core.filemode false && git config --system --add safe.directory /app
 RUN npm run build
 
 LABEL limitmark.lab="disposable"

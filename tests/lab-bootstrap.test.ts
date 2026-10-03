@@ -123,3 +123,26 @@ test("all scripts pass bash -n", { skip: process.platform === "win32" && !hasBas
 function hasBash(): boolean {
   try { execFileSync("bash", ["--version"], { stdio: "ignore" }); return true; } catch { return false; }
 }
+
+// ---------------------------------------------------------------------------------------------- F4: the build context is a confidentiality boundary
+test("F4: the image restates the one non-secret git setting that the excluded .git/config contributed", () => {
+  const dockerfile = readFileSync(path.join(__dirname, "..", "lab", "linux", "Dockerfile"), "utf8");
+  assert.match(dockerfile, /git config --system core\.filemode false/);
+  assert.doesNotMatch(dockerfile, /COPY[^\n]*\.git\/config|credential\.helper|http\.extraheader|url\.[^\n]*insteadOf/i);
+});
+
+test("F4: the parity image's build context excludes everything .gitignore lists AND every credential pattern (gitignore is not the boundary)", () => {
+  const dockerignore = readFileSync(path.join(__dirname, "..", "lab", "linux", "Dockerfile.dockerignore"), "utf8").split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  const normalise = (entry: string) => entry.replace(/^\/+/, "").replace(/\/+$/, "");
+  const ignored = new Set(dockerignore.map(normalise));
+  const gitignore = readFileSync(path.join(__dirname, "..", ".gitignore"), "utf8").split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  for (const entry of gitignore) assert.ok(ignored.has(normalise(entry)), `.gitignore entry ${entry} is not excluded from the build context`);
+  for (const pattern of [
+    "**/.env*", "!**/.env.example", "**/.dev.vars*", "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/id_rsa*", "**/id_ed25519*", "**/.ssh", "**/.aws", "**/.azure", "**/.gcloud", "**/.config/gcloud",
+    "**/.docker", "**/.kube", "**/.netrc", "**/.pgpass", "**/.git-credentials", "**/*.tfstate", "**/*.tfvars", "**/service-account*.json", ".git/config", ".git/hooks", "artifacts", "node_modules",
+  ]) assert.ok(ignored.has(pattern), `${pattern} missing from Dockerfile.dockerignore`);
+  // Nothing tracked by git is excluded by the credential patterns (the image must still build and test).
+  const tracked = execFileSync("git", ["ls-files"], { cwd: path.join(__dirname, ".."), encoding: "utf8" }).split("\n").filter(Boolean);
+  const credentialLike = /\.(pem|key|p12|pfx|jks|keystore|kdbx|tfvars|tfstate)$|(^|\/)\.(ssh|gnupg|aws|azure|gcloud|docker|kube|netrc|pgpass|vercel|cloudflared)(\/|$)|(^|\/)id_(rsa|dsa|ecdsa|ed25519)|service-account|client_secret|(^|\/)credentials\.json$|\.dev\.vars/;
+  assert.deepEqual(tracked.filter((file) => credentialLike.test(file)), []);
+});

@@ -11,7 +11,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { dockerServerVersionSync } from "../host/docker";
-import { assertEvidenceSafe } from "./redact";
+import { assertEvidenceSafe, sanitizeLog, verifyLogText, type SanitizedLog } from "./redact";
 import { canonicalJson } from "../policy/thresholds";
 
 export const REPOSITORY_ROOT = path.resolve(__dirname, "..", "..");
@@ -160,6 +160,22 @@ export class EvidenceRun {
     this.finalized = true;
     return manifest;
   }
+}
+
+/**
+ * Persists raw child-process or container output, but never verbatim: home-directory prefixes are rewritten and every
+ * line that breaks an evidence rule is replaced by a marker (see sanitizeLog). Returns what was withheld so the evidence
+ * can state it. The file name must be a plain `.log` name; the directory is created if needed.
+ */
+export function writeSanitizedLog(directory: string, name: string, raw: string): SanitizedLog {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log$/.test(name)) throw new Error("log name must be a plain .log file name");
+  const sanitized = sanitizeLog(raw);
+  // The bytes written are exactly the bytes verified: re-scan the final text with the same rules and refuse to write if anything is left.
+  const leftover = verifyLogText(sanitized.text);
+  if (leftover !== null) throw new Error(`sanitized log still breaks an evidence rule (${leftover}); nothing was written`);
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(path.join(directory, name), sanitized.text);
+  return sanitized;
 }
 
 /** Re-computes every recorded hash; returns mismatching file names. */
