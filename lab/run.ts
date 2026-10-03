@@ -14,6 +14,7 @@ import path from "node:path";
 import { LocalApp } from "./host/local-app";
 import { executeHttpWorkload, warmUp, type EngineResult } from "./load/engine";
 import { runK6 } from "./load/k6";
+import { assertSameLabAppContainer, inspectLabContainer } from "./host/docker";
 import { runAppRestart } from "./failure/app-restart";
 import { runPostgresOutage, type OutageMode } from "./failure/postgres-outage";
 import { EvidenceRun, REPOSITORY_ROOT, collectEnvironment, collectGitState, type EvidenceResult } from "./evidence/manifest";
@@ -26,14 +27,15 @@ import {
   evaluateHttpPass, selectThresholdSet, thresholdSetFingerprint, type PhaseStats,
 } from "./policy/thresholds";
 import { assertVersion, labDbDown, labDbUp, teardownOnCrash, type PgVersion } from "./postgres/lab-db";
-import { libraryFaults } from "./postgres/known-faults";
+import { applyKnownFaultVerdict, libraryFaults } from "./postgres/known-faults";
+import { evidenceSafeError } from "./evidence/redact";
 
-const VALUE_FLAGS = new Set(["--target", "--workload", "--thresholds", "--max-rate", "--max-concurrency", "--max-duration", "--pg", "--outage-mode", "--engine", "--k6-netns-container"]);
+const VALUE_FLAGS = new Set(["--target", "--workload", "--thresholds", "--max-rate", "--max-concurrency", "--max-duration", "--pg", "--outage-mode", "--engine", "--k6-netns-container", "--app-container"]);
 const BOOLEAN_FLAGS = new Set(["--manage-app", "--dry-run"]);
 export const OPERATOR_TARGETS_FILE = path.join(REPOSITORY_ROOT, "artifacts", "lab", "targets.json");
 
 export type ParsedArguments = {
-  target?: string; workload?: string; thresholds?: string; pg?: string; outageMode?: string; engine?: string; k6Netns?: string;
+  target?: string; workload?: string; thresholds?: string; pg?: string; outageMode?: string; engine?: string; k6Netns?: string; appContainer?: string;
   limits: CliLimits; manageApp: boolean; dryRun: boolean;
 };
 
@@ -59,7 +61,7 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
   if (values["--max-duration"] !== undefined) limits.maxDurationSeconds = parseStrictPositiveInteger(values["--max-duration"], "--max-duration");
   return {
     target: values["--target"], workload: values["--workload"], thresholds: values["--thresholds"], pg: values["--pg"],
-    outageMode: values["--outage-mode"], engine: values["--engine"], k6Netns: values["--k6-netns-container"], limits, manageApp: flags.has("--manage-app"), dryRun: flags.has("--dry-run"),
+    outageMode: values["--outage-mode"], engine: values["--engine"], k6Netns: values["--k6-netns-container"], appContainer: values["--app-container"], limits, manageApp: flags.has("--manage-app"), dryRun: flags.has("--dry-run"),
   };
 }
 
@@ -75,6 +77,21 @@ export function loadOperatorTargets(file = OPERATOR_TARGETS_FILE): unknown[] {
     }
   }
   return parsed;
+}
+
+/**
+ * A loopback port is not proof of WHAT listens there: a forwarder (ssh -L, socat, a stray process) on 3000/3100 would silently
+ * turn an authorized target into another destination. A local HTTP run therefore needs a destination the lab itself
+ * established: a process it started (--manage-app), a lab-labelled container that publishes exactly that loopback port
+ * (--app-container), or k6 inside such a container's own network namespace (--k6-netns-container). Pure.
+ */
+export function checkDestinationProof(targetClass: string, workloadEngine: string, args: Pick<ParsedArguments, "engine" | "manageApp" | "appContainer" | "k6Netns">): PolicyRefusal | null {
+  if (targetClass !== "lab-local" || workloadEngine !== "http") return null;
+  const proven = args.engine === "k6" ? args.k6Netns !== undefined : args.manageApp || args.appContainer !== undefined;
+  if (proven) return null;
+  return new PolicyRefusal("target-listener-unproven", args.engine === "k6"
+    ? "a local k6 run needs --k6-netns-container (its own loopback is the only destination it can prove)"
+    : "an existing listener on a local port is not an authorized destination; use --manage-app or --app-container <lab container>");
 }
 
 function summarize(phases: readonly PhaseStats[]) {
@@ -107,6 +124,10 @@ async function main(): Promise<number> {
   if (args.engine !== undefined && args.engine !== "node" && args.engine !== "k6") return refuse(new PolicyRefusal("limit-invalid", "--engine must be node or k6"), "bad-engine");
   if (args.engine === "k6" && args.manageApp) return refuse(new PolicyRefusal("limit-invalid", "--manage-app is for the node engine; k6 runs in Docker and cannot reach the host loopback"), "bad-engine");
   if (args.k6Netns !== undefined && args.engine !== "k6") return refuse(new PolicyRefusal("limit-invalid", "--k6-netns-container needs --engine k6"), "bad-engine");
+  if (args.appContainer !== undefined && (args.engine === "k6" || args.manageApp)) return refuse(new PolicyRefusal("limit-invalid", "--app-container is for the node engine without --manage-app"), "bad-engine");
+  for (const name of [args.k6Netns, args.appContainer]) {
+    if (name !== undefined && !/^limitmark-lab-[a-z0-9-]{1,60}$/.test(name)) return refuse(new PolicyRefusal("limit-invalid", "container options take a lab container name"), "bad-container");
+  }
 
   const workloadId = args.workload ?? "";
   if (isWorkloadId(workloadId) && WORKLOADS[workloadId].engine === "managed-postgres") {
@@ -123,6 +144,8 @@ async function main(): Promise<number> {
     if (error instanceof PolicyRefusal) return refuse(error, "refused");
     throw error;
   }
+  const unproven = checkDestinationProof(run.target.class, run.workload.engine, args);
+  if (unproven) return refuse(unproven, "listener-unproven");
   const set = selectThresholdSet(args.thresholds, run.target.class);
   const fingerprint = thresholdSetFingerprint(set);
   if (args.dryRun) {
@@ -137,8 +160,11 @@ async function main(): Promise<number> {
   let extra: Record<string, unknown> = {};
   let app: LocalApp | null = null;
   let engineName = "node-http";
+  // What the lab actually established about the destination, recorded verbatim (never "proven" for a remote target).
+  let ownership = run.target.class === "lab-remote" ? "operator-asserted" : "unproven";
   try {
     if (run.workload.engine === "managed-app") {
+      ownership = "lab-process";
       const outcome = await runAppRestart(run, set);
       phases = outcome.engine.phases;
       result = outcome.verdict.result;
@@ -150,17 +176,31 @@ async function main(): Promise<number> {
         app = new LocalApp(run.target.port);
         await app.start();
         await app.waitUntilListening();
+        ownership = "lab-process";
         extra = { warmup: await warmUp(run) };
+      }
+      const containerGate = args.appContainer;
+      let appContainerId: string | undefined;
+      if (containerGate !== undefined) {
+        // The identity (immutable id) is captured once; every later check must find THE SAME running container.
+        appContainerId = await verifyAppContainer(containerGate, run.target.port);
+        ownership = "lab-container-port";
       }
       const thresholds = set.http[run.workload.id as keyof typeof set.http];
       if (args.engine === "k6") {
         if (run.workload.engine !== "http") throw new PolicyRefusal("workload-local-only", "k6 drives HTTP workloads only");
         const k6 = await runK6(run, thresholds, { netnsContainer: args.k6Netns, runId: evidence.id });
         engineName = "k6";
+        if (args.k6Netns !== undefined) ownership = "lab-container-netns";
         result = k6.result; reasons.push(...k6.reasons);
-        extra = { ...extra, k6Version: k6.k6Version, planSha256: k6.planSha256, ...k6.metrics };
+        extra = { ...extra, k6Version: k6.k6Version, k6ImageId: k6.imageId, planSha256: k6.planSha256, k6ContainerRemoved: k6.containerRemoved, k6Envelope: k6.envelope, ...k6.metrics };
       } else {
-        const engine: EngineResult = await executeHttpWorkload({ run, thresholds });
+        const engine: EngineResult = await executeHttpWorkload({
+          run, thresholds,
+          // The destination is re-proved before the first request and then throughout every phase (a container that stops mid-phase and a
+          // listener that takes its port must not keep receiving authorized traffic).
+          destination: containerGate === undefined ? undefined : { verify: async () => { await verifyAppContainer(containerGate, run.target.port, appContainerId); } },
+        });
         phases = engine.phases;
         extra = { ...extra, wallClockSeconds: engine.wallClockSeconds, totalAttempted: engine.totalAttempted };
         if (engine.stopReason) { result = "STOP"; reasons.push(engine.stopReason); }
@@ -171,7 +211,7 @@ async function main(): Promise<number> {
       }
     }
   } catch (error) {
-    reasons.push(error instanceof Error ? error.message.slice(0, 300) : "unknown error");
+    reasons.push(evidenceSafeError(error));
     result = error instanceof PolicyRefusal ? "REFUSED" : "ERROR";
   } finally {
     await app?.kill();
@@ -179,9 +219,12 @@ async function main(): Promise<number> {
   evidence.addJsonArtifact("phases.json", { phases });
   evidence.finalize({
     git, environment: collectEnvironment(),
-    target: { id: run.target.id, class: run.target.class, scheme: run.target.scheme, port: run.target.port },
+    target: { id: run.target.id, class: run.target.class, scheme: run.target.scheme, port: run.target.port, ownership },
     workload: { id: run.workload.id, phases: run.limits.phases },
     ceilings: {
+      // These bound ONE process. Two valid processes together may reach twice the rate and connection count; a campaign or fleet
+      // budget has to be planned and enforced by the operator (see lab/README.md "What the ceilings bound").
+      scope: "per-process; not campaign- or fleet-wide",
       hard: { ...HARD_CEILINGS }, reviewed: { ...run.workload.ceilings },
       effective: { maxRequestsPerSecond: run.limits.maxRequestsPerSecond, maxConcurrency: run.limits.maxConcurrency, maxDurationSeconds: run.limits.maxDurationSeconds, maxTotalRequests: run.limits.maxTotalRequests },
     },
@@ -189,6 +232,13 @@ async function main(): Promise<number> {
   });
   console.log(`${result}  ${run.workload.id} -> ${run.target.id}  thresholds=${fingerprint.id}@${fingerprint.version}\n${reasons.map((reason) => `  - ${reason}`).join("\n")}\nevidence=${evidence.id}`);
   return EXIT[result];
+}
+
+/** The destination container must still be a running lab app container publishing exactly 127.0.0.1:<port>. */
+async function verifyAppContainer(name: string, port: number, expectedId?: string): Promise<string> {
+  const facts = await inspectLabContainer(name, "app");
+  assertSameLabAppContainer(facts, port, 3000, expectedId);
+  return facts.id;
 }
 
 async function runPostgres(args: ParsedArguments, git: ReturnType<typeof collectGitState>, startedAt: Date, refuse: (e: PolicyRefusal, label: string) => number): Promise<number> {
@@ -219,12 +269,14 @@ async function runPostgres(args: ParsedArguments, git: ReturnType<typeof collect
   try {
     const outcome = await runPostgresOutage(state, limits.limits, set, mode);
     phases = outcome.phases; result = outcome.verdict.result; reasons.push(...outcome.verdict.reasons);
-    extra = { mode, recoverySeconds: outcome.recoverySeconds, maxProbeDurationWhileDownMs: outcome.maxProbeDurationDownMs, integrity: outcome.integrity };
+    extra = { mode, recoverySeconds: outcome.recoverySeconds, maxProbeDurationWhileDownMs: outcome.maxProbeDurationDownMs, integrity: outcome.integrity, abandonedProbes: outcome.abandonedProbes, maxUnsettledProbes: outcome.maxUnsettledProbes, orphanedBackends: outcome.orphanedBackends };
   } catch (error) {
-    reasons.push(error instanceof Error ? error.message.slice(0, 300) : "unknown error");
+    reasons.push(evidenceSafeError(error));
   } finally {
-    await labDbDown(version).catch((error) => reasons.push(`teardown: ${(error as Error).message}`));
+    await labDbDown(version).catch((error) => reasons.push(`teardown: ${evidenceSafeError(error)}`));
   }
+  // The known postgres.js defect is a FINDING, never compatible with PASS.
+  ({ result } = applyKnownFaultVerdict(result, reasons, libraryFaults));
   evidence.addJsonArtifact("phases.json", { phases });
   evidence.finalize({
     git, environment: collectEnvironment(state.serverVersion), target: { id: `postgres-lab-${version}`, class: "lab-local" },

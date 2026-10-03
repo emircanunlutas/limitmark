@@ -255,3 +255,156 @@ test("F2 round 2 (variant): variables that select a REMOTE BUILDER or re-point c
   const parity = readFileSync(path.join(__dirname, "..", "lab", "linux", "parity.ts"), "utf8");
   assert.match(parity, /"build", "--builder", "default"/);
 });
+
+test("F2 regression: authorization is re-checked for the whole run; a lapsed target stops dispatch immediately", async () => {
+  const server = await listen((_request, response) => response.end("ok"));
+  let expired = false;
+  const base = runFor(server.port, [phase({ durationSeconds: 5, ratePerSecond: 20, concurrency: 2 })], { maxTotalRequests: 1000 });
+  // The authorization lapses 400 ms into the run.
+  setTimeout(() => { expired = true; }, 400);
+  const run: AuthorizedRun = {
+    ...base,
+    assertStillAuthorized: () => { if (expired) throw new PolicyRefusal("target-expired", "the target authorization expired while the run was in progress"); },
+  };
+  const started = Date.now();
+  const result = await executeHttpWorkload({ run, thresholds: lenient });
+  assert.equal(result.stopReason, "target authorization expired during the run");
+  assert.ok(Date.now() - started < 2_000, "the run must end near the expiry, not at the end of the phase");
+  const reached = server.count();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(server.count(), reached, "no request may leave after the expiry");
+  assert.ok(reached > 0 && reached < 40);
+});
+
+test("F3: the deadline is strict: nothing is sent after it and in-flight requests are cancelled, not awaited for their full timeout", async () => {
+  const hang = await listen(() => undefined);
+  const started = Date.now();
+  // 10 s request timeouts, a 1 s run: the old engine waited for every request's own timeout (up to 10 s).
+  const result = await executeHttpWorkload({ run: runFor(hang.port, [phase({ durationSeconds: 60, ratePerSecond: 5, concurrency: 2, timeoutMs: 10_000 })], { maxDurationSeconds: 1 }), thresholds: lenient });
+  const elapsed = Date.now() - started;
+  assert.equal(result.stopReason, "global deadline reached");
+  assert.ok(elapsed < 1_000 + SETUP_ALLOWANCE_MS + DRAIN_GRACE_MS + 1_500, `elapsed ${elapsed}ms`);
+  assert.ok(elapsed < 8_000, "far below the 10 s request timeouts");
+  assert.ok((result.phases[0].outcomes.aborted ?? 0) > 0, "in-flight requests are cancelled at the drain limit");
+});
+
+test("F3 (parity finding): a workload whose phase fills its whole duration budget completes (PASS path), it is not stopped by the deadline", async () => {
+  const server = await listen((_request, response) => response.end("ok"));
+  // One phase of exactly the duration ceiling, plus a per-phase set-up that takes time (the container ownership re-check).
+  const result = await executeHttpWorkload({
+    run: runFor(server.port, [phase({ durationSeconds: 1, ratePerSecond: 4, concurrency: 1 })], { maxDurationSeconds: 1, maxTotalRequests: 4 }), thresholds: lenient,
+    onPhaseStart: async () => { await new Promise((resolve) => setTimeout(resolve, 300)); },
+  });
+  assert.equal(result.stopReason, null);
+  assert.ok(result.phases[0].attempted <= 4);
+});
+
+test("F3 regression: a 1 s phase at 2 req/s emits at most 2 requests (never rate x duration + 1)", async () => {
+  let sent = 0;
+  const send = async () => { sent++; return { outcome: "ok" as const, status: 200, latencyMs: 1, bytes: 1 }; };
+  const result = await executeHttpWorkload({ run: runFor(1, [phase({ durationSeconds: 1, ratePerSecond: 2, concurrency: 1 })], { maxTotalRequests: 100 }), thresholds: lenient, send });
+  assert.ok(sent <= 2, `sent ${sent}`);
+  assert.equal(result.phases[0].attempted, sent);
+});
+
+test("F3: cancelling the run's signal cancels in-flight requests at once", async () => {
+  const hang = await listen(() => undefined);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 300);
+  const started = Date.now();
+  const result = await executeHttpWorkload({ run: runFor(hang.port, [phase({ durationSeconds: 30, ratePerSecond: 5, concurrency: 2, timeoutMs: 10_000 })]), thresholds: lenient, signal: controller.signal });
+  assert.ok(Date.now() - started < 2_000, "must not wait for the 10 s timeouts");
+  assert.equal(result.aborted, true);
+});
+
+// ------------------------------------------------------------------------------------------------ round 2: ownership DURING a phase
+import { assertSameLabAppContainer } from "../lab/host/docker";
+
+test("F2 round 2: the lease re-checks the SAME container id, so a different container behind the same name is not the destination", () => {
+  const facts = published("127.0.0.1", "3100");
+  assert.doesNotThrow(() => assertSameLabAppContainer(facts, 3100, 3000, facts.id));
+  assert.doesNotThrow(() => assertSameLabAppContainer(facts, 3100, 3000));
+  assert.throws(() => assertSameLabAppContainer({ ...facts, id: "f".repeat(64) }, 3100, 3000, facts.id), refusal("target-listener-unproven"));
+});
+
+/** A destination whose ownership is a switch, plus a way to put a stranger on the same port (the audit's stop-container / replace-listener reproduction). */
+async function replaceableDestination(options: { loseAfterMs: number }) {
+  const port = await new Promise<number>((resolve) => { const probe = net.createServer(); probe.listen(0, "127.0.0.1", () => { const chosen = (probe.address() as AddressInfo).port; probe.close(() => resolve(chosen)); }); });
+  let owned = true;
+  const counts = { original: 0, stranger: 0, atLoss: 0 };
+  let originalServer: http.Server | null = http.createServer((_request, response) => { counts.original++; response.end("ok"); });
+  await new Promise<void>((resolve) => originalServer!.listen(port, "127.0.0.1", resolve));
+  let strangerServer: http.Server | null = null;
+  const lose = async () => {
+    owned = false;
+    counts.atLoss = counts.original + counts.stranger;
+    // The container "stops": its listener goes away, and a forwarder (anything) takes the published port.
+    const closing = originalServer; originalServer = null;
+    await new Promise<void>((resolve) => { closing!.closeAllConnections(); closing!.close(() => resolve()); });
+    strangerServer = http.createServer((_request, response) => { counts.stranger++; response.end("forwarded elsewhere"); });
+    await new Promise<void>((resolve) => strangerServer!.listen(port, "127.0.0.1", resolve));
+  };
+  setTimeout(() => { void lose(); }, options.loseAfterMs);
+  const verify = async () => {
+    // What the real check does with the daemon's record: running + exactly this published binding + same id.
+    const facts = { ...published("127.0.0.1", String(port)), running: owned };
+    assertSameLabAppContainer(facts, port, 3000, facts.id);
+  };
+  const close = async () => { for (const server of [originalServer, strangerServer]) if (server) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); } };
+  return { port, verify, counts, close };
+}
+
+test("F2 round 2 regression: authorized traffic does NOT keep flowing to a replacement listener after the destination container stops mid-phase", async () => {
+  const destination = await replaceableDestination({ loseAfterMs: 600 });
+  try {
+    const run = runFor(destination.port, [phase({ durationSeconds: 10, ratePerSecond: 20, concurrency: 2 })], { maxTotalRequests: 1000, maxDurationSeconds: 10 });
+    const started = Date.now();
+    const result = await executeHttpWorkload({ run, thresholds: lenient, destination: { verify: destination.verify, intervalMs: 100, maxStaleMs: 300 } });
+    assert.match(result.stopReason ?? "", /destination ownership lost/);
+    assert.ok(Date.now() - started < 3_000, "the run ended near the loss, not at the end of the 10 s phase");
+    assert.ok(destination.counts.original > 3, "traffic really flowed while the destination was owned");
+    // Bounded, not zero: a few requests may already be in flight or dispatched before the next check notices (about interval + staleness at 20/s).
+    assert.ok(destination.counts.stranger <= 20 * 0.8, `the replacement listener received ${destination.counts.stranger} requests`);
+    const strangerAfterStop = destination.counts.stranger;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(destination.counts.stranger, strangerAfterStop, "nothing more is sent after the run stopped");
+    // For contrast, the previous behaviour (ownership checked only before the phase) would have kept sending for the rest of the 10 s phase (~170 requests).
+  } finally { await destination.close(); }
+});
+
+test("F2 round 2: a failing first check refuses before any request; a HUNG check stops dispatch and then the run", async () => {
+  const server = await listen((_request, response) => response.end("ok"));
+  const refused = executeHttpWorkload({ run: runFor(server.port, [phase({ durationSeconds: 2, ratePerSecond: 10, concurrency: 1 })]), thresholds: lenient, destination: { verify: async () => { throw new PolicyRefusal("target-listener-unproven", "not running"); } } });
+  await assert.rejects(refused, refusal("target-listener-unproven"));
+  assert.equal(server.count(), 0, "no request before the first successful proof");
+
+  let calls = 0;
+  const hanging = await executeHttpWorkload({
+    run: runFor(server.port, [phase({ durationSeconds: 10, ratePerSecond: 20, concurrency: 2 })], { maxTotalRequests: 1000, maxDurationSeconds: 10 }), thresholds: lenient,
+    destination: { verify: () => (++calls === 1 ? Promise.resolve() : new Promise<void>(() => undefined)), intervalMs: 50, maxStaleMs: 200 },
+  });
+  assert.match(hanging.stopReason ?? "", /destination ownership/);
+  const reached = server.count();
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(server.count(), reached);
+  assert.ok(reached <= 20 * 1.0, `sent ${reached} before the stale lease stopped dispatch`);
+});
+
+test("F2 round 2: a healthy lease does not disturb a normal run (no spurious stop, requests flow at the planned rate)", async () => {
+  const server = await listen((_request, response) => response.end("ok"));
+  let checks = 0;
+  const result = await executeHttpWorkload({
+    run: runFor(server.port, [phase({ durationSeconds: 2, ratePerSecond: 10, concurrency: 2 })], { maxTotalRequests: 100, maxDurationSeconds: 2 }), thresholds: lenient,
+    destination: { verify: async () => { checks++; }, intervalMs: 100, maxStaleMs: 400 },
+  });
+  assert.equal(result.stopReason, null);
+  assert.ok(result.phases[0].attempted >= 15 && result.phases[0].attempted <= 20, `attempted ${result.phases[0].attempted}`);
+  assert.ok(checks >= 10, `${checks} checks over a 2 s run`);
+});
+
+test("F2 round 2: the runner wires the lease for --app-container with the container's captured id (not a phase-boundary check)", () => {
+  const source = readFileSync(path.join(__dirname, "..", "lab", "run.ts"), "utf8");
+  assert.match(source, /destination: containerGate === undefined \? undefined : \{ verify: async \(\) => \{ await verifyAppContainer\(containerGate, run\.target\.port, appContainerId\)/);
+  assert.doesNotMatch(source, /onPhaseStart: args\.appContainer/);
+  assert.match(source, /appContainerId = await verifyAppContainer/);
+});

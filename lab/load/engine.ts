@@ -4,10 +4,12 @@
  * be handed an arbitrary URL. Redirects are never followed. Bodies are streamed and
  * discarded (counted, capped), never stored.
  *
- * Bounds enforced here in addition to the policy: per-phase rate (token bucket, burst of 1
- * interval), per-phase in-flight cap (excess scheduled sends are DROPPED and counted, never
- * queued), a global request cap, a global wall-clock deadline, a per-request timeout and a
- * response-size cap.
+ * Bounds enforced here in addition to the policy (all PER PROCESS; they are not campaign- or fleet-wide limits):
+ * per-phase rate (token bucket, burst of 1 interval), a per-phase request cap of rate x duration, per-phase in-flight
+ * cap (excess scheduled sends are DROPPED and counted, never queued), a global request cap, a global wall-clock
+ * deadline, a per-request timeout and a response-size cap. The deadline is strict: nothing is dispatched after it and
+ * every request still in flight DRAIN_GRACE_MS later is cancelled, so the run cannot outlive duration + SETUP_ALLOWANCE_MS + DRAIN_GRACE_MS.
+ * Authorization is re-checked before every request: a target whose authorization lapses mid-run stops the run.
  */
 import http from "node:http";
 import https from "node:https";
@@ -16,6 +18,7 @@ import { HARD_CEILINGS, type PhaseSpec } from "../policy/workloads";
 import {
   isAuthorizedRequest, type AuthorizedRequest, type AuthorizedRun, type TargetMethod,
 } from "../policy/target-policy";
+import { evidenceSafeError } from "../evidence/redact";
 import {
   evaluateStop, ruleFor, summarizeLatencies,
   type HttpThresholds, type PhaseStats, type StopState,
@@ -23,11 +26,20 @@ import {
 
 export type Outcome =
   | "ok" | "http_4xx" | "http_5xx" | "redirect" | "redirect_refused"
-  | "timeout" | "conn_refused" | "conn_reset" | "dns" | "tls" | "body_too_large" | "other_error";
+  | "timeout" | "conn_refused" | "conn_reset" | "dns" | "tls" | "body_too_large" | "aborted" | "other_error";
 
 export type RequestResult = { outcome: Outcome; status: number | null; latencyMs: number; bytes: number };
 
-export type SendOptions = { timeoutMs: number; body?: string; agent: http.Agent };
+export type SendOptions = { timeoutMs: number; body?: string; agent: http.Agent; /** Cancels the request immediately (outcome "aborted"). */ signal?: AbortSignal };
+
+/** After the dispatch deadline, requests still in flight are cancelled this long after it. */
+export const DRAIN_GRACE_MS = 2_000;
+/**
+ * Per-phase set-up (agents, an ownership re-check before each phase) happens between phase windows and is not part of any phase's
+ * duration, so the wall-clock dispatch deadline is the duration ceiling plus this allowance. What is emitted is bounded independently
+ * and strictly: each phase by rate x duration, the run by its request ceiling.
+ */
+export const SETUP_ALLOWANCE_MS = 2_000;
 
 function classifyError(error: NodeJS.ErrnoException): Outcome {
   switch (error.code) {
@@ -47,6 +59,8 @@ export function sendAuthorized(
   options: SendOptions,
 ): Promise<RequestResult> {
   if (!isAuthorizedRequest(request)) throw new Error("refusing to send a request the policy did not authorize");
+  // The one place a socket is opened also re-checks that the target authorization has not lapsed.
+  run.assertStillAuthorized();
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > HARD_CEILINGS.maxRequestTimeoutMs) {
     throw new Error("timeout outside the hard ceiling");
   }
@@ -70,6 +84,7 @@ export function sendAuthorized(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       resolve({ outcome, status, latencyMs: performance.now() - started, bytes });
     };
     const req = transport.request({
@@ -99,13 +114,15 @@ export function sendAuthorized(
       response.on("aborted", () => finish("conn_reset", status, bytes));
     });
     const timer = setTimeout(() => { req.destroy(); finish("timeout", null, 0); }, options.timeoutMs);
+    const onAbort = () => { req.destroy(); finish("aborted", null, 0); };
+    if (options.signal?.aborted) onAbort(); else options.signal?.addEventListener("abort", onAbort, { once: true });
     req.on("error", (error: NodeJS.ErrnoException) => finish(classifyError(error), null, 0));
     if (body !== undefined) req.write(body);
     req.end();
   });
 }
 
-const FAILURE_OUTCOMES = new Set<Outcome>(["http_5xx", "http_4xx", "redirect_refused", "timeout", "conn_refused", "conn_reset", "dns", "tls", "body_too_large", "other_error"]);
+const FAILURE_OUTCOMES = new Set<Outcome>(["http_5xx", "http_4xx", "redirect_refused", "timeout", "conn_refused", "conn_reset", "dns", "tls", "body_too_large", "aborted", "other_error"]);
 export function isFailure(outcome: Outcome): boolean { return FAILURE_OUTCOMES.has(outcome); }
 
 /** Synthetic form body for the demo-submission workload. Contains no real data. */
@@ -132,6 +149,15 @@ export type EngineResult = {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * A destination-ownership LEASE. `verify` re-establishes that the destination is still the one the lab proved (for a published container:
+ * still the same running lab container, still publishing exactly that loopback port). It runs before the first request and then
+ * every `intervalMs` for the whole run, concurrently with dispatch. A request is dispatched only while the last SUCCESSFUL verification is
+ * younger than `maxStaleMs`; a failed or hung verification stops the run and cancels in-flight requests. This bounds how long traffic can
+ * keep flowing after ownership is lost (roughly maxStaleMs of dispatch); it is not a proof of TCP peer identity, which plain TCP cannot give.
+ */
+export type DestinationGuard = { verify(): Promise<void>; intervalMs?: number; maxStaleMs?: number };
+
 export type EngineOptions = {
   run: AuthorizedRun;
   thresholds: HttpThresholds;
@@ -145,6 +171,10 @@ export type EngineOptions = {
   onResult?: (phase: string, result: RequestResult, atMs: number) => void;
   /** Failure workloads: end a phase early (never extends it). */
   shouldEndPhase?: (phase: string) => boolean;
+  /** Test seam for the wall clock used by the authorization/deadline checks. */
+  now?: () => number;
+  /** Continuous destination-ownership lease (see DestinationGuard). */
+  destination?: DestinationGuard;
 };
 
 export async function executeHttpWorkload(options: EngineOptions): Promise<EngineResult> {
@@ -154,7 +184,12 @@ export async function executeHttpWorkload(options: EngineOptions): Promise<Engin
   const requests: { request: AuthorizedRequest; body?: string }[] = [];
   for (const method of run.workload.methods) for (const path of run.workload.paths) requests.push({ request: run.authorizeRequest(method, path) });
 
-  const deadline = performance.now() + limits.maxDurationSeconds * 1000 + 2_000;
+  // Strict dispatch deadline, then a bounded drain: nothing is sent after `deadline`, everything in flight is cancelled at deadline + grace.
+  const deadline = performance.now() + limits.maxDurationSeconds * 1000 + SETUP_ALLOWANCE_MS;
+  const hardStop = new AbortController();
+  const hardStopTimer = setTimeout(() => hardStop.abort(), limits.maxDurationSeconds * 1000 + SETUP_ALLOWANCE_MS + DRAIN_GRACE_MS);
+  const onCallerAbort = () => hardStop.abort();
+  if (options.signal?.aborted) hardStop.abort(); else options.signal?.addEventListener("abort", onCallerAbort, { once: true });
   const state: StopState = { measured: 0, failed: 0, consecutiveFailures: 0, latenciesMs: [] };
   const phases: PhaseStats[] = [];
   let totalAttempted = 0;
@@ -162,70 +197,114 @@ export async function executeHttpWorkload(options: EngineOptions): Promise<Engin
   let cursor = 0;
   const wallStart = performance.now();
 
-  for (const phase of limits.phases) {
-    if (stopReason || options.signal?.aborted) break;
-    await options.onPhaseStart?.(phase);
-    const rule = ruleFor(thresholds, phase.name);
-    const agent = new http.Agent({ keepAlive: true, maxSockets: phase.concurrency, maxFreeSockets: phase.concurrency });
-    const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: phase.concurrency, maxFreeSockets: phase.concurrency });
-    const latencies: number[] = [];
-    const outcomes: Record<string, number> = {};
-    const statuses: Record<string, number> = {};
-    let attempted = 0, succeeded = 0, failed = 0, dropped = 0, bytes = 0, inFlight = 0;
-    const pending = new Set<Promise<void>>();
-    const startedAt = new Date();
-    const phaseEnd = performance.now() + phase.durationSeconds * 1000;
-    const intervalMs = 1000 / phase.ratePerSecond;
-    let nextSend = performance.now();
-
-    while (performance.now() < phaseEnd && !stopReason && !options.signal?.aborted && !options.shouldEndPhase?.(phase.name)) {
-      const now = performance.now();
-      if (now > deadline) { stopReason = "global deadline reached"; break; }
-      if (now < nextSend) { await sleep(Math.min(nextSend - now, 5)); continue; }
-      nextSend += intervalMs;
-      // Never accumulate a backlog: if we fell behind, skip forward.
-      if (nextSend < now - intervalMs) nextSend = now + intervalMs;
-      if (totalAttempted >= limits.maxTotalRequests) { stopReason = "total request ceiling reached"; break; }
-      if (inFlight >= phase.concurrency) { dropped++; continue; }
-      const item = requests[cursor++ % requests.length];
-      totalAttempted++; attempted++; inFlight++;
-      const task = send(item.request, run, {
-        timeoutMs: phase.timeoutMs,
-        body: item.request.method === "POST" ? syntheticSubmissionBody() : undefined,
-        agent: item.request.scheme === "https" ? (httpsAgent as unknown as http.Agent) : agent,
-      }).then((result) => {
-        inFlight--;
-        options.onResult?.(phase.name, result, performance.now() - wallStart);
-        latencies.push(result.latencyMs);
-        bytes += result.bytes;
-        outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
-        if (result.status !== null) statuses[String(result.status)] = (statuses[String(result.status)] ?? 0) + 1;
-        const failure = isFailure(result.outcome);
-        if (failure) failed++; else succeeded++;
-        if (rule === "measured") {
-          state.measured++;
-          state.latenciesMs.push(result.latencyMs);
-          if (failure) { state.failed++; state.consecutiveFailures++; } else state.consecutiveFailures = 0;
-          const reason = evaluateStop(thresholds, state);
-          if (reason && !stopReason) stopReason = `STOP threshold: ${reason}`;
+  const guard = options.destination;
+  const guardIntervalMs = guard?.intervalMs ?? 250;
+  const guardMaxStaleMs = guard?.maxStaleMs ?? 750;
+  let lastOkAt = performance.now();
+  let watching = false;
+  let watcher: Promise<void> | null = null;
+  try {
+    if (guard) {
+      // Fail closed BEFORE any traffic, then keep re-proving for the whole run.
+      await guard.verify();
+      lastOkAt = performance.now();
+      watching = true;
+      watcher = (async () => {
+        while (watching) {
+          await sleep(guardIntervalMs);
+          if (!watching) break;
+          try {
+            await Promise.race([guard.verify(), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("destination check timed out")), guardMaxStaleMs * 2))]);
+            lastOkAt = performance.now();
+          } catch (error) {
+            stopReason ??= `destination ownership lost: ${evidenceSafeError(error)}`;
+            hardStop.abort();
+            break;
+          }
         }
-        options.onProgress?.({ phase: phase.name, attempted, failed });
-      });
-      pending.add(task);
-      task.finally(() => pending.delete(task));
+      })();
     }
-    // In-flight requests are bounded by their own timeout; wait for them.
-    await Promise.all(pending);
-    agent.destroy(); httpsAgent.destroy();
-    phases.push({
-      name: phase.name,
-      startedAt: startedAt.toISOString(),
-      endedAt: new Date().toISOString(),
-      planned: { durationSeconds: phase.durationSeconds, ratePerSecond: phase.ratePerSecond, concurrency: phase.concurrency, timeoutMs: phase.timeoutMs },
-      attempted, succeeded, failed, outcomes, statuses,
-      droppedByConcurrencyCap: dropped, bytesReceived: bytes,
-      latencyMs: summarizeLatencies(latencies),
-    });
+    for (const phase of limits.phases) {
+      if (stopReason || hardStop.signal.aborted) break;
+      await options.onPhaseStart?.(phase);
+      const rule = ruleFor(thresholds, phase.name);
+      const agent = new http.Agent({ keepAlive: true, maxSockets: phase.concurrency, maxFreeSockets: phase.concurrency });
+      const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: phase.concurrency, maxFreeSockets: phase.concurrency });
+      const latencies: number[] = [];
+      const outcomes: Record<string, number> = {};
+      const statuses: Record<string, number> = {};
+      let attempted = 0, succeeded = 0, failed = 0, dropped = 0, bytes = 0, inFlight = 0;
+      const pending = new Set<Promise<void>>();
+      const startedAt = new Date();
+      const phaseEnd = performance.now() + phase.durationSeconds * 1000;
+      const intervalMs = 1000 / phase.ratePerSecond;
+      // A phase can never emit more than rate x duration requests, whatever the timer jitter does.
+      const phaseCap = phase.ratePerSecond * phase.durationSeconds;
+      let nextSend = performance.now();
+
+      while (performance.now() < phaseEnd && !stopReason && !hardStop.signal.aborted && !options.shouldEndPhase?.(phase.name)) {
+        const now = performance.now();
+        if (now >= deadline) { stopReason = "global deadline reached"; break; }
+        try { run.assertStillAuthorized(); } catch { stopReason = "target authorization expired during the run"; break; }
+        if (guard) {
+          const age = performance.now() - lastOkAt;
+          if (age > guardMaxStaleMs * 4) { stopReason ??= "destination ownership could not be re-established"; break; }
+          // The proof is stale: send nothing until a verification succeeds again.
+          if (age > guardMaxStaleMs) { await sleep(5); continue; }
+        }
+        if (now < nextSend) { await sleep(Math.min(nextSend - now, 5)); continue; }
+        nextSend += intervalMs;
+        // Never accumulate a backlog: if we fell behind, skip forward.
+        if (nextSend < now - intervalMs) nextSend = now + intervalMs;
+        if (totalAttempted >= limits.maxTotalRequests) { stopReason = "total request ceiling reached"; break; }
+        if (attempted >= phaseCap) break;
+        if (inFlight >= phase.concurrency) { dropped++; continue; }
+        const item = requests[cursor++ % requests.length];
+        totalAttempted++; attempted++; inFlight++;
+        const task = send(item.request, run, {
+          timeoutMs: phase.timeoutMs,
+          body: item.request.method === "POST" ? syntheticSubmissionBody() : undefined,
+          agent: item.request.scheme === "https" ? (httpsAgent as unknown as http.Agent) : agent,
+          signal: hardStop.signal,
+        }).then((result) => {
+          inFlight--;
+          options.onResult?.(phase.name, result, performance.now() - wallStart);
+          latencies.push(result.latencyMs);
+          bytes += result.bytes;
+          outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
+          if (result.status !== null) statuses[String(result.status)] = (statuses[String(result.status)] ?? 0) + 1;
+          const failure = isFailure(result.outcome);
+          if (failure) failed++; else succeeded++;
+          if (rule === "measured") {
+            state.measured++;
+            state.latenciesMs.push(result.latencyMs);
+            if (failure) { state.failed++; state.consecutiveFailures++; } else state.consecutiveFailures = 0;
+            const reason = evaluateStop(thresholds, state);
+            if (reason && !stopReason) stopReason = `STOP threshold: ${reason}`;
+          }
+          options.onProgress?.({ phase: phase.name, attempted, failed });
+        });
+        pending.add(task);
+        task.finally(() => pending.delete(task));
+      }
+      // In-flight requests are bounded by their own timeout; wait for them.
+      await Promise.all(pending);
+      agent.destroy(); httpsAgent.destroy();
+      phases.push({
+        name: phase.name,
+        startedAt: startedAt.toISOString(),
+        endedAt: new Date().toISOString(),
+        planned: { durationSeconds: phase.durationSeconds, ratePerSecond: phase.ratePerSecond, concurrency: phase.concurrency, timeoutMs: phase.timeoutMs },
+        attempted, succeeded, failed, outcomes, statuses,
+        droppedByConcurrencyCap: dropped, bytesReceived: bytes,
+        latencyMs: summarizeLatencies(latencies),
+      });
+    }
+  } finally {
+    watching = false;
+    await watcher?.catch(() => undefined);
+    clearTimeout(hardStopTimer);
+    options.signal?.removeEventListener("abort", onCallerAbort);
   }
   return {
     phases, stopReason, aborted: Boolean(options.signal?.aborted),

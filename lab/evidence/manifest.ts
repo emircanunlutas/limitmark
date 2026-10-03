@@ -38,7 +38,8 @@ export type EvidenceManifest = {
   kind: string;
   git: GitState;
   environment: EvidenceEnvironment;
-  target: { id: string; class: string; scheme?: string; port?: number } | null;
+  /** `ownership` states what the lab ESTABLISHED about the destination: lab-process | lab-container-port | lab-container-netns | unproven; for a remote target it is `operator-asserted`, never a proof. */
+  target: { id: string; class: string; scheme?: string; port?: number; ownership?: string } | null;
   workload: { id: string; phases: readonly unknown[] } | null;
   ceilings: Record<string, unknown> | null;
   thresholds: { id: string; version: number; sha256: string } | null;
