@@ -1,0 +1,73 @@
+# Build-context exclusions for the Linux parity image. The context is the working tree, so this file is the confidentiality
+# boundary for the image: nothing that could be a credential, key, token, cloud/provider configuration or local agent
+# state may enter it. tests/lab-bootstrap.test.ts pins that this list is a SUPERSET of .gitignore and carries every
+# credential pattern below. .gitignore is NOT relied on: it only governs git, not `docker build`.
+#
+# .git is kept (several repository tests ask git which files are tracked/ignored) but its local configuration, which may
+# hold a remote URL with an embedded token, and its hooks are not.
+
+# --- everything .gitignore lists (generated output, local state, rendered provider configs) ---
+node_modules
+.next
+out
+.npm-cache
+.playwright
+.wrangler
+test-results
+playwright-report
+artifacts
+*.tsbuildinfo
+*.log
+.env*
+!.env.example
+AGENTS.md
+CLAUDE.md
+deployment/admission-service.staging.jsonc
+deployment/operator-lifecycle-executor.staging.jsonc
+deployment/lifecycle-mailbox.staging.jsonc
+deployment/lifecycle-observer.staging.jsonc
+deployment/lifecycle-transport.staging.json
+deployment/lifecycle-mailbox.staging.armed.jsonc
+deployment/lifecycle-observer.staging.armed.jsonc
+
+# --- credentials and key material, wherever they sit in the tree ---
+**/.env*
+!**/.env.example
+**/.dev.vars*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/*.kdbx
+**/id_rsa*
+**/id_dsa*
+**/id_ecdsa*
+**/id_ed25519*
+**/.ssh
+**/.gnupg
+**/.aws
+**/.azure
+**/.gcloud
+**/.config/gcloud
+**/.config/gh
+**/.docker
+**/.kube
+**/.netrc
+**/.pgpass
+**/.git-credentials
+**/.vercel
+**/.cloudflared
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+**/service-account*.json
+**/*-credentials.json
+**/credentials.json
+**/client_secret*.json
+
+# --- git metadata that can carry credentials ---
+.git/config
+.git/hooks
+.git/credentials

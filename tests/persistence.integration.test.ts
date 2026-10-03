@@ -2,17 +2,19 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { count, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
-import postgres from "postgres";
 import { inquiries, inquiryEvents, notificationOutbox } from "../src/lib/db/schema";
 import * as schema from "../src/lib/db/schema";
 import { PostgresInquiryRepository } from "../src/lib/inquiry-repository";
 import { createPayloadFingerprint } from "../src/lib/payload-fingerprint";
 import { requestSchema } from "../src/lib/request-schema";
+import { disposableTestDatabase } from "./support/test-database-guard";
 
-const databaseUrl = process.env.TEST_DATABASE_URL;
-const integration = { skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured" } as const;
-const client = databaseUrl ? postgres(databaseUrl, { max: 12, prepare: false }) : null;
+// Fail-closed: a set-but-unproven TEST_DATABASE_URL throws here and every hook below
+// re-asserts the positive disposable-database proof before any migration or TRUNCATE.
+const testDatabase = disposableTestDatabase();
+const integration = { skip: testDatabase.enabled ? false : "TEST_DATABASE_URL is not configured" } as const;
+// The only client for the guarded database: built from the parsed, proven fields (never from the URL string).
+const client = testDatabase.connect({ max: 12 });
 const database = client ? drizzle(client, { schema }) : null;
 
 const validRequest = requestSchema.parse({
@@ -43,12 +45,13 @@ async function totals() {
 
 before(async () => {
   if (!database) return;
-  await migrate(database, { migrationsFolder: "drizzle" });
+  // Proof and migration share ONE transaction on ONE connection (no separate migration connection exists).
+  await testDatabase.migrate(client, "drizzle");
 });
 
 beforeEach(async () => {
   if (!client) return;
-  await client`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`;
+  await testDatabase.destructive(client, (tx) => tx`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`);
 });
 
 after(async () => {
@@ -109,12 +112,12 @@ test("same token with a different fingerprint conflicts without modifying the or
 for (const target of ["inquiry_events", "notification_outbox"] as const) {
   test(`failure while inserting ${target} rolls back the whole inquiry transaction`, integration, async () => {
     const triggerName = `test_fail_${target}`;
-    await client!.unsafe(`CREATE TRIGGER ${triggerName} BEFORE INSERT ON ${target} FOR EACH ROW EXECUTE FUNCTION reject_inquiry_event_mutation()`);
+    await testDatabase.destructive(client, (tx) => tx.unsafe(`CREATE TRIGGER ${triggerName} BEFORE INSERT ON ${target} FOR EACH ROW EXECUTE FUNCTION reject_inquiry_event_mutation()`));
     try {
       await assert.rejects(new PostgresInquiryRepository(database!).create(input((target === "inquiry_events" ? "e" : "f").repeat(43))));
       assert.deepEqual(await totals(), [0, 0, 0]);
     } finally {
-      await client!.unsafe(`DROP TRIGGER ${triggerName} ON ${target}`);
+      await testDatabase.destructive(client, (tx) => tx.unsafe(`DROP TRIGGER ${triggerName} ON ${target}`));
     }
   });
 }

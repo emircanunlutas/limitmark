@@ -1,21 +1,30 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
-import postgres from "postgres";
 import { ADMIN_INQUIRY_PAGE_SIZE, type AdminInquiryQuery } from "../src/lib/admin-inquiry-query";
 import { PostgresAdminInquiryReadRepository } from "../src/lib/admin-inquiry-repository";
 import { adminNotes, inquiries, inquiryEvents, notificationOutbox } from "../src/lib/db/schema";
 import * as schema from "../src/lib/db/schema";
+import { disposableTestDatabase } from "./support/test-database-guard";
 
-const databaseUrl = process.env.TEST_DATABASE_URL;
-const integration = { skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured" } as const;
-const client = databaseUrl ? postgres(databaseUrl, { max: 8, prepare: false }) : null;
+// Fail-closed: a set-but-unproven TEST_DATABASE_URL throws here and every hook below
+// re-asserts the positive disposable-database proof before any migration or TRUNCATE.
+const testDatabase = disposableTestDatabase();
+const integration = { skip: testDatabase.enabled ? false : "TEST_DATABASE_URL is not configured" } as const;
+// The only client for the guarded database: built from the parsed, proven fields (never from the URL string).
+const client = testDatabase.connect({ max: 8 });
 const database = client ? drizzle(client, { schema }) : null;
 const repository = database ? new PostgresAdminInquiryReadRepository(database) : null;
 
-before(async () => { if (database) await migrate(database, { migrationsFolder: "drizzle" }); });
-beforeEach(async () => { if (client) await client`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`; });
+before(async () => {
+  if (!database) return;
+  // Proof and migration share ONE transaction on ONE connection (no separate migration connection exists).
+  await testDatabase.migrate(client, "drizzle");
+});
+beforeEach(async () => {
+  if (!client) return;
+  await testDatabase.destructive(client, (tx) => tx`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`);
+});
 after(async () => { if (client) await client.end(); });
 
 function query(overrides: Partial<AdminInquiryQuery> = {}): AdminInquiryQuery {

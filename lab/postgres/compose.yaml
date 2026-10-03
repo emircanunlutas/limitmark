@@ -1,0 +1,80 @@
+# Disposable synthetic PostgreSQL lab. LOCAL USE ONLY.
+#
+# - Published on the loopback interface only (127.0.0.1); never 0.0.0.0, never a public address.
+# - Data lives on an anonymous volume removed with the container: it survives stop/start (restart
+#   tests) but nothing persists past teardown.
+# - The admin password is injected from the environment by lab/postgres/lab-db.ts at `up`
+#   time (random per run). No credential is stored in this file.
+# - Start/stop only through `npm run lab:db:*`; that tooling owns the container names below.
+name: limitmark-lab
+
+x-hardening: &hardening
+  labels:
+    limitmark.lab: disposable
+    limitmark.lab.role: postgres
+  restart: "no"
+  read_only: true
+  cap_drop: [ALL]
+  cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 256
+  mem_limit: 1g
+  stop_grace_period: 10s
+  networks: [lab]
+
+services:
+  pg16:
+    <<: *hardening
+    image: postgres:16-alpine
+    container_name: limitmark-lab-pg16
+    environment:
+      POSTGRES_USER: lab_admin
+      POSTGRES_PASSWORD: ${LAB_PG_ADMIN_PASSWORD:?set by lab/postgres/lab-db.ts}
+      POSTGRES_DB: limitmark_lab_pg16
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    ports: ["127.0.0.1:55416:5432"]
+    # Data directory: an anonymous volume, so a stop/start (restart) keeps the cluster while
+    # `compose rm -v` / lab-db down removes it. Nothing survives teardown.
+    volumes:
+      - /var/lib/postgresql/data
+    tmpfs:
+      - /var/run/postgresql:rw
+      - /tmp:rw
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab_admin -d limitmark_lab_pg16"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+      start_period: 2s
+
+  pg17:
+    <<: *hardening
+    image: postgres:17-alpine
+    container_name: limitmark-lab-pg17
+    environment:
+      POSTGRES_USER: lab_admin
+      POSTGRES_PASSWORD: ${LAB_PG_ADMIN_PASSWORD:?set by lab/postgres/lab-db.ts}
+      POSTGRES_DB: limitmark_lab_pg17
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    ports: ["127.0.0.1:55417:5432"]
+    # Data directory: an anonymous volume, so a stop/start (restart) keeps the cluster while
+    # `compose rm -v` / lab-db down removes it. Nothing survives teardown.
+    volumes:
+      - /var/lib/postgresql/data
+    tmpfs:
+      - /var/run/postgresql:rw
+      - /tmp:rw
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab_admin -d limitmark_lab_pg17"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+      start_period: 2s
+
+networks:
+  lab:
+    driver: bridge
+    labels:
+      limitmark.lab: disposable
