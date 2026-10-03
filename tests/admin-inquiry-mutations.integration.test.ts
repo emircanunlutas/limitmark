@@ -3,8 +3,7 @@ import { readFile } from "node:fs/promises";
 import { after, before, beforeEach, test } from "node:test";
 import { count, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
-import postgres, { type TransactionSql } from "postgres";
+import { type TransactionSql } from "postgres";
 import { PostgresAdminInquiryMutationRepository } from "../src/lib/admin-inquiry-mutation-repository";
 import { adminNotes, inquiries, inquiryEvents } from "../src/lib/db/schema";
 import * as schema from "../src/lib/db/schema";
@@ -13,9 +12,9 @@ import { disposableTestDatabase } from "./support/test-database-guard";
 // Fail-closed: a set-but-unproven TEST_DATABASE_URL throws here and every hook below
 // re-asserts the positive disposable-database proof before any migration or TRUNCATE.
 const testDatabase = disposableTestDatabase();
-const databaseUrl = testDatabase.url;
-const integration = { skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured" } as const;
-const client = databaseUrl ? postgres(databaseUrl, { max: 12, prepare: false }) : null;
+const integration = { skip: testDatabase.enabled ? false : "TEST_DATABASE_URL is not configured" } as const;
+// The only client for the guarded database: built from the parsed, proven fields (never from the URL string).
+const client = testDatabase.connect({ max: 12 });
 const database = client ? drizzle(client, { schema }) : null;
 const repository = database ? new PostgresAdminInquiryMutationRepository(database) : null;
 const inquiryId = "00000000-0000-4000-8000-000000000042";
@@ -23,13 +22,12 @@ const adminIdentity = { actorIdentifier: "verified-admin@example.test" } as cons
 
 before(async () => {
   if (!database) return;
-  await testDatabase.assertProven();
-  await migrate(database, { migrationsFolder: "drizzle" });
+  // Proof and migration share ONE transaction on ONE connection (no separate migration connection exists).
+  await testDatabase.migrate(client, "drizzle");
 });
 beforeEach(async () => {
   if (!client) return;
-  await testDatabase.assertProven();
-  await client`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`;
+  await testDatabase.destructive(client, (tx) => tx`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`);
 });
 after(async () => { if (client) await client.end(); });
 
@@ -107,7 +105,7 @@ test("concurrent competing compare-and-swap mutations allow at most one winner",
 
 test("event insertion failure rolls back the status compare-and-swap", integration, async () => {
   await database!.insert(inquiries).values(row());
-  await client!.unsafe("CREATE TRIGGER test_fail_admin_event BEFORE INSERT ON inquiry_events FOR EACH ROW EXECUTE FUNCTION reject_inquiry_event_mutation()");
+  await testDatabase.destructive(client, (tx) => tx.unsafe("CREATE TRIGGER test_fail_admin_event BEFORE INSERT ON inquiry_events FOR EACH ROW EXECUTE FUNCTION reject_inquiry_event_mutation()"));
   try {
     await assert.rejects(repository!.changeStatus({ ...target(0), newStatus: "in_review" }));
     const [stored] = await database!.select().from(inquiries);
@@ -115,7 +113,7 @@ test("event insertion failure rolls back the status compare-and-swap", integrati
     assert.equal(stored.revision, 0);
     assert.equal(await eventCount(), 0);
   } finally {
-    await client!.unsafe("DROP TRIGGER test_fail_admin_event ON inquiry_events");
+    await testDatabase.destructive(client, (tx) => tx.unsafe("DROP TRIGGER test_fail_admin_event ON inquiry_events"));
   }
 });
 
@@ -138,13 +136,13 @@ test("invalid notes are rejected and an event failure rolls back both note and r
   for (const content of ["", "   ", "x".repeat(10_001)]) {
     assert.deepEqual(await repository!.addNote({ ...target(0), content }), { status: "invalid" });
   }
-  await client!.unsafe("CREATE TRIGGER test_fail_note_event BEFORE INSERT ON inquiry_events FOR EACH ROW EXECUTE FUNCTION reject_inquiry_event_mutation()");
+  await testDatabase.destructive(client, (tx) => tx.unsafe("CREATE TRIGGER test_fail_note_event BEFORE INSERT ON inquiry_events FOR EACH ROW EXECUTE FUNCTION reject_inquiry_event_mutation()"));
   try {
     await assert.rejects(repository!.addNote({ ...target(0), content: "must roll back" }));
     assert.equal((await database!.select({ value: count() }).from(adminNotes))[0].value, 0);
     assert.equal((await database!.select().from(inquiries))[0].revision, 0);
   } finally {
-    await client!.unsafe("DROP TRIGGER test_fail_note_event ON inquiry_events");
+    await testDatabase.destructive(client, (tx) => tx.unsafe("DROP TRIGGER test_fail_note_event ON inquiry_events"));
   }
 });
 
@@ -197,9 +195,9 @@ test("the Phase 4B migration preserves an existing baseline inquiry", integratio
       if (statement.trim()) await sqlClient.unsafe(statement);
     }
   };
-  await client!.unsafe(`DROP SCHEMA IF EXISTS "${temporarySchema}" CASCADE`);
+  await testDatabase.destructive(client, (tx) => tx.unsafe(`DROP SCHEMA IF EXISTS "${temporarySchema}" CASCADE`));
   try {
-    await client!.begin(async (transaction) => {
+    await testDatabase.destructive(client, async (transaction) => {
       await transaction.unsafe(`CREATE SCHEMA "${temporarySchema}"`);
       await transaction.unsafe(`SET LOCAL search_path TO "${temporarySchema}"`);
       await apply(transaction, baseline);
@@ -210,6 +208,6 @@ test("the Phase 4B migration preserves an existing baseline inquiry", integratio
       assert.deepEqual(afterRow, { ...beforeRow, revision: 0, pre_archive_status: null });
     });
   } finally {
-    await client!.unsafe(`DROP SCHEMA IF EXISTS "${temporarySchema}" CASCADE`);
+    await testDatabase.destructive(client, (tx) => tx.unsafe(`DROP SCHEMA IF EXISTS "${temporarySchema}" CASCADE`));
   }
 });

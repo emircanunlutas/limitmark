@@ -16,8 +16,9 @@ import { PostgresInquiryRepository } from "../../src/lib/inquiry-repository";
 import { PostgresNotificationOutboxRepository } from "../../src/lib/notification-outbox-repository";
 import { createPayloadFingerprint } from "../../src/lib/payload-fingerprint";
 import { requestSchema } from "../../src/lib/request-schema";
-import { verifyDisposableDatabase } from "../../tests/support/test-database-guard";
-import { libraryFaults } from "../postgres/known-faults";
+import { disposableTestDatabase, type DisposableTestDatabase } from "../../tests/support/test-database-guard";
+import { applyKnownFaultVerdict, libraryFaults } from "../postgres/known-faults";
+import { evidenceSafeError } from "../evidence/redact";
 import { EvidenceRun, REPOSITORY_ROOT, collectEnvironment, collectGitState } from "../evidence/manifest";
 import { adminUrl, assertVersion, labDbDown, labDbUp, migratorUrl, runtimeUrl, teardownOnCrash, type PgVersion } from "../postgres/lab-db";
 
@@ -49,6 +50,8 @@ function bounded(name: string, value: number, maximum: number): number {
 }
 
 type Context = {
+  /** The guard that created `owner`: every TRUNCATE goes through gate.destructive(owner, ...). */
+  gate: DisposableTestDatabase;
   owner: postgres.Sql;
   /** Superuser connection, used only to terminate runtime backends in the interruption scenario. */
   admin: postgres.Sql;
@@ -60,7 +63,7 @@ type Context = {
 };
 
 async function reset(context: Context) {
-  await context.owner`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`;
+  await context.gate.destructive(context.owner, (tx) => tx`TRUNCATE TABLE notification_outbox, admin_notes, inquiry_events, inquiries`);
 }
 
 async function counts(context: Context) {
@@ -257,14 +260,17 @@ export async function backendKilledDuringCreates(context: Context, workers = 16,
 }
 
 export async function runHarness(ownerUrl: string, runtimeConnectionUrl: string, proofToken: string, adminUrl: string): Promise<ScenarioResult[]> {
-  // Positive disposable proof first: the harness truncates tables.
-  await verifyDisposableDatabase(ownerUrl, proofToken);
-  const owner = postgres(ownerUrl, { max: 4, prepare: false, onnotice: () => undefined });
+  // The destructive connection IS the proven connection: the owner client is created from the parsed fields by the
+  // guard (no URL string reaches postgres.js) and every TRUNCATE re-proves inside its own transaction.
+  const gate = disposableTestDatabase({ TEST_DATABASE_URL: ownerUrl, TEST_DATABASE_PROOF: proofToken });
+  const owner = gate.connect({ max: 4 });
+  if (!owner) throw new Error("no owner connection");
+  try { await gate.assertProven(owner); } catch (error) { await owner.end({ timeout: 1 }).catch(() => undefined); throw error; }
   const admin = postgres(adminUrl, { max: 1, prepare: false, onnotice: () => undefined });
   const runtime = postgres(runtimeConnectionUrl, { max: HARNESS_BOUNDS.maxWorkers, prepare: false, connect_timeout: 5, onnotice: () => undefined });
   const database = drizzle(runtime, { schema });
   const context: Context = {
-    owner, admin, runtime, runtimeUrl: runtimeConnectionUrl,
+    gate, owner, admin, runtime, runtimeUrl: runtimeConnectionUrl,
     inquiries: new PostgresInquiryRepository(database), outbox: new PostgresNotificationOutboxRepository(database),
     deadline: Date.now() + HARNESS_BOUNDS.maxWallClockSeconds * 1000,
   };
@@ -289,23 +295,26 @@ async function main(): Promise<void> {
   try {
     results = await runHarness(migratorUrl(state), runtimeUrl(state), state.proofToken, adminUrl(state));
   } catch (error) {
-    failure = error instanceof Error ? error.message.slice(0, 300) : "unknown error";
+    failure = evidenceSafeError(error);
   } finally {
-    await labDbDown(version).catch((error) => { failure ??= `teardown: ${(error as Error).message}`; });
+    await labDbDown(version).catch((error) => { failure ??= `teardown: ${evidenceSafeError(error)}`; });
   }
-  const pass = !failure && results.length === 6 && results.every((result) => result.pass);
+  const reasons = failure ? [failure] : results.filter((result) => !result.pass).map((result) => `${result.scenario} failed`);
+  let verdict: "PASS" | "FAIL" | "ERROR" = failure ? "ERROR" : results.length === 6 && results.every((result) => result.pass) ? "PASS" : "FAIL";
+  // The known postgres.js defect is a FINDING: a run that observed it can never be reported as a pass.
+  ({ result: verdict } = applyKnownFaultVerdict(verdict, reasons, libraryFaults));
+  const pass = verdict === "PASS";
   for (const result of results) console.log(`${result.pass ? "PASS" : "FAIL"}  ${result.scenario}${result.checks.filter((c) => !c.pass).map((c) => `\n      x ${c.name} ${c.detail ?? ""}`).join("")}`);
   evidence.addJsonArtifact("scenarios.json", { bounds: HARNESS_BOUNDS, scenarios: results });
   evidence.finalize({
     git: collectGitState(), environment: collectEnvironment(state.serverVersion), target: { id: `postgres-lab-${version}`, class: "lab-local" },
     workload: { id: "concurrency-idempotency-harness", phases: results.map((result) => ({ name: result.scenario })) },
-    ceilings: { ...HARNESS_BOUNDS }, thresholds: null, engine: "node-postgres",
-    result: failure ? "ERROR" : pass ? "PASS" : "FAIL",
-    resultReasons: failure ? [failure] : results.filter((result) => !result.pass).map((result) => `${result.scenario} failed`),
+    ceilings: { scope: "per-process; not campaign- or fleet-wide", ...HARNESS_BOUNDS }, thresholds: null, engine: "node-postgres",
+    result: verdict, resultReasons: reasons,
     metrics: { scenarios: results.length, passed: results.filter((result) => result.pass).length, postgresJsUncaughtNullSocketWrite: libraryFaults.postgresJsNullSocketWrite },
   });
   if (libraryFaults.postgresJsNullSocketWrite > 0) console.log(`FINDING: postgres.js threw ${libraryFaults.postgresJsNullSocketWrite} uncaught null-socket write TypeError(s) when backends were terminated`);
-  console.log(`concurrency harness PG${version}: ${failure ? `ERROR ${failure}` : pass ? "PASS" : "FAIL"} evidence=${evidence.id}`);
+  console.log(`concurrency harness PG${version}: ${verdict}${reasons.length ? ` (${reasons.join("; ")})` : ""} evidence=${evidence.id}`);
   process.exit(pass ? 0 : 1);
 }
 
