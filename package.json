@@ -76,7 +76,8 @@
     "lab:db:guard-selftest": "tsx --conditions=react-server lab/postgres/guard-selftest.ts",
     "lab:concurrency": "tsx --conditions=react-server lab/concurrency/harness.ts",
     "lab:parity": "tsx --conditions=react-server lab/linux/parity.ts",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "lab:k6:selftest": "tsx --conditions=react-server lab/load/k6-selftest.ts"
   },
   "engines": {
     "node": ">=22.0.0"

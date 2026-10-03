@@ -185,6 +185,8 @@ export function validateWorkloadCatalogue(workloads: Readonly<Record<string, Wor
     if (reviewed.concurrency > HARD_CEILINGS.maxConcurrency) problems.push(`${workload.id}: reviewed concurrency exceeds hard ceiling`);
     if (reviewed.durationSeconds > HARD_CEILINGS.maxDurationSeconds) problems.push(`${workload.id}: reviewed duration exceeds hard ceiling`);
     if (reviewed.totalRequests > HARD_CEILINGS.maxTotalRequests) problems.push(`${workload.id}: reviewed total exceeds hard ceiling`);
+    // Warm-up GETs are accounted separately; together with the workload they must still fit the hard per-process total.
+    if (reviewed.totalRequests + HARD_CEILINGS.maxWarmupRequests > HARD_CEILINGS.maxTotalRequests) problems.push(`${workload.id}: reviewed total plus warm-up exceeds hard ceiling`);
     for (const phase of workload.phases) {
       for (const [key, value] of Object.entries({ d: phase.durationSeconds, r: phase.ratePerSecond, c: phase.concurrency, t: phase.timeoutMs })) {
         if (!Number.isSafeInteger(value) || value < 1) problems.push(`${workload.id}/${phase.name}: ${key} must be a positive integer`);
