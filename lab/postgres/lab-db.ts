@@ -154,14 +154,14 @@ export async function labDbDown(version: PgVersion): Promise<void> {
 }
 
 /** Any crash path (unhandled rejection, SIGINT) still removes the disposable container. */
-export function teardownOnCrash(versions: readonly PgVersion[], options: { tolerateKnownPostgresJsFault?: boolean } = {}): void {
+export function teardownOnCrash(versions: readonly PgVersion[], options: { tolerateKnownPostgresJsFault?: boolean; /** Removes anything else the tool owns (for example parity containers); must verify ownership itself. */ extraCleanup?: () => Promise<void> } = {}): void {
   let running = false;
   const handler = (reason: unknown) => {
     if (options.tolerateKnownPostgresJsFault && isPostgresJsNullSocketWrite(reason)) { libraryFaults.postgresJsNullSocketWrite++; return; }
     if (running) return;
     running = true;
     console.error(reason instanceof Error ? reason.stack : reason);
-    Promise.all(versions.map((version) => labDbDown(version).catch(() => undefined))).finally(() => process.exit(1));
+    Promise.all([...versions.map((version) => labDbDown(version).catch(() => undefined)), options.extraCleanup?.().catch(() => undefined)]).finally(() => process.exit(1));
   };
   process.on("unhandledRejection", handler);
   process.on("uncaughtException", handler);

@@ -11,6 +11,7 @@ name: limitmark-lab
 x-hardening: &hardening
   labels:
     limitmark.lab: disposable
+    limitmark.lab.role: postgres
   restart: "no"
   read_only: true
   cap_drop: [ALL]

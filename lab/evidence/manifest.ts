@@ -10,6 +10,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { dockerServerVersionSync } from "../host/docker";
 import { assertEvidenceSafe } from "./redact";
 import { canonicalJson } from "../policy/thresholds";
 
@@ -85,7 +86,8 @@ export function collectEnvironment(postgresVersion: string | null = null): Evide
     kernelRelease: os.release().slice(0, 100),
     arch: os.arch(),
     nodeVersion: process.version,
-    dockerVersion: run("docker", ["version", "--format", "{{.Server.Version}}"]),
+    // Through the same confinement as every other Docker call: a daemon the lab did not verify as local is never asked.
+    dockerVersion: dockerServerVersionSync(),
     postgresVersion,
     cpuCount: os.cpus().length,
     memoryMegabytes: Math.round(os.totalmem() / 1_048_576),

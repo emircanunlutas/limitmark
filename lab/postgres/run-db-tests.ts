@@ -6,11 +6,13 @@
  */
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { evidenceSafeError } from "../evidence/redact";
 import { EvidenceRun, REPOSITORY_ROOT, collectEnvironment, collectGitState } from "../evidence/manifest";
+import { EXPECTED_DB_TESTS } from "../linux/results";
 import { assertVersion, labDbDown, labDbUp, teardownOnCrash, testEnvironment, type PgVersion } from "./lab-db";
 
 /** Reviewed count of TEST_DATABASE_URL-gated tests; a different count is reported as FAIL so it is noticed. */
-export const EXPECTED_DB_TESTS = 34;
+export { EXPECTED_DB_TESTS };
 const SUITES = [
   "tests/persistence.integration.test.ts",
   "tests/notification-outbox.integration.test.ts",
@@ -70,7 +72,7 @@ async function main(): Promise<void> {
       if (summary.tests !== EXPECTED_DB_TESTS) reasons.push(`ran ${summary.tests} tests, reviewed count is ${EXPECTED_DB_TESTS}`);
       result = reasons.length === 0 ? "PASS" : "FAIL";
     } catch (error) {
-      reasons.push(error instanceof Error ? error.message.slice(0, 300) : "unknown error");
+      reasons.push(evidenceSafeError(error));
     }
     evidence.addJsonArtifact("suites.json", { suites: SUITES });
     evidence.finalize({

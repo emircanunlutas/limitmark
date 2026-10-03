@@ -25,6 +25,7 @@ export type PolicyRefusalCode =
   | "target-unknown"
   | "target-definition-invalid"
   | "target-expired"
+  | "target-listener-unproven"
   | "target-live-limitmark"
   | "target-provider-infrastructure"
   | "target-address-forbidden"
@@ -292,6 +293,14 @@ export type AuthorizedRun = Readonly<{
   target: LabTarget;
   workload: WorkloadSpec;
   limits: EffectiveLimits;
+  /**
+   * Epoch milliseconds after which the target definition no longer authorizes traffic (lab-remote expiry), or null for the
+   * built-in loopback fixtures. Authorization is a property of the WHOLE run, not of its start: the engine and the k6
+   * wrapper re-check it before every request / while the container runs.
+   */
+  authorizedUntilMs: number | null;
+  /** Throws PolicyRefusal("target-expired") once the authorization has lapsed. */
+  assertStillAuthorized(): void;
   authorizeRequest(method: TargetMethod, path: string): AuthorizedRequest;
   /** Used to vet a redirect Location: returns true only if it would itself be authorized. */
   wouldAuthorizeUrl(location: string, method: TargetMethod): boolean;
@@ -360,6 +369,8 @@ export type RunRequest = {
   limits?: CliLimits;
   registry: TargetRegistry;
   now: Date;
+  /** Test seam: the clock used for the whole-run expiry check. Defaults to Date.now. */
+  clock?: () => number;
   /** Whether the git working tree is clean; lab-remote runs require it. */
   treeIsClean?: boolean;
 };
@@ -392,13 +403,20 @@ export function authorizeRun(request: RunRequest): AuthorizedRun {
   if (workload.localOnly && target.class !== "lab-local") throw new PolicyRefusal("workload-local-only", "failure workloads act only on lab-managed local processes");
   if (target.class === "lab-remote" && request.treeIsClean !== true) throw new PolicyRefusal("clean-tree-required", "remote lab runs need a clean, recorded git tree");
   const limits = applyCliLimits(workload, request.limits ?? {});
+  const clock = request.clock ?? Date.now;
+  const authorizedUntilMs = target.expiresAt ? Date.parse(target.expiresAt) : null;
+  const assertStillAuthorized = () => {
+    if (authorizedUntilMs !== null && clock() >= authorizedUntilMs) throw new PolicyRefusal("target-expired", "the target authorization expired while the run was in progress");
+  };
   // Eagerly authorize every (method, path) the workload can issue: any refusal happens now, before any network.
   for (const method of workload.methods) for (const path of workload.paths) authorizeOne(target, workload, method, path);
   return Object.freeze({
     target,
     workload,
     limits,
-    authorizeRequest: (method: TargetMethod, path: string) => authorizeOne(target, workload, method, path),
+    authorizedUntilMs,
+    assertStillAuthorized,
+    authorizeRequest: (method: TargetMethod, path: string) => { assertStillAuthorized(); return authorizeOne(target, workload, method, path); },
     wouldAuthorizeUrl: (location: string, method: TargetMethod) => {
       try {
         const parsed = new URL(location, target.origin);
@@ -410,12 +428,19 @@ export function authorizeRun(request: RunRequest): AuthorizedRun {
   });
 }
 
-/** Managed-resource guard for the PostgreSQL failure workload: only lab-labelled local containers. */
+/**
+ * Managed-resource guard: only containers the lab created. Ownership is the daemon's LABELS (disposable marker and,
+ * when a role is required, the role label); the name pattern is an additional shape check and is never sufficient.
+ */
 export const LAB_CONTAINER_PREFIX = "limitmark-lab-";
 export const LAB_CONTAINER_LABEL = "limitmark.lab=disposable";
-export function assertLabContainer(name: string, labels: Readonly<Record<string, string>>): void {
-  if (!new RegExp(`^${LAB_CONTAINER_PREFIX}[a-z0-9-]{1,40}$`).test(name) || labels["limitmark.lab"] !== "disposable") {
-    throw new PolicyRefusal("target-unknown", "only containers created by the lab (name prefix and disposable label) may be controlled");
+export const LAB_ROLE_LABEL = "limitmark.lab.role";
+export function assertLabContainer(name: string, labels: Readonly<Record<string, string>>, role?: string): void {
+  if (!new RegExp("^" + LAB_CONTAINER_PREFIX + "[a-z0-9-]{1,60}$").test(name) || labels["limitmark.lab"] !== "disposable") {
+    throw new PolicyRefusal("target-unknown", "only containers created by the lab (disposable label) may be controlled");
+  }
+  if (role !== undefined && labels[LAB_ROLE_LABEL] !== role) {
+    throw new PolicyRefusal("target-unknown", `the container does not carry the lab role label "${role}"`);
   }
 }
 
