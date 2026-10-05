@@ -45,6 +45,11 @@ test("the frozen R06 protocol and trust modules are imported ONLY by the reviewe
     "operator/authority-result-reader.ts",
     "operator/authority-result-verifier.ts",
     "operator/authority-trust-loader.ts",
+    // R06 ACTIVATION TOOLING (offline, local-only; tests/r06-activation-capability-guard.test.ts pins the exact symbols structurally): public-key fingerprinting and the
+    // safe-time predicate (custody), and the frozen trust-manifest parser (renderer and preflight). None of them signs, builds or verifies a statement.
+    "operator/staging-attestation-key.ts",
+    "operator/staging-r06-preflight.ts",
+    "operator/staging-r06-renderer.ts",
   ].sort());
   // No relay, mailbox, observer, executor, guard, R2 writer, CLI or public route may import it: a relay cannot verify, parse or mint signed semantics.
   for (const relay of ["operator/attested-relay.ts", "operator/lifecycle-submitter.ts", "operator/lifecycle-result.ts", "operator/r2-transport.ts",
@@ -68,6 +73,11 @@ test("the attested Authority RPCs are invoked ONLY by the reviewed active caller
     "workers/lifecycle-mailbox/staging-dispatch-guard.ts",
     "workers/lifecycle-observer.ts", // signed reconciliation: attestReconciliation
     "workers/staging-lifecycle-observer.ts",
+    // R06 ACTIVATION TOOLING (offline, local-only): custody uses the Authority signer ONLY for its readiness self-test; the closed-set secret
+    // engine reads ONLY the binding NAMES (ATTESTATION_SIGNER_BINDINGS.staging). Neither calls an attested RPC, a coordinator or a signing method;
+    // tests/r06-activation-capability-guard.test.ts proves both structurally (syntax tree), not by pattern.
+    "operator/staging-attestation-key.ts",
+    "operator/staging-attestation-secret-engine.ts",
   ].sort());
   // The Production and staging dispatch/observer relays call exactly their reviewed method and nothing else of the attested surface.
   for (const guard of ["workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/staging-dispatch-guard.ts"]) {

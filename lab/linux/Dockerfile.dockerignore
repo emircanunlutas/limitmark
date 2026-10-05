@@ -29,6 +29,7 @@ deployment/lifecycle-observer.staging.jsonc
 deployment/lifecycle-transport.staging.json
 deployment/lifecycle-mailbox.staging.armed.jsonc
 deployment/lifecycle-observer.staging.armed.jsonc
+deployment/authority-result-trust.json
 
 # --- credentials and key material, wherever they sit in the tree ---
 **/.env*

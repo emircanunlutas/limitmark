@@ -126,7 +126,7 @@ function pinnedAccount(accountId: string | undefined, pins: StagingRenderPins): 
   return { accountId: accountId as string, fingerprint };
 }
 
-async function readBounded(path: string, maximum: number, sizeCode: string): Promise<Uint8Array> {
+export async function readBounded(path: string, maximum: number, sizeCode: string): Promise<Uint8Array> {
   const file = await open(path, "r");
   try {
     const stat = await file.stat();
@@ -143,7 +143,7 @@ async function readBounded(path: string, maximum: number, sizeCode: string): Pro
   } finally { await file.close(); }
 }
 
-function isWithin(parent: string, child: string): boolean {
+export function isWithin(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
@@ -180,7 +180,7 @@ async function derivePinnedPublicKey(keyPath: string, realRoot: string, pins: St
   return { publicKey, fingerprint };
 }
 
-const occurrences = (source: string, needle: string) => source.split(needle).length - 1;
+export const occurrences = (source: string, needle: string) => source.split(needle).length - 1;
 
 function fieldValue(value: unknown, field: readonly string[]): unknown {
   let current = value;
