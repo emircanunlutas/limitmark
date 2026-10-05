@@ -80,7 +80,7 @@ export type RawSpec = {
 };
 
 /** A tracked raw-TCP exchange: the exact bytes are written, nothing is normalised by an HTTP client. */
-export async function trackedRaw(collector: Collector, port: number, meta: RequestMeta, build: (nonce: string) => RawSpec, timeoutMs: number): Promise<Exchange> {
+export async function trackedRaw(collector: Collector, port: number, meta: RequestMeta, build: (nonce: string) => RawSpec, timeoutMs: number, beforeWrite?: (socket: net.Socket, nonce: string) => Promise<void>): Promise<Exchange> {
   const nonce = newNonce();
   const registered = collector.sent(nonce, meta);
   const started = performance.now();
@@ -112,10 +112,15 @@ export async function trackedRaw(collector: Collector, port: number, meta: Reque
       return finish("response", Number(status[1]), outcome ? outcome.slice(OUTCOME_HEADER.length + 1).trim() : undefined);
     };
     const timer = setTimeout(() => settle(parse() ?? finish("timeout", null, undefined)), timeoutMs);
-    socket.on("connect", () => {
+    const transmit = () => {
       socket.write(spec.head);
       if (spec.tail) setTimeout(() => { if (!done && !socket.destroyed) socket.write(spec.tail!); }, spec.afterMs ?? 0);
       if (spec.closeAfterMs !== undefined) setTimeout(() => socket.destroy(), spec.closeAfterMs);
+    };
+    socket.on("connect", () => {
+      if (beforeWrite === undefined) { transmit(); return; }
+      // The hook runs while the connection is open and nothing has been sent: the caller may use the socket's own local port.
+      beforeWrite(socket, nonce).then(() => { if (!done && !socket.destroyed) transmit(); }, () => settle(finish("error", null, undefined)));
     });
     socket.on("data", (chunk) => { received = Buffer.concat([received, chunk]); const parsed = parse(); if (parsed) settle(parsed); });
     socket.on("error", (error) => settle(parse() ?? finish(classify(error), null, undefined)));

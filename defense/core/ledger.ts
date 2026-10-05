@@ -18,6 +18,9 @@
  */
 import type { LayerErrorKind, Lane, ObReason, RejectReason, RejectStage } from "./types";
 import { REJECT_STATUS } from "./types";
+// Type-only: the legacy (Slice-1/2) plane composition must not pull the L2 mechanism into its runtime module graph.
+import type { L2ErrorKind, L2Outcome, Lane2, OperationClass, ShedReason } from "./lanes";
+import type { EnrollSkipReason } from "./enrollment";
 
 // ---------------------------------------------------------------------------
 // Event vocabulary
@@ -26,6 +29,8 @@ import { REJECT_STATUS } from "./types";
 export const PLANE_EVENT_KINDS = [
   "INGRESS_ACCEPTED", "L1_ENTERED", "L1_PASSED", "L1_REJECTED", "L1_SHED", "L1_ERROR",
   "EGRESS_ATTEMPTED", "PROOF_ISSUED", "EGRESS_RESPONDED", "EGRESS_FAILED", "INGRESS_RESPONDED", "INGRESS_ABORTED",
+  // Slice 3 (L2 journey-lanes). They exist only in a run whose plane composition has L2; a Slice-1/2 stream never contains one.
+  "L2_ENTERED", "L2_DECIDED", "L2_ENROLLED", "L2_ENROLL_SKIPPED",
 ] as const;
 export type PlaneEventKind = (typeof PLANE_EVENT_KINDS)[number];
 
@@ -56,6 +61,33 @@ export type PlaneEvent = {
   code?: string;
   /** PROOF_ISSUED (Slice 2): the 16-character tag of the Plane-to-Boundary proof's jti (never the jti or the proof). */
   pbTag?: string;
+  // ---- Slice 3. Lane, outcome and basis are separate facts; a request has exactly one L2_DECIDED carrying all of them.
+  /** L2_DECIDED: the operation class, the lane (null only where classification never ran) and the outcome. */
+  class?: OperationClass;
+  lane?: Lane2 | null;
+  outcome?: L2Outcome;
+  shedReason?: ShedReason;
+  l2ErrorKind?: L2ErrorKind;
+  /** L2_DECIDED (error, discarded verdict): the lane whose bucket token and use the discarded decision had already consumed. */
+  spent?: Lane2;
+  /** L2_DECIDED (error, discarded verdict): the lane whose bucket the discarded decision took a (shed) decision from: nothing consumed. */
+  touched?: Lane2;
+  /** 16-character tag of the keyed credit digest: on a credited decision and on L2_ENROLLED. Never the token. */
+  creditTag?: string;
+  /** The consuming bucket's clock (ms), its level in micro-tokens after the decision, and its per-bucket decision number. */
+  dt?: number;
+  lvl?: number;
+  lseq?: number;
+  /** PERMANENT label on a verdict a harness-only override delivered instead of the layer's own. Absent means natural. */
+  basis?: "simulated";
+  /** The verdict the layer actually computed (the shadow), on a simulated verdict. */
+  shadow?: string;
+  /** L2_ENROLL_SKIPPED. */
+  skipReason?: EnrollSkipReason;
+  /** L2_ENROLLED: popcount of the (active, previous) generations after the insert. */
+  fill?: [number, number];
+  /** EGRESS_FAILED in an L2 composition: whether the request could not be canonicalized or the proof could not be issued. */
+  failStage?: "canon" | "sign";
 };
 
 export type OriginEventKind = "ORIGIN_RECEIVED" | "ORIGIN_COMPLETED" | "ORIGIN_ABORTED";
@@ -177,6 +209,10 @@ export const ANOMALY_CODES = [
   "app_mutation_without_lineage", "app_refused_boundary_admitted", "direct_app_execution", "direct_app_mutation", "direct_not_rejected",
   "hop_range_violation", "unattributed_app_execution", "unattributed_app_mutation", "app_counter_mismatch", "boundary_counter_mismatch",
   "replay_state_violation", "admitted_hop_duplicate", "clock_step_detected", "positive_control_failed",
+  // Slice 3: the L2 stage, enrollment, the simulated-verdict controls and L2 state.
+  "layer_skipped", "l2_decision_invalid", "l2_refused_but_egressed", "l2_enrollment_invalid", "enrollment_after_decision",
+  "l2_counter_mismatch", "l2_bucket_replay_mismatch", "l2_state_violation", "simulated_in_normal_runtime", "unconsumed_override_arm",
+  "override_applied_without_arm", "l2_decision_untraced",
 ] as const;
 export type AnomalyCode = (typeof ANOMALY_CODES)[number];
 export type Anomaly = { code: AnomalyCode; nonce: string | null; detail: string };
@@ -188,6 +224,7 @@ export type Anomaly = { code: AnomalyCode; nonce: string | null; detail: string 
 const RANK: Readonly<Record<PlaneEventKind, number>> = {
   INGRESS_ACCEPTED: 1, L1_ENTERED: 2, L1_PASSED: 3, L1_REJECTED: 3, L1_SHED: 3, L1_ERROR: 3,
   EGRESS_ATTEMPTED: 4, PROOF_ISSUED: 4.5, EGRESS_RESPONDED: 5, EGRESS_FAILED: 5, INGRESS_RESPONDED: 6, INGRESS_ABORTED: 6,
+  L2_ENTERED: 3.2, L2_DECIDED: 3.5, L2_ENROLLED: 5.5, L2_ENROLL_SKIPPED: 5.5,
 };
 
 /** The only legal successor events. Everything else is a violation, classified by `classifyViolation`. */
@@ -204,6 +241,33 @@ export const NEXT_PLANE_KINDS: Readonly<Record<PlaneEventKind | "START", readonl
   PROOF_ISSUED: ["EGRESS_RESPONDED", "EGRESS_FAILED"],
   EGRESS_RESPONDED: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
   EGRESS_FAILED: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
+  INGRESS_RESPONDED: [],
+  INGRESS_ABORTED: [],
+  // Slice 3 kinds are not part of a Slice-1/2 composition: no successor lists them, so one appearing there is a violation as before.
+  L2_ENTERED: [],
+  L2_DECIDED: [],
+  L2_ENROLLED: [],
+  L2_ENROLL_SKIPPED: [],
+};
+
+/** Slice 3: the plane automaton of a composition that has L2. Selected by `LifecycleView.l2`; the Slice-1/2 table above is untouched. */
+export const NEXT_PLANE_KINDS_L2: Readonly<Record<PlaneEventKind | "START", readonly PlaneEventKind[]>> = {
+  START: ["INGRESS_ACCEPTED"],
+  INGRESS_ACCEPTED: ["L1_ENTERED"],
+  L1_ENTERED: ["L1_PASSED", "L1_REJECTED", "L1_SHED", "L1_ERROR"],
+  L1_PASSED: ["L2_ENTERED"],
+  L1_REJECTED: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
+  L1_SHED: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
+  L1_ERROR: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
+  L2_ENTERED: ["L2_DECIDED"],
+  // Whether the decision proceeds is checked against its outcome by the L2 lifecycle rules, not by the successor table.
+  L2_DECIDED: ["EGRESS_ATTEMPTED", "INGRESS_RESPONDED", "INGRESS_ABORTED"],
+  EGRESS_ATTEMPTED: ["PROOF_ISSUED", "EGRESS_RESPONDED", "EGRESS_FAILED"],
+  PROOF_ISSUED: ["EGRESS_RESPONDED", "EGRESS_FAILED"],
+  EGRESS_RESPONDED: ["L2_ENROLLED", "L2_ENROLL_SKIPPED", "INGRESS_RESPONDED", "INGRESS_ABORTED"],
+  EGRESS_FAILED: ["L2_ENROLL_SKIPPED", "INGRESS_RESPONDED", "INGRESS_ABORTED"],
+  L2_ENROLLED: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
+  L2_ENROLL_SKIPPED: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
   INGRESS_RESPONDED: [],
   INGRESS_ABORTED: [],
 };
@@ -230,6 +294,8 @@ export type LifecycleView = {
   /** Slice 2 only: present when the run has hop-gate streams. Absent in a Slice-1 run, which keeps every Slice-1 rule exactly as it was. */
   boundary?: readonly BoundaryEvent[];
   app?: readonly AppEvent[];
+  /** Slice 3 only: the plane composition has L2, so the lifecycle has the L2 stage. Absent in a Slice-1/2 run: every Slice-1/2 rule is unchanged. */
+  l2?: boolean;
 };
 
 export function planeStatusFor(view: LifecycleView): number | null {
@@ -237,6 +303,10 @@ export function planeStatusFor(view: LifecycleView): number | null {
   if (!verdict) return null;
   if (verdict.kind === "L1_REJECTED") return verdict.reason ? REJECT_STATUS[verdict.reason] : null;
   if (verdict.kind === "L1_SHED" || verdict.kind === "L1_ERROR") return 503;
+  if (view.l2) {
+    const decided = view.plane.find((event) => event.kind === "L2_DECIDED");
+    if (decided && (decided.outcome === "shed" || decided.outcome === "error")) return 503;
+  }
   const failed = view.plane.find((event) => event.kind === "EGRESS_FAILED");
   if (failed) return failed.egressError === "timeout" ? 504 : 502;
   const responded = view.plane.find((event) => event.kind === "EGRESS_RESPONDED");
@@ -253,6 +323,17 @@ export function terminalOutcome(plane: readonly PlaneEvent[]): TerminalOutcome |
   if (plane.some((event) => event.kind === "EGRESS_FAILED")) return "egress_failed";
   if (plane.some((event) => event.kind === "EGRESS_RESPONDED")) return "proxied";
   return null;
+}
+
+/** Slice 3: the terminal outcome of a plane stream that has L2. An L2 refusal is its own terminal outcome, never aliased to an L1 one. */
+export type L2TerminalOutcome = TerminalOutcome | "l2_shed" | "l2_error";
+export function terminalOutcomeL2(plane: readonly PlaneEvent[]): L2TerminalOutcome | null {
+  const decided = plane.find((event) => event.kind === "L2_DECIDED");
+  if (decided && plane.some((event) => event.kind === "INGRESS_RESPONDED") && !plane.some((event) => event.kind === "INGRESS_ABORTED")) {
+    if (decided.outcome === "shed") return "l2_shed";
+    if (decided.outcome === "error") return "l2_error";
+  }
+  return terminalOutcome(plane);
 }
 
 const OUTCOME_HEADER_VALUE: Readonly<Record<TerminalOutcome, string>> = {
@@ -285,7 +366,7 @@ export function validateLifecycle(view: LifecycleView, final: boolean): Anomaly[
       const kind = event.kind as PlaneEventKind;
       if (event.seq <= lastSeq) add("impossible_order", `seq ${event.kind}`);
       lastSeq = event.seq;
-      if (!NEXT_PLANE_KINDS[previous].includes(kind)) add(classifyViolation(previous, kind, seen), `${previous}>${kind}`);
+      if (!(view.l2 === true ? NEXT_PLANE_KINDS_L2 : NEXT_PLANE_KINDS)[previous].includes(kind)) add(classifyViolation(previous, kind, seen), `${previous}>${kind}`);
       seen.add(kind);
       previous = kind;
     }
@@ -337,8 +418,9 @@ export function validateLifecycle(view: LifecycleView, final: boolean): Anomaly[
     if (responseEvent && planeStatus !== null && responseEvent.status !== planeStatus) add("plane_status_mismatch", `${responseEvent.status}!=${planeStatus}`);
     const client = completed[0];
     if (client && client.result === "response" && responseEvent && client.status !== responseEvent.status) add("client_status_mismatch", `${client.status}!=${responseEvent.status}`);
-    const outcome = terminalOutcome(view.plane);
-    if (client?.result === "response" && client.outcomeHeader !== undefined && outcome && OUTCOME_HEADER_VALUE[outcome] !== client.outcomeHeader) add("outcome_header_mismatch", `${client.outcomeHeader}!=${outcome}`);
+    const outcome = view.l2 === true ? terminalOutcomeL2(view.plane) : terminalOutcome(view.plane);
+    const wantedHeader = outcome === null ? null : outcome === "l2_shed" || outcome === "l2_error" ? outcome : OUTCOME_HEADER_VALUE[outcome];
+    if (client?.result === "response" && client.outcomeHeader !== undefined && wantedHeader !== null && wantedHeader !== client.outcomeHeader) add("outcome_header_mismatch", `${client.outcomeHeader}!=${outcome}`);
   }
   return found;
 }

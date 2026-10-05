@@ -45,7 +45,8 @@ test("layers and the composer never read the correlation nonce, a hop id, an out
 test("layers depend only on the shared closed vocabulary, never on the plane, the ledger or the origin", () => {
   for (const file of defenseFiles.filter((candidate) => rel(candidate).startsWith("defense/layers/"))) {
     const specifiers = [...code(file).matchAll(/from\s+["']([^"']+)["']/g)].map((match) => match[1]);
-    for (const specifier of specifiers) assert.match(specifier, /^\.\.\/core\/types$/, `${rel(file)}: ${specifier}`);
+    // Slice 3 widens this by exactly one module: the L2 adapter may import the pure mechanism it adapts.
+    for (const specifier of specifiers) assert.match(specifier, /^\.\.\/core\/(?:types|lanes)$/, `${rel(file)}: ${specifier}`);
   }
 });
 
@@ -101,7 +102,8 @@ test("Slice 2: defense/ has no minting capability: no `mint*` identifier, no tes
 
 test("Slice 2: the issuers have exactly one production call site each, and the VerifiedPb seal is called from nowhere but the admission", () => {
   const callers = (needle: RegExp) => inLabAndDefense.filter((file) => needle.test(code(file))).map(rel).sort();
-  assert.deepEqual(callers(/\bissuePb\(/), ["defense/core/hop-proof.ts", "defense/plane/main.ts"]);
+  // Slice 3 adds exactly one: the shared runtime of the Slice-3 plane entry (the legacy entry is unchanged). Still one signing path per hop.
+  assert.deepEqual(callers(/\bissuePb\(/), ["defense/core/hop-proof.ts", "defense/plane/main.ts", "defense/plane/runtime.ts"]);
   assert.deepEqual(callers(/\bissueBa\(/), ["defense/boundary/boundary.ts", "defense/core/hop-proof.ts"]);
   assert.deepEqual(callers(/\bsealVerifiedPb\(/), ["defense/core/hop-admission.ts", "defense/core/hop-proof.ts"]);
   assert.deepEqual(callers(/approvedRegistry\.add\(/), ["defense/core/semantic-request.ts"], "an ApprovedRequest is minted in exactly one place");

@@ -209,3 +209,59 @@ start fence alone.
 ```text
 npm run lab:ba0:origin   # loopback only; takes no arguments; evidence under the gitignored artifacts/lab/evidence/
 ```
+
+# BA0 Slice 3: layer diversity and predecessor-collapse (application plane only)
+
+Status: **local, loopback-only, fixed counts.** Slice 3 may conclude **LAYER-DIVERSITY-VALID** or **INVALID**; it never claims a defense-qualification PASS.
+
+**What it measures.** If L1 is wrong, is there a genuinely different layer behind it that still protects the application? L1 judges the *shape of one
+request* (stateless). L2 `a7.journey-lanes` judges two things L1 cannot: whether a mutation request carries a submission token that this plane itself
+delivered to a client recently (journey provenance, a cross-request signal), and how much mutation work each lane has already been admitted for (a
+budget). Provenance only *selects* the lane; the budgets are the bound. The sender is never an input: no IP, no connection identity, no ban.
+
+```
+L1 (shape gate + semantic gate) -> L2 journey-lanes -> canonicalization -> PB -> Boundary -> BA -> App        (PB/BA architecture unchanged)
+```
+
+## The mechanism
+
+| Part | What it is |
+| --- | --- |
+| Operation class | `open` (the four exact GET routes, no budget) · `mutation` (`POST /api/public-inquiries`) · `unknown` (anything else L1 might wrongly pass: handled as unverified work, never rejected by a second route list) |
+| Lanes | `credited` and `unverified`, each with its own token bucket; `open` for GETs. Lane, outcome (`admitted`/`shed`/`error`/`degraded`) and basis are separate facts |
+| Credit provenance | `core/credit-filter.ts`: a fixed-memory, two-generation, **keyed Bloom filter**. A render never allocates, nothing is evicted, an insertion cannot fail. Untrusted render volume can only raise the false-positive rate (less attenuation), never remove a genuine credit. A credit lives at least one and at most two epochs |
+| Use ledger | K uses per genuinely enrolled token, retained until the epoch window that could hold its genuine enrollment is over; sized from the credited-admission bound; full fails closed |
+| Enrollment | Only from the plane's own forwarded response, only if it satisfies the strict contract in `core/enrollment.ts` (exact route, status 200, exact content type, one token in the reviewed form structure, the response completely flushed to the client). Pinned to the form component by a contract test and to the real built application by the G1 script |
+
+Locked invariants: **P1** no spill (a credited request whose bucket is empty is shed with `lane_budget`/503 and never touches the unverified bucket, nor the reverse) ·
+**P2** a use record is purged only when `epoch >= firstCreditedEpoch + 2` · **P3** no refunds: a mutation decision is one synchronous function with no `await`; a bucket
+token and a use, once taken, are never returned, whatever happens downstream.
+
+**Failure policy.** An L2 error, timeout or saturation on a mutation or unknown request is a 503 (`l2_error`/`l2_shed`), never an admit. Only an `open` GET may become
+`degraded` (healthy L2 would admit it unconditionally); a degraded decision is never `admitted` and never enrolls credit.
+
+## Collapse control: harness-only, unreachable from a request
+
+The force-pass implementation exists **only under `lab/defense/collapse/`** and is constructed only by the harness's own plane entry. `defense/plane/main.ts` (the unchanged
+Slice-1/2 entry) has no L2 code in its module graph; `defense/plane/main-l2.ts` (the Slice-3 entry) has L2 always present and passes no injected dependency. `core/override-port.ts`
+is interface-only. An arm is one-shot, created only over IPC with a CSPRNG id, and matches only the harness's own nonce, the exact fixture bytes (digest) and the kernel-assigned
+connection port. Every simulated verdict is permanently labelled `basis: "simulated"` with the real verdict as its shadow.
+
+## Arms
+
+`C0r` the unchanged Slice-2 composition (L2 absent) · `C0` the normal Slice-3 composition, with repeated pressure → recovery → pressure → recovery · `C1` real L1 evaluation delivered as a simulated
+false negative, real L2 · `C2` both layers' verdicts simulated (canonicalization, PB, Boundary, BA, replay guards and the App guard stay real; characterization only) · `C2'` real L1/L2 faults, no forced verdict.
+
+## Claim boundary
+
+LAYER-DIVERSITY-VALID means only that, under these local fixed-count conditions and for the reviewed fixture set, a second application-plane mechanism using a different signal bounded
+residual mutation while preserving the declared legitimate journeys. It does **not** imply DDoS resistance, bot detection, read-flood protection, per-user fairness, L1/L2 process
+independence (both run in one plane process), network or transport protection, or production readiness. Every number is provisional; the filter is scaled down and the generations compressed
+for the lab, with identical semantics unit-tested on an injected clock.
+
+## Running
+
+```text
+npm run lab:ba0:collapse          # loopback only; takes no arguments; evidence under the gitignored artifacts/lab/evidence/
+npm run build && npx tsx --conditions=react-server tests/built-form-enrollment.integration.ts    # G1 against the real build
+```

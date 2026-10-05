@@ -8,7 +8,7 @@
 /** Layer namespaces. BA0 populates `a7.*` only; `n3.*` and `t4.*` are reserved and always reported as not_measured. */
 export const LAYER_NAMESPACES = { n3: "network-volumetric", t4: "transport", a7: "application" } as const;
 export const IMPLEMENTED_NAMESPACES = ["a7"] as const;
-export type LayerId = "a7.shape-gate";
+export type LayerId = "a7.shape-gate" | "a7.journey-lanes";
 
 /** Every distinct reject reason L1 can give. Exactly one per rejected request; the ledger refuses anything else. */
 export const REJECT_REASONS = [
@@ -41,7 +41,12 @@ export const REJECT_REASONS = [
  * produces these, only the semantic gate wrapped around it when the plane is configured to issue hop proofs.
  */
 export const SEMANTIC_REJECT_REASONS = ["a7.semantic_duplicate", "a7.semantic_refused_header", "a7.semantic_value_invalid"] as const;
-export const ALL_REJECT_REASONS = [...REJECT_REASONS, ...SEMANTIC_REJECT_REASONS] as const;
+/**
+ * Slice 3 (L2 `a7.journey-lanes`): a lane whose bucket is empty refuses with one of these. Separate again from REJECT_REASONS and the
+ * semantic list, which Slice-1/2 tests pin: only the lane layer produces these.
+ */
+export const LANE_REJECT_REASONS = ["a7.lane_credited_budget", "a7.lane_unverified_budget"] as const;
+export const ALL_REJECT_REASONS = [...REJECT_REASONS, ...SEMANTIC_REJECT_REASONS, ...LANE_REJECT_REASONS] as const;
 export type RejectReason = (typeof ALL_REJECT_REASONS)[number];
 
 /** `pre_parse`: decided from bounded, constant-cost facts, before any grammar parsing. `grammar`: decided by the form parser. */
@@ -73,6 +78,8 @@ export const REJECT_STATUS: Readonly<Record<RejectReason, number>> = Object.free
   "a7.semantic_duplicate": 400,
   "a7.semantic_refused_header": 400,
   "a7.semantic_value_invalid": 400,
+  "a7.lane_credited_budget": 503,
+  "a7.lane_unverified_budget": 503,
 });
 
 export const REJECT_STAGE: Readonly<Record<RejectReason, RejectStage>> = Object.freeze({
@@ -101,6 +108,8 @@ export const REJECT_STAGE: Readonly<Record<RejectReason, RejectStage>> = Object.
   "a7.semantic_duplicate": "pre_parse",
   "a7.semantic_refused_header": "pre_parse",
   "a7.semantic_value_invalid": "pre_parse",
+  "a7.lane_credited_budget": "pre_parse",
+  "a7.lane_unverified_budget": "pre_parse",
 });
 
 /** What a layer returns. A layer never throws past the composer and never returns anything outside this union. */
