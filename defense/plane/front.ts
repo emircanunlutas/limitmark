@@ -21,8 +21,13 @@ import {
   type BodyStatus, type Layer, type LayerOutcome, type LayerRequest,
 } from "../core/types";
 import { ShapeGate } from "../layers/a7-shape-gate";
+import { HOP_PB_HEADER, buildApprovedRequest, semanticWireHeaders, type ApprovedRequest } from "../core/semantic-request";
 
 export type EmitEvent = (event: Omit<PlaneEvent, "seq" | "t">) => number;
+
+/** Slice 2: issues the Plane-to-Boundary proof for a request the plane approved. Absent in a Slice-1 run. */
+export type HopIssuer = { issue(approved: ApprovedRequest, context: { hop: number; corr: string }): { header: string; tag: string } };
+export type HopStats = { issued: number; signFailures: number; droppedUnbound: number };
 
 export type FrontOptions = {
   /** The one upstream. Must be a loopback address; there is no way to change it per request. */
@@ -30,6 +35,8 @@ export type FrontOptions = {
   emit: EmitEvent;
   layer?: Layer;
   composer?: Partial<ComposerOptions>;
+  /** Slice 2: when present the forwarded request is REBUILT from the approved semantic request and carries a PB proof. */
+  hop?: HopIssuer;
   bodyDeadlineMs?: number;
   egressTimeoutMs?: number;
   maxResponseBytes?: number;
@@ -100,6 +107,8 @@ export type Front = {
   listen(): Promise<number>;
   close(deadlineMs?: number): Promise<void>;
   stats(): FrontStats;
+  /** Slice 2 only; all zero in a Slice-1 run. */
+  hopStats(): HopStats;
   layerComposerStats(): ComposerStats;
   composerOccupancy(): number;
   gate: ShapeGate | null;
@@ -119,6 +128,7 @@ export function createFront(options: FrontOptions): Front {
   const agent = new http.Agent({ keepAlive: false });
   const stats: FrontStats = { accepted: 0, inFlight: 0, inFlightHighWater: 0, parserRejected: 0, proxied: 0, completed: 0, aborted: 0, strippedHeaders: 0 };
   const sockets = new Set<import("node:net").Socket>();
+  const hopStats: HopStats = { issued: 0, signFailures: 0, droppedUnbound: 0 };
 
   // requireHostHeader is off so a missing Host is a measured L1 rejection (a7.host_header_invalid) rather than an unattributed parser answer.
   const server = http.createServer({ maxHeaderSize: 16_384, requestTimeout: 15_000, headersTimeout: 10_000, keepAliveTimeout: 5_000, requireHostHeader: false }, (req, res) => {
@@ -192,7 +202,8 @@ export function createFront(options: FrontOptions): Front {
       } else {
         const hop = options.emit({ nonce, kind: "EGRESS_ATTEMPTED" });
         stats.proxied++;
-        await forward(req, res, layerHeaders, body, nonce, hop);
+        if (options.hop === undefined) await forward(req, res, layerHeaders, body, nonce, hop);
+        else await forwardApproved(req, res, layerRequest, body, nonce, hop, options.hop);
       }
       if (!res.writableEnded && !res.destroyed) res.end();
       if (!res.destroyed) await closed;
@@ -226,12 +237,39 @@ export function createFront(options: FrontOptions): Front {
     res.end(REFUSAL_BODY);
   }
 
-  function forward(req: http.IncomingMessage, res: http.ServerResponse, headers: readonly (readonly [string, string])[], body: Uint8Array | null, nonce: string, hop: number): Promise<void> {
+  /**
+   * Slice 2: the semantic request the layer approved is re-derived (a pure function of the same LayerRequest), a PB proof is issued for
+   * it, and ONLY the rebuilt request is sent: never a raw client header, never the plain nonce/hop headers. A failure to issue is an
+   * explicit EGRESS_FAILED (fail closed): nothing is sent unsigned.
+   */
+  function forwardApproved(req: http.IncomingMessage, res: http.ServerResponse, layerRequest: LayerRequest, body: Uint8Array | null, nonce: string, hop: number, issuer: HopIssuer): Promise<void> {
+    let prebuilt: { method: string; path: string; headers: Record<string, string> };
+    try {
+      const built = buildApprovedRequest(layerRequest);
+      if (!built.ok) throw new Error("the approved request is not reproducible");
+      hopStats.droppedUnbound += built.dropped;
+      const issued = issuer.issue(built.approved, { hop, corr: nonce });
+      hopStats.issued++;
+      options.emit({ nonce, kind: "PROOF_ISSUED", pbTag: issued.tag });
+      prebuilt = { method: built.approved.method, path: built.approved.target, headers: { ...semanticWireHeaders(built.approved), [HOP_PB_HEADER]: issued.header } };
+    } catch {
+      hopStats.signFailures++;
+      options.emit({ nonce, kind: "EGRESS_FAILED", egressError: "error" });
+      respondRefusal(res, 502, "egress_failed", false);
+      return Promise.resolve();
+    }
+    return forward(req, res, [], body, nonce, hop, prebuilt);
+  }
+
+  function forward(req: http.IncomingMessage, res: http.ServerResponse, headers: readonly (readonly [string, string])[], body: Uint8Array | null, nonce: string, hop: number, prebuilt?: { method: string; path: string; headers: Record<string, string> }): Promise<void> {
     return new Promise<void>((resolve) => {
       const outbound: Record<string, string> = {};
-      for (const [name, value] of headers) if (FORWARD_REQUEST_HEADERS.has(name)) outbound[name] = value;
-      outbound[NONCE_HEADER] = nonce;
-      outbound[HOP_HEADER] = String(hop);
+      if (prebuilt) Object.assign(outbound, prebuilt.headers);
+      else {
+        for (const [name, value] of headers) if (FORWARD_REQUEST_HEADERS.has(name)) outbound[name] = value;
+        outbound[NONCE_HEADER] = nonce;
+        outbound[HOP_HEADER] = String(hop);
+      }
       let settled = false;
       const fail = (kind: EgressErrorKind) => {
         if (settled) return;
@@ -241,7 +279,7 @@ export function createFront(options: FrontOptions): Front {
         respondRefusal(res, kind === "timeout" ? 504 : 502, "egress_failed", false);
         resolve();
       };
-      const upstreamRequest = http.request({ host: upstream.host, port: upstream.port, method: req.method, path: req.url, headers: outbound, agent }, (upstreamResponse) => {
+      const upstreamRequest = http.request({ host: upstream.host, port: upstream.port, method: prebuilt?.method ?? req.method, path: prebuilt?.path ?? req.url, headers: outbound, agent }, (upstreamResponse) => {
         const chunks: Buffer[] = [];
         let total = 0;
         upstreamResponse.on("data", (chunk: Buffer) => {
@@ -287,6 +325,7 @@ export function createFront(options: FrontOptions): Front {
       server.closeIdleConnections();
     }),
     stats: () => ({ ...stats }),
+    hopStats: () => ({ ...hopStats }),
     layerComposerStats: () => composer.stats(),
     composerOccupancy: () => composer.occupancy,
   };

@@ -86,7 +86,8 @@
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
     "lab:k6:selftest": "tsx --conditions=react-server lab/load/k6-selftest.ts",
     "lab:cancel:selftest": "tsx --conditions=react-server lab/failure/cancel-selftest.ts",
-    "lab:ba0": "tsx --conditions=react-server lab/defense/ba0-run.ts"
+    "lab:ba0": "tsx --conditions=react-server lab/defense/ba0-run.ts",
+    "lab:ba0:origin": "tsx --conditions=react-server lab/defense/ba0-origin-run.ts"
   },
   "engines": {
     "node": ">=22.0.0"

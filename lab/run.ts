@@ -100,7 +100,7 @@ function summarize(phases: readonly PhaseStats[]) {
   return { attempted, failed, errorRate: attempted ? Math.round((failed / attempted) * 10_000) / 10_000 : 0 };
 }
 
-const EXIT: Record<EvidenceResult, number> = { PASS: 0, FAIL: 1, REFUSED: 2, STOP: 3, ERROR: 4, "BASELINE-VALID": 0, INVALID: 1 };
+const EXIT: Record<EvidenceResult, number> = { PASS: 0, FAIL: 1, REFUSED: 2, STOP: 3, ERROR: 4, "BASELINE-VALID": 0, "APP-NON-BYPASS-VALID": 0, INVALID: 1 };
 
 async function main(): Promise<number> {
   const startedAt = new Date();

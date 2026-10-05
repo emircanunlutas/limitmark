@@ -113,3 +113,99 @@ predecessor-collapse tests; parser differential fuzzing; hardware/VPC-separated 
 ```text
 npm run lab:ba0        # loopback only; takes no arguments; evidence under the gitignored artifacts/lab/evidence/
 ```
+
+# BA0 Slice 2: independent origin boundary (application non-bypass only)
+
+Status: **local, loopback-only, fixed counts.** Slice 2 may conclude **APP-NON-BYPASS-VALID** or **INVALID**; it never claims a defense-qualification PASS.
+
+**What it measures, and what it does not.** Slice 2 measures *application non-bypass*: a request without a valid, request-bound, fresh,
+single-use proof chain cannot enter application semantics or state, even when the sender knows the origin boundary's exact address and
+port (and, as a stricter extra, the application's own port). It does **not** measure *network non-bypass*. A 403 returned after
+`accept()` is an application-layer refusal on an open socket, not L3/L4 isolation. Nothing here speaks to bandwidth, PPS, SYN,
+TLS-handshake or connection-state exhaustion; `networkNonBypass` and `originNetworkIsolation` are `not_measured` in every artifact.
+
+## Topology: three processes, two cryptographically distinct hops
+
+```
+canary / corpora -> Defense Plane (L1 + semantic gate + PB issuer) -> Origin Boundary (PB verifier, BA issuer) -> Protected App (BA + lineage verifier)
+known-address direct tests -> Origin Boundary, and the Protected App's own port
+```
+
+| Process | Private keys | Public keys | Replay state |
+| --- | --- | --- | --- |
+| Defense Plane | `K_P` | none | none |
+| Origin Boundary | `K_B` | `K_P` | `pb` |
+| Protected App | **none** | `K_B`, `K_P` | `ba`, `lineage` |
+| Harness (lab trust root) | both, for labelled misuse and positive-control cases only | all | none |
+
+Keys, audiences and kids are generated per run by the harness and delivered **only over IPC**: never env, argv, a file, a log or evidence.
+Process separation gives failure-domain separation (crash, event loop, memory) only; compromise independence comes from the distinct keys
+plus the lineage check.
+
+## Proof formats
+
+Both are `b64url(payload) "." b64url(sig64)` over a canonical JSON array, Ed25519 over `domain || payload`, strict canonical encoding.
+
+```
+PB (Plane -> Boundary)  x-ba0-hop-pb  ["ba0-pb-v2", kid, boundaryId, iat, exp<=5s, jti, hop, corr, method, target, pairs, bodyLen, bodySha256]
+BA (Boundary -> App)    x-ba0-hop-ba  ["ba0-ba-v2", kid, appId,      iat, exp<=2s, jti, hop, corr, method, target, pairs, bodyLen, bodySha256, pbJti, pbSha256]
+```
+
+Role string, signing domain, key pair, kid prefix, audience, header name, replay set, lifetime and tag namespace all differ; each is
+independently sufficient to reject cross-hop use. A BA carries the Plane's PB (verbatim) as **lineage**: the App admits only when both
+verify, the PB's request fields equal the BA's, and the BA commits to that exact PB by jti and hash. A PB alone, or a BA alone, admits
+nothing at the App; a BA never admits at the Boundary. A compromised Boundary holding only `K_B` can drop, delay or replay-once what the
+Plane approved, but cannot make the App execute anything the Plane did not approve.
+
+Issuing is capability-shaped: `issuePb` accepts only an `ApprovedRequest`, `issueBa` only a `VerifiedPb`. There is no function in `defense/`
+that signs caller-chosen facts; test-only minting lives under `lab/defense/hop-keys.ts` (an independent encoder) and is pinned by a static test.
+
+## The canonical semantic request
+
+What every hop authenticates is the exact representation the Plane approved, never raw client headers (`core/semantic-request.ts`):
+
+| Class | Headers |
+| --- | --- |
+| bound (signed, forwarded) | `host` (required), `origin` (optional), `content-type` (POST only) |
+| derived | `content-length` (re-emitted from the body length) |
+| transport | `connection` (only exactly `close` or `keep-alive`) |
+| refused | `content-encoding`, `transfer-encoding`, `expect`, `upgrade`, `te`, `trailer`, `range`, `if-range`, `proxy-authorization`, `authorization` |
+| spoofable / ingress indicators | stripped and counted at the plane; any presence downstream is rejected |
+| everything else | dropped at the plane, never forwarded; any presence downstream is rejected |
+
+Normalisation is exactly lowercase names and trimmed ASCII whitespace; values are byte-exact otherwise. A duplicated bound header is
+refused, never merged. The plane **rebuilds** the outbound request from the approved representation; the Boundary and App scan the raw
+header list against the same closed set, compare the observed pairs with the signed ones, and the App interprets the verified claims, not
+its own header view. `tests/lab-ba0-semantic-contract.test.ts` pins this table to every header `src/` actually reads.
+
+## Replay state machine
+
+`UNSEEN -> RESERVED -> COMMITTED | BURNED`. `reserve` is synchronous and runs before any asynchronous body work; a timeout, abort, digest
+mismatch or exception after reservation leaves the id BURNED until expiry; no unexpired entry is ever evicted; at capacity the request
+fails closed (`ob.replay_cache_full`, 503, only reachable after authentication). Verifier-start fencing (`iat >= verifier start`) and
+wall/monotonic clock-step detection are preserved.
+
+## Lifecycle and accounting
+
+A clean protected request reconciles across three independent processes:
+`L1 PASS -> EGRESS_ATTEMPTED(hop) -> PROOF_ISSUED -> BOUNDARY_ADMITTED -> APP_PROOF_ISSUED -> APP_ADMITTED -> APP_EXECUTED -> [APP_MUTATED] -> APP_COMPLETED`,
+with `hop` and two proof tags agreeing at every stage. Any app admission, execution or mutation without that lineage, and any direct
+rejected lane that reaches the application, is an anomaly and makes the run INVALID. Positive controls are separate lanes
+(`positive_control_boundary`, `positive_control_app`) in a disjoint hop range and can never satisfy a protected identity. Mutation reconciles
+three ways: client-observed success = ledger-correlated mutation = the application's own counter.
+
+A crash can lose the dying process's last events (bounded flush window); a request that completed just before the kill then cannot have its
+lineage proven and the run is INVALID: the loss is detected, never silent.
+
+## Not implemented in Slice 2 (later milestones)
+
+Tunnels, WireGuard, mTLS, nftables/eBPF, public cloud, L3/L4 handling, external traffic, L2 flow provenance, key rotation/revocation/KMS.
+Limits: the Boundary and App share one verifier implementation (common-mode); the harness holds both private keys; responses are not
+authenticated; headers outside the closed set are not bound (they are dropped by policy); replay protection across a restart rests on the
+start fence alone.
+
+## Running
+
+```text
+npm run lab:ba0:origin   # loopback only; takes no arguments; evidence under the gitignored artifacts/lab/evidence/
+```

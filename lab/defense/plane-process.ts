@@ -69,7 +69,7 @@ export class PlaneProcess {
   get hasExited(): boolean { return this.exited; }
 
   /** Test/lab control: arms an L1 fault on the next `remaining` evaluations. Only reachable through this IPC pipe. */
-  injectFault(kind: "throw" | "hang", remaining: number): void { this.send({ type: "fault", kind, remaining }); }
+  injectFault(kind: "throw" | "hang" | "sign", remaining: number): void { this.send({ type: "fault", kind, remaining }); }
 
   /** Asks the plane to drain its channel and report its final state. Null when the plane is gone or does not answer in time. */
   async finish(timeoutMs: number): Promise<PlaneFin | null> {
