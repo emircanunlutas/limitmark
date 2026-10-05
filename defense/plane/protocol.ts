@@ -4,11 +4,16 @@
  */
 import type { ComposerOptions, ComposerStats } from "../core/composer";
 import type { ChannelOptions, ChannelStats, EventFrame } from "../core/ledger";
-import type { FrontStats } from "./front";
+import type { FrontStats, HopStats } from "./front";
+
+/** Slice 2: the plane's ONLY key material. It holds K_P's private half and nothing about the App; delivered over IPC, never env/argv/file. */
+export type PlaneHopInit = { privateKey: string; kid: string; boundaryId: string; lifetimeMs: number };
 
 export type PlaneInit = {
   type: "init";
   upstreamPort: number;
+  /** Slice 2: issue Plane-to-Boundary proofs and rebuild the forwarded request from the approved semantic request. */
+  hop?: PlaneHopInit;
   bodyDeadlineMs?: number;
   egressTimeoutMs?: number;
   composer?: Partial<ComposerOptions>;
@@ -17,7 +22,7 @@ export type PlaneInit = {
 export type PlaneControl =
   | PlaneInit
   | { type: "ack"; received: number }
-  | { type: "fault"; kind: "throw" | "hang"; remaining: number }
+  | { type: "fault"; kind: "throw" | "hang" | "sign"; remaining: number }
   | { type: "fin" }
   | { type: "stop" };
 
@@ -31,6 +36,8 @@ export type PlaneAdvisory = {
   front: FrontStats;
   composer: ComposerStats;
   l1: { evaluated: number; grammarParses: number };
+  /** Present only in a Slice-2 run. */
+  hop?: HopStats;
 };
 export type PlaneMessage =
   | { type: "ready"; port: number }

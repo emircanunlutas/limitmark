@@ -16,7 +16,7 @@
  *
  * A layer PASS is not origin delivery: the origin observations are reconciled independently against the plane's egress events.
  */
-import type { LayerErrorKind, Lane, RejectReason, RejectStage } from "./types";
+import type { LayerErrorKind, Lane, ObReason, RejectReason, RejectStage } from "./types";
 import { REJECT_STATUS } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ import { REJECT_STATUS } from "./types";
 
 export const PLANE_EVENT_KINDS = [
   "INGRESS_ACCEPTED", "L1_ENTERED", "L1_PASSED", "L1_REJECTED", "L1_SHED", "L1_ERROR",
-  "EGRESS_ATTEMPTED", "EGRESS_RESPONDED", "EGRESS_FAILED", "INGRESS_RESPONDED", "INGRESS_ABORTED",
+  "EGRESS_ATTEMPTED", "PROOF_ISSUED", "EGRESS_RESPONDED", "EGRESS_FAILED", "INGRESS_RESPONDED", "INGRESS_ABORTED",
 ] as const;
 export type PlaneEventKind = (typeof PLANE_EVENT_KINDS)[number];
 
@@ -54,6 +54,8 @@ export type PlaneEvent = {
   uncorrelated?: boolean;
   /** PARSER_REJECTED: the HTTP parser's error code (closed list in the front). */
   code?: string;
+  /** PROOF_ISSUED (Slice 2): the 16-character tag of the Plane-to-Boundary proof's jti (never the jti or the proof). */
+  pbTag?: string;
 };
 
 export type OriginEventKind = "ORIGIN_RECEIVED" | "ORIGIN_COMPLETED" | "ORIGIN_ABORTED";
@@ -68,6 +70,78 @@ export type OriginEvent = {
   spoofed?: number;
 };
 
+// ---------------------------------------------------------------------------
+// Slice 2: Origin Boundary and Protected App streams. Each is its own process with its own gapless sequence.
+// ---------------------------------------------------------------------------
+
+export const BOUNDARY_EVENT_KINDS = [
+  "BOUNDARY_ARRIVED", "BOUNDARY_REJECTED", "BOUNDARY_ADMITTED", "APP_PROOF_ISSUED", "BOUNDARY_FORWARDED",
+  "BOUNDARY_FORWARD_RESPONDED", "BOUNDARY_FORWARD_FAILED", "BOUNDARY_RESPONDED", "BOUNDARY_ABORTED",
+  "BOUNDARY_PARSER_REJECTED", "BOUNDARY_PROTOCOL_REFUSED",
+] as const;
+export type BoundaryEventKind = (typeof BOUNDARY_EVENT_KINDS)[number];
+
+/** Closed. Never carries a target, a header, a body, a proof or a key: only enums, a validated nonce, a hop and three tags. */
+export type BoundaryEvent = {
+  seq: number;
+  t: number;
+  /** The signed correlation id once a proof verified; otherwise the unauthenticated measurement tag; null when there is neither. */
+  nonce: string | null;
+  kind: BoundaryEventKind;
+  reason?: ObReason;
+  hop?: number;
+  pbTag?: string;
+  baTag?: string;
+  status?: number;
+  forwardError?: EgressErrorKind;
+  code?: string;
+};
+
+export const APP_EVENT_KINDS = ["APP_ADMITTED", "APP_REFUSED", "APP_EXECUTED", "APP_MUTATED", "APP_COMPLETED", "APP_ABORTED"] as const;
+export type AppEventKind = (typeof APP_EVENT_KINDS)[number];
+export type AppEvent = {
+  seq: number;
+  t: number;
+  nonce: string | null;
+  kind: AppEventKind;
+  reason?: ObReason;
+  hop?: number;
+  pbTag?: string;
+  baTag?: string;
+  status?: number;
+  /** APP_ADMITTED: spoofable headers that reached the app. Must be 0. */
+  spoofed?: number;
+};
+
+/** The two hop-gate streams are each a legal automaton too (see lineage.ts). */
+export const NEXT_BOUNDARY_KINDS: Readonly<Record<BoundaryEventKind | "START", readonly BoundaryEventKind[]>> = {
+  START: ["BOUNDARY_ARRIVED"],
+  BOUNDARY_ARRIVED: ["BOUNDARY_REJECTED", "BOUNDARY_ADMITTED"],
+  BOUNDARY_REJECTED: ["BOUNDARY_RESPONDED", "BOUNDARY_ABORTED"],
+  BOUNDARY_ADMITTED: ["APP_PROOF_ISSUED", "BOUNDARY_RESPONDED", "BOUNDARY_ABORTED"],
+  APP_PROOF_ISSUED: ["BOUNDARY_FORWARDED"],
+  BOUNDARY_FORWARDED: ["BOUNDARY_FORWARD_RESPONDED", "BOUNDARY_FORWARD_FAILED"],
+  BOUNDARY_FORWARD_RESPONDED: ["BOUNDARY_RESPONDED", "BOUNDARY_ABORTED"],
+  BOUNDARY_FORWARD_FAILED: ["BOUNDARY_RESPONDED", "BOUNDARY_ABORTED"],
+  BOUNDARY_RESPONDED: [],
+  BOUNDARY_ABORTED: [],
+  BOUNDARY_PARSER_REJECTED: [],
+  BOUNDARY_PROTOCOL_REFUSED: [],
+};
+
+export const NEXT_APP_KINDS: Readonly<Record<AppEventKind | "START", readonly AppEventKind[]>> = {
+  START: ["APP_ADMITTED", "APP_REFUSED"],
+  APP_REFUSED: [],
+  APP_ADMITTED: ["APP_EXECUTED", "APP_COMPLETED", "APP_ABORTED"],
+  APP_EXECUTED: ["APP_MUTATED", "APP_COMPLETED", "APP_ABORTED"],
+  APP_MUTATED: ["APP_COMPLETED", "APP_ABORTED"],
+  APP_COMPLETED: [],
+  APP_ABORTED: [],
+};
+
+/** Oracle-minted (lab-only) hop ids start here; a Defense Plane sequence number can never reach it. */
+export const ORACLE_HOP_BASE = 2 ** 40;
+
 export type HarnessEventKind = "SENT" | "CLIENT_COMPLETED";
 export type ClientResultKind = "response" | "reset" | "timeout" | "error";
 export type HarnessEvent = {
@@ -78,7 +152,11 @@ export type HarnessEvent = {
   outcomeHeader?: string;
 };
 
-export type ExpectedLane = "protected" | "control" | "pre_ingress";
+export type ExpectedLane =
+  | "protected" | "control" | "pre_ingress"
+  // Slice 2: known-address direct attempts that must be refused, and the labelled positive controls. A positive control never
+  // satisfies a protected-lane identity (it has no plane lineage by construction).
+  | "direct_boundary_rejected" | "direct_app_rejected" | "positive_control_boundary" | "positive_control_app";
 
 // ---------------------------------------------------------------------------
 // Anomalies: every way a lifecycle can be wrong. A single one makes the run INVALID.
@@ -92,6 +170,13 @@ export const ANOMALY_CODES = [
   "plane_event_on_unexpected_lane", "unknown_nonce", "event_before_sent", "uncorrelated_ingress", "late_event_after_finalization",
   "event_channel_loss", "plane_crashed", "plane_not_finalized", "journal_overflow", "ledger_capacity_exceeded",
   "parser_reject_unreconciled", "origin_spoofed_header_seen", "corpus_expectation_violated",
+  // Slice 2: hop gates, lineage, replay, clock.
+  "boundary_crashed", "boundary_not_finalized", "boundary_channel_loss", "boundary_decision_missing", "boundary_hop_mismatch",
+  "boundary_rejected_plane_egress", "plane_egress_not_admitted", "boundary_lane_mismatch",
+  "app_crashed", "app_not_finalized", "app_channel_loss", "app_admit_without_lineage", "app_execution_without_lineage",
+  "app_mutation_without_lineage", "app_refused_boundary_admitted", "direct_app_execution", "direct_app_mutation", "direct_not_rejected",
+  "hop_range_violation", "unattributed_app_execution", "unattributed_app_mutation", "app_counter_mismatch", "boundary_counter_mismatch",
+  "replay_state_violation", "admitted_hop_duplicate", "clock_step_detected", "positive_control_failed",
 ] as const;
 export type AnomalyCode = (typeof ANOMALY_CODES)[number];
 export type Anomaly = { code: AnomalyCode; nonce: string | null; detail: string };
@@ -102,7 +187,7 @@ export type Anomaly = { code: AnomalyCode; nonce: string | null; detail: string 
 
 const RANK: Readonly<Record<PlaneEventKind, number>> = {
   INGRESS_ACCEPTED: 1, L1_ENTERED: 2, L1_PASSED: 3, L1_REJECTED: 3, L1_SHED: 3, L1_ERROR: 3,
-  EGRESS_ATTEMPTED: 4, EGRESS_RESPONDED: 5, EGRESS_FAILED: 5, INGRESS_RESPONDED: 6, INGRESS_ABORTED: 6,
+  EGRESS_ATTEMPTED: 4, PROOF_ISSUED: 4.5, EGRESS_RESPONDED: 5, EGRESS_FAILED: 5, INGRESS_RESPONDED: 6, INGRESS_ABORTED: 6,
 };
 
 /** The only legal successor events. Everything else is a violation, classified by `classifyViolation`. */
@@ -114,7 +199,9 @@ export const NEXT_PLANE_KINDS: Readonly<Record<PlaneEventKind | "START", readonl
   L1_REJECTED: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
   L1_SHED: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
   L1_ERROR: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
-  EGRESS_ATTEMPTED: ["EGRESS_RESPONDED", "EGRESS_FAILED"],
+  // PROOF_ISSUED exists only when the plane issues hop proofs (Slice 2); without it the Slice-1 successors are unchanged.
+  EGRESS_ATTEMPTED: ["PROOF_ISSUED", "EGRESS_RESPONDED", "EGRESS_FAILED"],
+  PROOF_ISSUED: ["EGRESS_RESPONDED", "EGRESS_FAILED"],
   EGRESS_RESPONDED: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
   EGRESS_FAILED: ["INGRESS_RESPONDED", "INGRESS_ABORTED"],
   INGRESS_RESPONDED: [],
@@ -140,6 +227,9 @@ export type LifecycleView = {
   harness: readonly HarnessEvent[];
   plane: readonly PlaneEvent[];
   origin: readonly OriginEvent[];
+  /** Slice 2 only: present when the run has hop-gate streams. Absent in a Slice-1 run, which keeps every Slice-1 rule exactly as it was. */
+  boundary?: readonly BoundaryEvent[];
+  app?: readonly AppEvent[];
 };
 
 export function planeStatusFor(view: LifecycleView): number | null {
@@ -217,7 +307,8 @@ export function validateLifecycle(view: LifecycleView, final: boolean): Anomaly[
   if (received.length > 1) add("duplicate_origin_processing", "ORIGIN_RECEIVED");
   if (finished.length > 1) add("duplicate_terminal", "origin completion");
   if (view.origin.length > 0 && view.origin[0].kind !== "ORIGIN_RECEIVED") add("impossible_order", "origin completion before receipt");
-  const wantedInstance: Lane | null = view.expected === "protected" ? "protected" : view.expected === "control" ? "control" : null;
+  const wantedInstance: Lane | null = view.expected === "protected" || view.expected === "positive_control_boundary" || view.expected === "positive_control_app"
+    ? "protected" : view.expected === "control" ? "control" : null;
   for (const event of view.origin) if (wantedInstance !== event.instance) { add("origin_lane_mismatch", event.instance); break; }
   if (view.origin.some((event) => (event.spoofed ?? 0) > 0)) add("origin_spoofed_header_seen", "proxied");
 
@@ -256,8 +347,10 @@ export function validateLifecycle(view: LifecycleView, final: boolean): Anomaly[
 // Plane-side bounded event channel
 // ---------------------------------------------------------------------------
 
-export type EventFrame = { type: "events"; events: PlaneEvent[]; dropped: number };
-export interface FrameTransport { send(frame: EventFrame): void }
+/** Any stream the channel can carry: it only needs the two fields the channel itself assigns. Defaults to the plane's events. */
+export type StreamEvent = { seq: number; t: number };
+export type EventFrame<E extends StreamEvent = PlaneEvent> = { type: "events"; events: E[]; dropped: number };
+export interface FrameTransport<E extends StreamEvent = PlaneEvent> { send(frame: EventFrame<E>): void }
 
 export type ChannelStats = {
   emitted: number;
@@ -279,8 +372,8 @@ export type ChannelOptions = { queueCap?: number; windowCap?: number; maxFrameEv
  *  - an event that does not fit is DROPPED, never blocked on, and counted. Its sequence number is still consumed, so the collector
  *    sees a gap and the cumulative `dropped` counter: loss is explicit and makes the run INVALID, it never becomes silence.
  */
-export class BoundedEventChannel {
-  private readonly queue: PlaneEvent[] = [];
+export class BoundedEventChannel<E extends StreamEvent = PlaneEvent> {
+  private readonly queue: E[] = [];
   private readonly queueCap: number;
   private readonly windowCap: number;
   private readonly maxFrameEvents: number;
@@ -294,7 +387,7 @@ export class BoundedEventChannel {
   private receivedCount = 0;
   private highWater = 0;
 
-  constructor(private readonly transport: FrameTransport, options: ChannelOptions = {}) {
+  constructor(private readonly transport: FrameTransport<E>, options: ChannelOptions = {}) {
     this.queueCap = options.queueCap ?? 4096;
     this.windowCap = options.windowCap ?? 2048;
     this.maxFrameEvents = options.maxFrameEvents ?? 256;
@@ -305,11 +398,11 @@ export class BoundedEventChannel {
   }
 
   /** Records one event; returns its sequence number. Never throws and never blocks. */
-  emit(event: Omit<PlaneEvent, "seq" | "t"> & { t?: number }): number {
+  emit(event: Omit<E, "seq" | "t"> & { t?: number }): number {
     const seq = this.nextSeq++;
     this.emittedCount++;
     if (this.queue.length >= this.queueCap) { this.droppedCount++; return seq; }
-    this.queue.push({ ...event, seq, t: event.t ?? performance.now() });
+    this.queue.push({ ...event, seq, t: event.t ?? performance.now() } as unknown as E);
     if (this.queue.length > this.highWater) this.highWater = this.queue.length;
     if (this.queue.length >= this.maxFrameEvents) this.flush(); else this.schedule();
     return seq;

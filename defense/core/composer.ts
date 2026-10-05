@@ -13,7 +13,7 @@
  * therefore not this timer; it is the strict size bounds the front and L1 apply BEFORE any expensive parsing (see a7-shape-gate).
  */
 import type { FailurePolicy, Layer, LayerErrorKind, LayerOutcome, LayerRequest, LayerVerdict } from "./types";
-import { FAILURE_POLICIES, REJECT_REASONS } from "./types";
+import { ALL_REJECT_REASONS, FAILURE_POLICIES } from "./types";
 
 export type ComposerOptions = {
   /** Deadline for the layer's verdict, in milliseconds. */
@@ -39,7 +39,7 @@ export type ComposerStats = {
   lateVerdictsDiscarded: number;
 };
 
-const REJECT_SET: ReadonlySet<string> = new Set(REJECT_REASONS);
+const REJECT_SET: ReadonlySet<string> = new Set(ALL_REJECT_REASONS);
 
 function validVerdict(value: unknown): value is LayerVerdict {
   if (typeof value !== "object" || value === null) return false;

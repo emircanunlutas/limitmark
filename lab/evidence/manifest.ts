@@ -17,8 +17,11 @@ import { canonicalJson } from "../policy/thresholds";
 export const REPOSITORY_ROOT = path.resolve(__dirname, "..", "..");
 export const EVIDENCE_ROOT = path.join(REPOSITORY_ROOT, "artifacts", "lab", "evidence");
 
-/** BASELINE-VALID / INVALID are the only conclusions a BA0 Slice 1 run may reach; they are deliberately not PASS (no defense qualification is claimed). */
-export type EvidenceResult = "PASS" | "FAIL" | "STOP" | "REFUSED" | "ERROR" | "BASELINE-VALID" | "INVALID";
+/**
+ * BASELINE-VALID / INVALID are the only conclusions a BA0 Slice 1 run may reach; APP-NON-BYPASS-VALID / INVALID the only ones a Slice 2
+ * run may. None is PASS: no defense qualification is claimed, and APP-NON-BYPASS-VALID says nothing about network or transport isolation.
+ */
+export type EvidenceResult = "PASS" | "FAIL" | "STOP" | "REFUSED" | "ERROR" | "BASELINE-VALID" | "APP-NON-BYPASS-VALID" | "INVALID";
 
 export type EvidenceEnvironment = {
   os: string;

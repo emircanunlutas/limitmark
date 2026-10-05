@@ -100,9 +100,12 @@ export async function trackedRaw(collector: Collector, port: number, meta: Reque
     const socket = net.connect({ host: "127.0.0.1", port });
     const settle = (value: Exchange) => { if (!done) { done = true; clearTimeout(timer); socket.destroy(); resolve(value); } };
     const parse = (): Exchange | null => {
-      const end = received.indexOf("\r\n\r\n");
+      // An interim 1xx (e.g. `100 Continue`, which the HTTP stack sends for `Expect: 100-continue`) is not the response: skip it.
+      let offset = 0;
+      let end = received.indexOf("\r\n\r\n", offset);
+      while (end >= 0 && /^HTTP\/1\.[01] 1\d\d/.test(received.subarray(offset, offset + 12).toString("latin1"))) { offset = end + 4; end = received.indexOf("\r\n\r\n", offset); }
       if (end < 0) return null;
-      const lines = received.subarray(0, end).toString("latin1").split("\r\n");
+      const lines = received.subarray(offset, end).toString("latin1").split("\r\n");
       const status = /^HTTP\/1\.[01] (\d{3})/.exec(lines[0]);
       if (!status) return finish("error", null, undefined);
       const outcome = lines.find((line) => line.toLowerCase().startsWith(`${OUTCOME_HEADER}:`));

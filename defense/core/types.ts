@@ -35,7 +35,14 @@ export const REJECT_REASONS = [
   "a7.form_field_too_long",
   "a7.form_token_malformed",
 ] as const;
-export type RejectReason = (typeof REJECT_REASONS)[number];
+
+/**
+ * Slice 2 semantic gate reasons. Kept apart from REJECT_REASONS (the shape gate's list, pinned by Slice-1 tests): the shape gate never
+ * produces these, only the semantic gate wrapped around it when the plane is configured to issue hop proofs.
+ */
+export const SEMANTIC_REJECT_REASONS = ["a7.semantic_duplicate", "a7.semantic_refused_header", "a7.semantic_value_invalid"] as const;
+export const ALL_REJECT_REASONS = [...REJECT_REASONS, ...SEMANTIC_REJECT_REASONS] as const;
+export type RejectReason = (typeof ALL_REJECT_REASONS)[number];
 
 /** `pre_parse`: decided from bounded, constant-cost facts, before any grammar parsing. `grammar`: decided by the form parser. */
 export type RejectStage = "pre_parse" | "grammar";
@@ -63,6 +70,9 @@ export const REJECT_STATUS: Readonly<Record<RejectReason, number>> = Object.free
   "a7.form_field_count_exceeded": 422,
   "a7.form_field_too_long": 422,
   "a7.form_token_malformed": 422,
+  "a7.semantic_duplicate": 400,
+  "a7.semantic_refused_header": 400,
+  "a7.semantic_value_invalid": 400,
 });
 
 export const REJECT_STAGE: Readonly<Record<RejectReason, RejectStage>> = Object.freeze({
@@ -88,6 +98,9 @@ export const REJECT_STAGE: Readonly<Record<RejectReason, RejectStage>> = Object.
   "a7.form_field_count_exceeded": "grammar",
   "a7.form_field_too_long": "grammar",
   "a7.form_token_malformed": "grammar",
+  "a7.semantic_duplicate": "pre_parse",
+  "a7.semantic_refused_header": "pre_parse",
+  "a7.semantic_value_invalid": "pre_parse",
 });
 
 /** What a layer returns. A layer never throws past the composer and never returns anything outside this union. */
@@ -179,3 +192,16 @@ export function isSpoofableHeader(lowerCaseName: string): boolean {
 export const NONCE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
 export type Lane = "control" | "protected";
+
+/**
+ * Slice 2: every reason an origin-side hop gate (the Origin Boundary or the Protected App) can refuse a request. One closed list shared
+ * by both gates; the `ob.` namespace keeps each id out of the evidence scanner's long-token rule.
+ */
+export const OB_REASONS = [
+  "ob.proof_missing", "ob.proof_duplicate", "ob.proof_oversize", "ob.proof_malformed", "ob.wrong_hop", "ob.version_unsupported",
+  "ob.key_unknown", "ob.audience_mismatch", "ob.lifetime_invalid", "ob.not_yet_valid", "ob.expired", "ob.before_fence",
+  "ob.method_mismatch", "ob.target_mismatch", "ob.header_unbound", "ob.header_duplicate", "ob.header_value_invalid", "ob.header_mismatch",
+  "ob.length_mismatch", "ob.framing_invalid", "ob.signature_invalid", "ob.lineage_missing", "ob.lineage_mismatch",
+  "ob.replayed", "ob.replay_cache_full", "ob.digest_mismatch", "ob.content_incomplete", "ob.expect_refused", "ob.canon_error",
+] as const;
+export type ObReason = (typeof OB_REASONS)[number];

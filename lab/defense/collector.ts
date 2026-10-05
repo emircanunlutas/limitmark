@@ -14,10 +14,13 @@
 import { createHash } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
 import {
-  validateLifecycle, terminalOutcome, type Anomaly, type AnomalyCode, type ClientResultKind, type EventFrame, type ExpectedLane, type HarnessEvent,
-  type LifecycleView, type OriginEvent, type PlaneEvent, type TerminalOutcome,
+  validateLifecycle, terminalOutcome, type Anomaly, type AnomalyCode, type AppEvent, type BoundaryEvent, type ClientResultKind, type EventFrame, type ExpectedLane,
+  type HarnessEvent, type LifecycleView, type OriginEvent, type PlaneEvent, type TerminalOutcome,
 } from "../../defense/core/ledger";
+import { validateOriginLineage } from "../../defense/core/lineage";
 import type { PlaneAdvisory } from "../../defense/plane/protocol";
+import type { BoundaryStats } from "../../defense/boundary/protocol";
+import type { AppFinStats } from "../../defense/origin/app-protocol";
 import type { ChannelStats } from "../../defense/core/ledger";
 import { assertEvidenceSafe } from "../evidence/redact";
 
@@ -31,6 +34,9 @@ export type LedgerRecord = {
   harness: HarnessEvent[];
   plane: PlaneEvent[];
   origin: OriginEvent[];
+  /** Slice 2 only: the Origin Boundary's and the Protected App's own streams for this request. Empty in a Slice-1 run. */
+  boundary: BoundaryEvent[];
+  app: AppEvent[];
   latencyMs: number | null;
 };
 
@@ -84,6 +90,18 @@ class Journal {
 }
 
 export type PlaneFin = { drained: boolean; channel: ChannelStats; advisory: PlaneAdvisory };
+export type BoundaryFin = { drained: boolean; channel: ChannelStats; stats: BoundaryStats };
+export type AppFin = { drained: boolean; channel: ChannelStats; stats: AppFinStats };
+
+/** Per-process stream integrity (Slice 2): the same checks the plane stream gets, for each additional child process. */
+class StreamState<F> {
+  lastSeq = 0;
+  received = 0;
+  droppedReported = 0;
+  crashed: string | null = null;
+  fin: F | null = null;
+  readonly anonymous = new Map<string, number>();
+}
 
 export class Collector {
   private readonly records = new Map<string, LedgerRecord>();
@@ -100,6 +118,9 @@ export class Collector {
   private nextRid = 1;
   private capacityExceeded = false;
   private readonly journal: Journal | null;
+  private originStreams = false;
+  private readonly boundaryStream = new StreamState<BoundaryFin>();
+  private readonly appStream = new StreamState<AppFin>();
 
   constructor(journalPath: string | null, private readonly limits: CollectorLimits = DEFAULT_COLLECTOR_LIMITS) {
     this.journal = journalPath === null ? null : new Journal(journalPath, limits.maxJournalBytes);
@@ -122,7 +143,7 @@ export class Collector {
       if (!this.capacityExceeded) { this.capacityExceeded = true; this.anomaly("ledger_capacity_exceeded", null, `maxRequests ${this.limits.maxRequests}`); }
       return false;
     }
-    const record: LedgerRecord = { rid: `r${this.nextRid++}`, nonce, meta, harness: [{ kind: "SENT" }], plane: [], origin: [], latencyMs: null };
+    const record: LedgerRecord = { rid: `r${this.nextRid++}`, nonce, meta, harness: [{ kind: "SENT" }], plane: [], origin: [], boundary: [], app: [], latencyMs: null };
     this.records.set(nonce, record);
     this.journal?.append({ src: "h", rid: record.rid, k: "SENT", lane: meta.lane, phase: meta.phase, cls: meta.cls, scn: meta.scenario, j: meta.journey, st: meta.step, m: meta.method });
     return true;
@@ -178,6 +199,75 @@ export class Collector {
     this.journal?.append({ src: "o", rid: record.rid, k: event.kind, inst: event.instance, hop: event.hop, status: event.status ?? null, spoofed: event.spoofed ?? null });
   }
 
+  // ---- Slice 2: the Origin Boundary's and the Protected App's streams (each its own process, its own gapless sequence)
+
+  /** Turns on the boundary/app checks. A Slice-1 run never calls this, so every Slice-1 rule stays exactly as it was. */
+  enableOriginStreams(): void { this.originStreams = true; }
+
+  ingestBoundaryFrame(frame: EventFrame<BoundaryEvent>): number {
+    const stream = this.boundaryStream;
+    stream.droppedReported = Math.max(stream.droppedReported, frame.dropped);
+    for (const event of frame.events) {
+      stream.received++;
+      if (event.seq <= stream.lastSeq) this.anomaly("duplicate_sequence", event.nonce, `boundary seq ${event.seq}`);
+      else if (event.seq > stream.lastSeq + 1) this.anomaly("boundary_channel_loss", event.nonce, `gap of ${event.seq - stream.lastSeq - 1} before seq ${event.seq}`);
+      stream.lastSeq = Math.max(stream.lastSeq, event.seq);
+      if (this.frozen) { this.lateEvents++; this.anomaly("late_event_after_finalization", event.nonce, event.kind); continue; }
+      if (event.nonce === null) {
+        stream.anonymous.set(event.kind, (stream.anonymous.get(event.kind) ?? 0) + 1);
+        this.journal?.append({ src: "b", seq: event.seq, k: event.kind, code: event.code ?? null });
+        continue;
+      }
+      const record = this.records.get(event.nonce);
+      if (!record) { this.anomaly("unknown_nonce", null, event.kind); continue; }
+      if (record.boundary.length >= this.limits.maxEventsPerRecord) { this.anomaly("ledger_capacity_exceeded", event.nonce, "events per record"); continue; }
+      record.boundary.push(event);
+      this.journal?.append({ src: "b", rid: record.rid, seq: event.seq, k: event.kind, reason: event.reason ?? null, hop: event.hop ?? null, pb: event.pbTag ?? null, ba: event.baTag ?? null, status: event.status ?? null, fwd: event.forwardError ?? null });
+    }
+    return stream.received;
+  }
+
+  ingestAppFrame(frame: EventFrame<AppEvent>): number {
+    const stream = this.appStream;
+    stream.droppedReported = Math.max(stream.droppedReported, frame.dropped);
+    for (const event of frame.events) {
+      stream.received++;
+      if (event.seq <= stream.lastSeq) this.anomaly("duplicate_sequence", event.nonce, `app seq ${event.seq}`);
+      else if (event.seq > stream.lastSeq + 1) this.anomaly("app_channel_loss", event.nonce, `gap of ${event.seq - stream.lastSeq - 1} before seq ${event.seq}`);
+      stream.lastSeq = Math.max(stream.lastSeq, event.seq);
+      if (this.frozen) { this.lateEvents++; this.anomaly("late_event_after_finalization", event.nonce, event.kind); continue; }
+      const record = event.nonce === null ? undefined : this.records.get(event.nonce);
+      if (!record) {
+        // An unattributable refusal is counted (bounded: one counter per kind); an unattributable ADMISSION is an anomaly by itself.
+        if (event.kind === "APP_REFUSED") { stream.anonymous.set(event.kind, (stream.anonymous.get(event.kind) ?? 0) + 1); this.journal?.append({ src: "a", seq: event.seq, k: event.kind, reason: event.reason ?? null }); }
+        else this.anomaly("unknown_nonce", null, event.kind);
+        continue;
+      }
+      if (record.app.length >= this.limits.maxEventsPerRecord) { this.anomaly("ledger_capacity_exceeded", event.nonce, "events per record"); continue; }
+      record.app.push(event);
+      // Slice-1 origin rules still apply to an admitted request: derive the legacy events they read (pure mapping, nothing new is decided here).
+      const nonce = record.nonce;
+      if (event.kind === "APP_ADMITTED") record.origin.push({ instance: "protected", nonce, kind: "ORIGIN_RECEIVED", hop: event.hop ?? null, spoofed: event.spoofed ?? 0 });
+      else if (event.kind === "APP_COMPLETED") record.origin.push({ instance: "protected", nonce, kind: "ORIGIN_COMPLETED", hop: event.hop ?? null, status: event.status });
+      else if (event.kind === "APP_ABORTED") record.origin.push({ instance: "protected", nonce, kind: "ORIGIN_ABORTED", hop: event.hop ?? null });
+      this.journal?.append({ src: "a", rid: record.rid, seq: event.seq, k: event.kind, reason: event.reason ?? null, hop: event.hop ?? null, pb: event.pbTag ?? null, ba: event.baTag ?? null, status: event.status ?? null, spoofed: event.spoofed ?? null });
+    }
+    return stream.received;
+  }
+
+  boundaryExited(detail: string): void { if (this.boundaryStream.crashed === null && this.boundaryStream.fin === null) this.boundaryStream.crashed = detail; }
+  boundaryFinished(fin: BoundaryFin): void { this.boundaryStream.fin = fin; }
+  appExited(detail: string): void { if (this.appStream.crashed === null && this.appStream.fin === null) this.appStream.crashed = detail; }
+  appFinished(fin: AppFin): void { this.appStream.fin = fin; }
+  get boundaryInfo(): { received: number; lastSeq: number; droppedReported: number; fin: BoundaryFin | null; crashed: string | null; anonymous: Record<string, number> } {
+    const s = this.boundaryStream;
+    return { received: s.received, lastSeq: s.lastSeq, droppedReported: s.droppedReported, fin: s.fin, crashed: s.crashed, anonymous: Object.fromEntries(s.anonymous) };
+  }
+  get appInfo(): { received: number; lastSeq: number; droppedReported: number; fin: AppFin | null; crashed: string | null; anonymous: Record<string, number> } {
+    const s = this.appStream;
+    return { received: s.received, lastSeq: s.lastSeq, droppedReported: s.droppedReported, fin: s.fin, crashed: s.crashed, anonymous: Object.fromEntries(s.anonymous) };
+  }
+
   // ---- plane lifecycle (process level)
 
   planeExited(detail: string): void { if (this.planeCrashed === null && this.fin === null) this.planeCrashed = detail; }
@@ -201,8 +291,30 @@ export class Collector {
   finalize(): { anomalies: Anomaly[]; anomalyTotal: number } {
     const found: Anomaly[] = [];
     for (const record of this.records.values()) {
-      const view: LifecycleView = { nonce: record.nonce, expected: record.meta.lane, harness: record.harness, plane: record.plane, origin: record.origin };
+      const view: LifecycleView = {
+        nonce: record.nonce, expected: record.meta.lane, harness: record.harness, plane: record.plane, origin: record.origin,
+        ...(this.originStreams ? { boundary: record.boundary, app: record.app } : {}),
+      };
       for (const anomaly of validateLifecycle(view, true)) found.push({ ...anomaly, nonce: record.rid });
+      for (const anomaly of validateOriginLineage(view, true)) found.push({ ...anomaly, nonce: record.rid });
+    }
+    if (this.originStreams) {
+      const check = (name: "boundary" | "app", state: StreamState<BoundaryFin | AppFin>) => {
+        const fin = state.fin;
+        const [crashed, notFinal, loss] = name === "boundary"
+          ? (["boundary_crashed", "boundary_not_finalized", "boundary_channel_loss"] as const)
+          : (["app_crashed", "app_not_finalized", "app_channel_loss"] as const);
+        if (state.crashed !== null) found.push({ code: crashed, nonce: null, detail: state.crashed });
+        else if (fin === null) found.push({ code: notFinal, nonce: null, detail: `no FIN from the ${name}` });
+        else {
+          if (!fin.drained) found.push({ code: loss, nonce: null, detail: `${name} could not drain its queue` });
+          if (fin.channel.dropped > 0 || state.droppedReported > 0) found.push({ code: loss, nonce: null, detail: `${name} dropped ${Math.max(fin.channel.dropped, state.droppedReported)} events` });
+          if (fin.channel.lastSeq !== state.lastSeq) found.push({ code: loss, nonce: null, detail: `${name} last seq ${fin.channel.lastSeq}, collector last seq ${state.lastSeq}` });
+          if (fin.channel.emitted !== state.received + fin.channel.dropped) found.push({ code: loss, nonce: null, detail: `${name} emitted ${fin.channel.emitted}, collector received ${state.received}` });
+        }
+      };
+      check("boundary", this.boundaryStream);
+      check("app", this.appStream);
     }
     const channel = this.channel;
     if (channel.crashed !== null) found.push({ code: "plane_crashed", nonce: null, detail: channel.crashed });

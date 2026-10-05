@@ -4,7 +4,7 @@
  * (defense/core/ledger.ts), which already flags duplicate terminals, missing transitions, impossible order, disappearance, duplicate
  * origin processing and unresolved work. A failing identity makes the run INVALID.
  */
-import { REJECT_REASONS, type RejectReason } from "../../defense/core/types";
+import { ALL_REJECT_REASONS, REJECT_REASONS } from "../../defense/core/types";
 import { EGRESS_ERROR_KINDS, TERMINAL_OUTCOMES, type EgressErrorKind, type TerminalOutcome } from "../../defense/core/ledger";
 import { Collector, type LedgerRecord } from "./collector";
 
@@ -61,7 +61,8 @@ export function deriveAccounting(records: Iterable<LedgerRecord>, parserRejected
       for (const event of record.plane) {
         if (event.kind === "L1_REJECTED") {
           l1.rejected++;
-          if (event.reason && (REJECT_REASONS as readonly string[]).includes(event.reason)) rejectedByReason[event.reason as RejectReason]++; else rejectsWithUnknownReason++;
+          // A Slice-2 semantic reason is a member of the closed list too; it only appears in a row once it actually occurs.
+          if (event.reason && (ALL_REJECT_REASONS as readonly string[]).includes(event.reason)) rejectedByReason[event.reason] = (rejectedByReason[event.reason] ?? 0) + 1; else rejectsWithUnknownReason++;
         } else if (event.kind === "L1_ERROR") { l1.error++; errorByKind[event.errorKind ?? "unknown"] = (errorByKind[event.errorKind ?? "unknown"] ?? 0) + 1; }
         else if (event.kind === "EGRESS_FAILED") { egress.failed++; if (event.egressError) failedByKind[event.egressError]++; }
       }
