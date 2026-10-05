@@ -17,7 +17,8 @@ import { canonicalJson } from "../policy/thresholds";
 export const REPOSITORY_ROOT = path.resolve(__dirname, "..", "..");
 export const EVIDENCE_ROOT = path.join(REPOSITORY_ROOT, "artifacts", "lab", "evidence");
 
-export type EvidenceResult = "PASS" | "FAIL" | "STOP" | "REFUSED" | "ERROR";
+/** BASELINE-VALID / INVALID are the only conclusions a BA0 Slice 1 run may reach; they are deliberately not PASS (no defense qualification is claimed). */
+export type EvidenceResult = "PASS" | "FAIL" | "STOP" | "REFUSED" | "ERROR" | "BASELINE-VALID" | "INVALID";
 
 export type EvidenceEnvironment = {
   os: string;

@@ -36,6 +36,43 @@ test("no application, worker, operator, deployment or script file imports from l
   assert.deepEqual(offenders, []);
 });
 
+const importsDefense = /(?:from\s+|import\s*\(\s*|require\s*\(\s*|import\s+)["'`](?:[^"'`]*[/\\])?defense(?:[/\\][^"'`]*)?["'`]/;
+const defenseDirectory = `defense${path.sep}`;
+
+test("no application, worker, operator, deployment or script file imports from defense/", () => {
+  const offenders = runtimeFiles.filter((file) => !path.relative(root, file).startsWith(defenseDirectory)).filter((file) => importsDefense.test(readIfPresent(file))).map((file) => path.relative(root, file));
+  assert.deepEqual(offenders, []);
+});
+
+test("defense/ imports only its own files and node: built-ins (no src/, operator/, scripts/, deployment/, workers/, lab/ and no package)", () => {
+  const files = runtimeFiles.filter((file) => path.relative(root, file).startsWith(defenseDirectory) && file.endsWith(".ts"));
+  assert.ok(files.length >= 8, "the scan must see the defense tree");
+  const offenders: string[] = [];
+  for (const file of files) {
+    for (const match of readIfPresent(file).matchAll(/(?:from\s+|import\s*\(\s*|require\s*\(\s*)["']([^"']+)["']/g)) {
+      const specifier = match[1];
+      const inside = specifier.startsWith(".") && path.resolve(path.dirname(file), specifier).startsWith(path.join(root, "defense") + path.sep);
+      if (!inside && !specifier.startsWith("node:")) offenders.push(`${path.relative(root, file)}: ${specifier}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
+});
+
+test("ESLint forbids defense/ from importing outside itself and forbids runtime code from importing defense/", () => {
+  const config = readFileSync(path.join(root, "eslint.config.mjs"), "utf8");
+  assert.match(config, /\*\*\/defense\/\*\*/);
+  assert.ok(config.includes('files: ["defense/**/*.ts"]'));
+  for (const glob of ["@/*", "**/src/**", "**/operator/**", "**/scripts/**", "**/deployment/**", "**/workers/**", "**/lab/**"]) assert.ok(config.includes(glob), glob);
+});
+
+test("only the lab:ba0 script runs defense-plane code; no other non-test script does", () => {
+  const manifest = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as { scripts: Record<string, string> };
+  for (const [name, command] of Object.entries(manifest.scripts)) {
+    if (name === "lab:ba0") assert.match(command, /lab\/defense\/ba0-run\.ts/);
+    else if (!/^test(:|$)|^check$|^lab:/.test(name)) assert.doesNotMatch(command, /\bdefense\//, `${name} must not run defense code`);
+  }
+});
+
 test("no runtime file references lab-only identifiers (proof schema, lab paths, lab environment)", () => {
   const needles = ["limitmark_lab_proof", "disposable_database_marker", "TEST_DATABASE_PROOF", "artifacts/lab", "lab/policy", "lab/postgres", "lab/evidence", "limitmark-lab-"];
   const offenders: string[] = [];
