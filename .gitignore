@@ -53,3 +53,9 @@ deployment/lifecycle-transport.staging.json
 # deploy tooling itself, not this glob.
 deployment/lifecycle-mailbox.staging.armed.jsonc
 deployment/lifecycle-observer.staging.armed.jsonc
+
+# R06 activation (T2): the rendered Authority result trust manifest holds only PUBLIC keys, fingerprints and validity windows, but it is
+# the operator-local provisioned instance of deployment/authority-result-trust.template.json (which stays tracked) and its Production
+# section is an in-memory throwaway anchor that must never be committed or shared as if it were real. Only this exact filename is ignored;
+# the primary safety boundary is the exact-name loader and renderer, not this glob.
+deployment/authority-result-trust.json
