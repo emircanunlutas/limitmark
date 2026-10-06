@@ -28,7 +28,8 @@ export type WorkloadId =
   | "timeout-behaviour"
   | "demo-submission-post"
   | "app-restart"
-  | "postgres-outage";
+  | "postgres-outage"
+  | "ba0-l7-pressure-c1";
 
 export type PhaseSpec = {
   name: string;
@@ -45,17 +46,28 @@ export type ReviewedCeilings = {
   totalRequests: number;
 };
 
+/** One reviewed request of a closed-loop workload: a stable id (never a path in a report key), a method and an exact path. */
+export type FixtureSpec = { id: string; method: "GET" | "POST"; path: string };
+
 export type WorkloadSpec = {
   id: WorkloadId;
   description: string;
-  /** http: guarded HTTP client against an allowlisted target. managed-*: lab-owned local process/container only. */
-  engine: "http" | "managed-app" | "managed-postgres";
+  /**
+   * http: the open-loop guarded HTTP client (a rate, with a concurrency cap) against an allowlisted target.
+   * http-closed-loop: N workers, each sending its next request only after the previous one settled (lab/load/closed-loop.ts); it is NEVER run by
+   * the open-loop engine. managed-*: lab-owned local process/container only.
+   */
+  engine: "http" | "http-closed-loop" | "managed-app" | "managed-postgres";
   methods: readonly ("GET" | "POST")[];
   paths: readonly string[];
   phases: readonly PhaseSpec[];
   ceilings: ReviewedCeilings;
   /** Failure workloads act on processes/containers the lab itself started. Never valid for a remote target. */
   localOnly: boolean;
+  /** A workload that is meaningful only against a reviewed remote disposable target (it has no local fixture). */
+  remoteOnly?: boolean;
+  /** Closed-loop workloads name their exact requests (a mixed GET/POST cycle is not a method x path product). */
+  fixtures?: readonly FixtureSpec[];
 };
 
 const PUBLIC_PAGES = ["/", "/gizlilik", "/test-talep-et"] as const;
@@ -117,6 +129,19 @@ const catalogue = [
     engine: "http", methods: ["POST"], paths: ["/api/public-inquiries"], localOnly: false,
     phases: [{ name: "demo-post", durationSeconds: 30, ratePerSecond: 5, concurrency: 4, timeoutMs: 5_000 }],
     ceilings: { requestsPerSecond: 5, concurrency: 4, durationSeconds: 30, totalRequests: 150 },
+  },
+  {
+    id: "ba0-l7-pressure-c1",
+    description: "BA0 first external L7 qualification level (N equals 1): ordinary HTTP request pressure, one logical request in flight, a fixed four-request cycle, no retries, no pipelining. Reviewed target only.",
+    engine: "http-closed-loop", methods: ["GET", "POST"], paths: ["/", "/gizlilik", "/test-talep-et", "/api/public-inquiries"], localOnly: false, remoteOnly: true,
+    fixtures: [
+      { id: "get_home", method: "GET", path: "/" },
+      { id: "get_privacy", method: "GET", path: "/gizlilik" },
+      { id: "get_form", method: "GET", path: "/test-talep-et" },
+      { id: "post_inquiry", method: "POST", path: "/api/public-inquiries" },
+    ],
+    phases: [{ name: "pressure", durationSeconds: 60, ratePerSecond: 25, concurrency: 1, timeoutMs: 5_000 }],
+    ceilings: { requestsPerSecond: 25, concurrency: 1, durationSeconds: 60, totalRequests: 1_500 },
   },
   {
     id: "app-restart",
@@ -193,9 +218,24 @@ export function validateWorkloadCatalogue(workloads: Readonly<Record<string, Wor
       }
       if (phase.timeoutMs > HARD_CEILINGS.maxRequestTimeoutMs) problems.push(`${workload.id}/${phase.name}: timeout exceeds hard ceiling`);
     }
-    if (workload.engine === "http" && workload.methods.length === 0) problems.push(`${workload.id}: http workload without methods`);
-    if (workload.engine !== "http" && !workload.localOnly) problems.push(`${workload.id}: managed workloads must be localOnly`);
-    if (workload.methods.includes("POST") && workload.paths.some((path) => path !== "/api/public-inquiries")) problems.push(`${workload.id}: POST allowed on an unreviewed path`);
+    if ((workload.engine === "http" || workload.engine === "http-closed-loop") && workload.methods.length === 0) problems.push(`${workload.id}: http workload without methods`);
+    if (workload.engine.startsWith("managed") && !workload.localOnly) problems.push(`${workload.id}: managed workloads must be localOnly`);
+    if (workload.localOnly && workload.remoteOnly) problems.push(`${workload.id}: a workload cannot be both local-only and remote-only`);
+    if (workload.fixtures === undefined) {
+      if (workload.engine === "http-closed-loop") problems.push(`${workload.id}: a closed-loop workload must name its fixtures`);
+      if (workload.methods.includes("POST") && workload.paths.some((path) => path !== "/api/public-inquiries")) problems.push(`${workload.id}: POST allowed on an unreviewed path`);
+    } else {
+      if (workload.engine !== "http-closed-loop") problems.push(`${workload.id}: only a closed-loop workload names fixtures`);
+      if (workload.fixtures.length === 0) problems.push(`${workload.id}: no fixtures`);
+      const ids = new Set<string>();
+      for (const fixture of workload.fixtures) {
+        if (!/^[a-z][a-z0-9_]{2,40}$/.test(fixture.id) || ids.has(fixture.id)) problems.push(`${workload.id}: fixture id ${fixture.id} is not a unique plain label`);
+        ids.add(fixture.id);
+        if (!workload.methods.includes(fixture.method) || !workload.paths.includes(fixture.path)) problems.push(`${workload.id}/${fixture.id}: fixture is outside the workload's methods and paths`);
+        if (fixture.method === "POST" && fixture.path !== "/api/public-inquiries") problems.push(`${workload.id}/${fixture.id}: POST allowed on an unreviewed path`);
+      }
+      if (workload.phases.length !== 1 || workload.phases.some((phase) => phase.concurrency !== workload.ceilings.concurrency)) problems.push(`${workload.id}: a closed-loop workload has one phase whose worker count equals its concurrency ceiling`);
+    }
   }
   return problems;
 }

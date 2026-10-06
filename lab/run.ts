@@ -14,6 +14,9 @@ import path from "node:path";
 import { LocalApp } from "./host/local-app";
 import { executeHttpWorkload, warmUp, type EngineResult } from "./load/engine";
 import { runK6 } from "./load/k6";
+import { executeClosedLoop } from "./load/closed-loop";
+import { BA0_FIELD_V1, ba0FieldFingerprint } from "./defense/field-thresholds";
+import { buildGeneratorReport, campaignIdPattern, workloadFingerprint } from "./defense/generator-report";
 import { assertSameLabAppContainer, inspectLabContainer } from "./host/docker";
 import { runAppRestart } from "./failure/app-restart";
 import { runPostgresOutage, type OutageMode } from "./failure/postgres-outage";
@@ -30,12 +33,14 @@ import { assertVersion, labDbDown, labDbUp, teardownOnCrash, type PgVersion } fr
 import { applyKnownFaultVerdict, libraryFaults } from "./postgres/known-faults";
 import { evidenceSafeError } from "./evidence/redact";
 
-const VALUE_FLAGS = new Set(["--target", "--workload", "--thresholds", "--max-rate", "--max-concurrency", "--max-duration", "--pg", "--outage-mode", "--engine", "--k6-netns-container", "--app-container"]);
+const VALUE_FLAGS = new Set(["--target", "--workload", "--thresholds", "--max-rate", "--max-concurrency", "--max-duration", "--pg", "--outage-mode", "--engine", "--k6-netns-container", "--app-container", "--campaign"]);
 const BOOLEAN_FLAGS = new Set(["--manage-app", "--dry-run"]);
 export const OPERATOR_TARGETS_FILE = path.join(REPOSITORY_ROOT, "artifacts", "lab", "targets.json");
 
 export type ParsedArguments = {
   target?: string; workload?: string; thresholds?: string; pg?: string; outageMode?: string; engine?: string; k6Netns?: string; appContainer?: string;
+  /** The campaign id of a BA0 field level (a plain label chosen by the operator; recorded in the evidence, never an input to any decision). */
+  campaign?: string;
   limits: CliLimits; manageApp: boolean; dryRun: boolean;
 };
 
@@ -61,7 +66,8 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
   if (values["--max-duration"] !== undefined) limits.maxDurationSeconds = parseStrictPositiveInteger(values["--max-duration"], "--max-duration");
   return {
     target: values["--target"], workload: values["--workload"], thresholds: values["--thresholds"], pg: values["--pg"],
-    outageMode: values["--outage-mode"], engine: values["--engine"], k6Netns: values["--k6-netns-container"], appContainer: values["--app-container"], limits, manageApp: flags.has("--manage-app"), dryRun: flags.has("--dry-run"),
+    outageMode: values["--outage-mode"], engine: values["--engine"], k6Netns: values["--k6-netns-container"], appContainer: values["--app-container"], campaign: values["--campaign"],
+    limits, manageApp: flags.has("--manage-app"), dryRun: flags.has("--dry-run"),
   };
 }
 
@@ -100,7 +106,10 @@ function summarize(phases: readonly PhaseStats[]) {
   return { attempted, failed, errorRate: attempted ? Math.round((failed / attempted) * 10_000) / 10_000 : 0 };
 }
 
-const EXIT: Record<EvidenceResult, number> = { PASS: 0, FAIL: 1, REFUSED: 2, STOP: 3, ERROR: 4, "BASELINE-VALID": 0, "APP-NON-BYPASS-VALID": 0, "LAYER-DIVERSITY-VALID": 0, INVALID: 1 };
+const EXIT: Record<EvidenceResult, number> = {
+  PASS: 0, FAIL: 1, REFUSED: 2, STOP: 3, ERROR: 4, "BASELINE-VALID": 0, "APP-NON-BYPASS-VALID": 0, "LAYER-DIVERSITY-VALID": 0, INVALID: 1,
+  "GENERATOR-COMPLETE": 0, "SERVER-COMPLETE": 0, ABORTED: 3, "EXTERNAL-L7-QUALIFICATION-VALID": 0,
+};
 
 async function main(): Promise<number> {
   const startedAt = new Date();
@@ -146,6 +155,8 @@ async function main(): Promise<number> {
   }
   const unproven = checkDestinationProof(run.target.class, run.workload.engine, args);
   if (unproven) return refuse(unproven, "listener-unproven");
+  // A closed-loop BA0 level has its own engine, its own parameter set and its own report; the open-loop engine below never runs it.
+  if (run.workload.engine === "http-closed-loop") return runClosedLoopLevel(run, args, git, startedAt, refuse);
   const set = selectThresholdSet(args.thresholds, run.target.class);
   const fingerprint = thresholdSetFingerprint(set);
   if (args.dryRun) {
@@ -231,6 +242,70 @@ async function main(): Promise<number> {
     thresholds: fingerprint, engine: engineName, result, resultReasons: reasons, metrics: { ...summarize(phases), ...extra },
   });
   console.log(`${result}  ${run.workload.id} -> ${run.target.id}  thresholds=${fingerprint.id}@${fingerprint.version}\n${reasons.map((reason) => `  - ${reason}`).join("\n")}\nevidence=${evidence.id}`);
+  return EXIT[result];
+}
+
+/**
+ * A BA0 field level's GENERATOR. It sends the reviewed closed-loop workload to the reviewed remote target and writes a generator report. It never
+ * concludes a verdict: the server-side evidence and the offline reconcile do. It accepts no limit override and no engine choice, so the level it
+ * runs is exactly the one whose fingerprint the VALID verdict is scoped to.
+ */
+async function runClosedLoopLevel(run: AuthorizedRun, args: ParsedArguments, git: ReturnType<typeof collectGitState>, startedAt: Date, refuse: (e: PolicyRefusal, label: string) => number): Promise<number> {
+  const field = BA0_FIELD_V1;
+  if (args.campaign === undefined || !campaignIdPattern.test(args.campaign)) return refuse(new PolicyRefusal("limit-invalid", "--campaign must be a plain label (lowercase letters, digits, hyphens; 6 to 41 characters)"), "bad-campaign");
+  if (args.engine !== undefined || args.manageApp || args.appContainer !== undefined || args.k6Netns !== undefined || args.thresholds !== undefined) {
+    return refuse(new PolicyRefusal("limit-invalid", "a closed-loop level takes only --target, --workload and --campaign"), "bad-options");
+  }
+  if (args.limits.maxRate !== undefined || args.limits.maxConcurrency !== undefined || args.limits.maxDurationSeconds !== undefined) {
+    return refuse(new PolicyRefusal("limit-invalid", "a qualification level takes no limit override: its verdict is scoped to the exact reviewed level"), "bad-limits");
+  }
+  const phase = run.limits.phases[0];
+  if (phase.concurrency !== field.level.workers || phase.ratePerSecond !== field.level.maxRequestsPerSecond || phase.durationSeconds !== field.level.durationSeconds
+    || run.limits.maxTotalRequests !== field.level.maxTotalRequests || phase.timeoutMs !== field.level.requestTimeoutMs) {
+    return refuse(new PolicyRefusal("limit-above-reviewed-ceiling", "the workload catalogue and ba0-field-v1 disagree about the level"), "level-mismatch");
+  }
+  const fingerprint = ba0FieldFingerprint(field);
+  const workloadHash = workloadFingerprint(run.workload);
+  if (args.dryRun) {
+    console.log(JSON.stringify({ dryRun: true, target: run.target.id, workload: run.workload.id, level: field.level.id, campaign: args.campaign, parameters: fingerprint, workloadSha256: workloadHash, limits: run.limits }, null, 2));
+    return 0;
+  }
+  const evidence = new EvidenceRun("load", run.workload.id, startedAt);
+  const abort = new AbortController();
+  const onSignal = () => abort.abort();
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  let result: EvidenceResult = "ERROR";
+  const reasons: string[] = [];
+  let summary: Record<string, unknown> = {};
+  try {
+    const outcome = await executeClosedLoop({ run, signal: abort.signal, stopOnTransportFailure: true });
+    const report = buildGeneratorReport({
+      result: outcome, runId: evidence.id, campaignId: args.campaign, levelId: field.level.id, gitSha: git.gitSha, paramsFingerprintSha256: fingerprint.sha256,
+      workload: run.workload, targetId: run.target.id, ceilingRatePerSecond: phase.ratePerSecond,
+    });
+    evidence.addJsonArtifact("generator-report.json", report);
+    const ended = outcome.stop.kind;
+    if (ended === "completed" || ended === "total_ceiling") result = "GENERATOR-COMPLETE";
+    else if (ended === "operator_abort") result = "ABORTED";
+    else result = "STOP";
+    if (ended !== "completed") reasons.push(`generator stop: ${ended}${outcome.stop.detail ? ` ${outcome.stop.detail}` : ""}`);
+    summary = { attempted: outcome.attempted, responses: outcome.responses, transportFailures: outcome.transportFailures, maxInFlightObserved: outcome.concurrency.maxInFlightObserved, stopKind: ended };
+  } catch (error) {
+    reasons.push(evidenceSafeError(error));
+    result = error instanceof PolicyRefusal ? "REFUSED" : "ERROR";
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
+  evidence.finalize({
+    git, environment: collectEnvironment(), target: { id: run.target.id, class: run.target.class, scheme: run.target.scheme, port: run.target.port, ownership: "operator-asserted" },
+    workload: { id: run.workload.id, phases: run.limits.phases },
+    ceilings: { scope: "per-process; not campaign- or fleet-wide", hard: { ...HARD_CEILINGS }, reviewed: { ...run.workload.ceilings }, level: field.level.id },
+    thresholds: fingerprint, engine: "node-http-closed-loop", result, resultReasons: reasons,
+    metrics: { ...summary, campaign: args.campaign, workloadSha256: workloadHash, verdict: "not_decided_here", note: "the generator concludes no verdict: the server-side evidence and the offline reconcile do" },
+  });
+  console.log(`${result}  ${run.workload.id} -> ${run.target.id}  parameters=${fingerprint.id}@${fingerprint.version}  (no verdict here: the server-side evidence and the offline reconcile decide)\n${reasons.map((reason) => `  - ${reason}`).join("\n")}\nevidence=${evidence.id}`);
   return EXIT[result];
 }
 

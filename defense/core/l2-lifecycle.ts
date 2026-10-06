@@ -19,7 +19,7 @@ export function decisionOf(event: PlaneEvent): LaneDecision | null {
 
 export function validateL2Lifecycle(view: LifecycleView, final: boolean): Anomaly[] {
   const found: Anomaly[] = [];
-  if (view.l2 !== true || view.expected !== "protected") return found;
+  if (view.l2 !== true || (view.expected !== "protected" && view.expected !== "external")) return found;
   const add = (code: AnomalyCode, detail: string) => found.push({ code, nonce: view.nonce, detail });
   const plane = view.plane;
   const has = (kind: string) => plane.some((event) => event.kind === kind);

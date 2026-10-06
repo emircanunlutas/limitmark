@@ -33,8 +33,11 @@ function classify(error: unknown): ClientResultKind {
   return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNREFUSED" ? "reset" : "error";
 }
 
-/** A tracked HTTP exchange against 127.0.0.1:<port>. Always resolves; never throws. */
-export async function trackedHttp(collector: Collector, port: number, meta: RequestMeta, spec: HttpSpec, timeoutMs: number): Promise<Exchange> {
+/**
+ * A tracked HTTP exchange against <host>:<port> (default 127.0.0.1). Always resolves; never throws. `host` exists for the field canary, which
+ * reaches the Defense Plane at its reviewed bound address; every Slice-1/2/3 caller omits it.
+ */
+export async function trackedHttp(collector: Collector, port: number, meta: RequestMeta, spec: HttpSpec, timeoutMs: number, host = "127.0.0.1"): Promise<Exchange> {
   const nonce = newNonce();
   const registered = collector.sent(nonce, meta);
   const started = performance.now();
@@ -53,7 +56,7 @@ export async function trackedHttp(collector: Collector, port: number, meta: Requ
     const settle = (value: Exchange) => { if (!done) { done = true; clearTimeout(timer); resolve(value); } };
     const headers: Record<string, string> = { ...(spec.headers ?? {}), [NONCE_HEADER]: nonce };
     if (spec.body !== undefined) headers["content-length"] = String(Buffer.byteLength(spec.body));
-    const request = http.request({ host: "127.0.0.1", port, method: spec.method, path: spec.path, headers, agent }, (response) => {
+    const request = http.request({ host, port, method: spec.method, path: spec.path, headers, agent }, (response) => {
       const chunks: Buffer[] = [];
       let total = 0;
       response.on("data", (chunk: Buffer) => { total += chunk.length; if (total <= MAX_CLIENT_BODY) chunks.push(chunk); });

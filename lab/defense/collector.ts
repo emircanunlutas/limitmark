@@ -24,6 +24,7 @@ import type { BoundaryStats } from "../../defense/boundary/protocol";
 import type { AppFinStats } from "../../defense/origin/app-protocol";
 import type { ChannelStats } from "../../defense/core/ledger";
 import { assertEvidenceSafe } from "../evidence/redact";
+import type { ExternalReducer } from "./external-reducer";
 
 export type RequestClass = "canary" | "hostile";
 export type RequestMeta = { lane: ExpectedLane; phase: string; cls: RequestClass; scenario: string; journey: number | null; step: number | null; method: "GET" | "POST" | "OTHER" };
@@ -123,6 +124,8 @@ export class Collector {
   private laneStreams = false;
   private readonly boundaryStream = new StreamState<BoundaryFin>();
   private readonly appStream = new StreamState<AppFin>();
+  /** Field qualification only: the bounded lane for REMOTE-peer requests. Absent in every Slice-1/2/3 run, which behaves exactly as before. */
+  private external: ExternalReducer | null = null;
 
   constructor(journalPath: string | null, private readonly limits: CollectorLimits = DEFAULT_COLLECTOR_LIMITS) {
     this.journal = journalPath === null ? null : new Journal(journalPath, limits.maxJournalBytes);
@@ -133,6 +136,12 @@ export class Collector {
   anomaly(code: AnomalyCode, nonce: string | null, detail: string): void {
     this.anomalyCount++;
     if (this.anomalyList.length < this.limits.maxAnomalies) this.anomalyList.push({ code, nonce: nonce === null ? null : (this.records.get(nonce)?.rid ?? "unknown"), detail });
+  }
+
+  /** Field qualification: external-lane anomalies, already tagged with the request's evidence id (never its nonce). */
+  externalAnomaly(code: AnomalyCode, rid: string | null, detail: string): void {
+    this.anomalyCount++;
+    if (this.anomalyList.length < this.limits.maxAnomalies) this.anomalyList.push({ code, nonce: rid, detail });
   }
 
   // ---- harness events
@@ -179,7 +188,12 @@ export class Collector {
         continue;
       }
       const record = this.records.get(event.nonce);
-      if (!record) { this.anomaly(event.uncorrelated ? "uncorrelated_ingress" : "unknown_nonce", null, event.kind); continue; }
+      if (!record) {
+        // An external-lane request (a remote peer; the plane minted its nonce) is owned by the reducer. Everything else is as it always was.
+        if (this.external?.ingestPlane(event)) continue;
+        this.anomaly(event.uncorrelated ? "uncorrelated_ingress" : "unknown_nonce", null, event.kind);
+        continue;
+      }
       if (record.plane.length >= this.limits.maxEventsPerRecord) { this.anomaly("ledger_capacity_exceeded", event.nonce, "events per record"); continue; }
       record.plane.push(event);
       this.journal?.append({
@@ -221,6 +235,10 @@ export class Collector {
   /** Slice 3: the plane composition has L2, so every protected request is validated with the L2 automaton and the L2 rules. */
   enableLaneStreams(): void { this.laneStreams = true; }
 
+  /** Field qualification: routes requests from remote peers to the bounded external lane. Call once, before any traffic. */
+  enableExternalLane(reducer: ExternalReducer): void { this.external = reducer; }
+  get externalLane(): ExternalReducer | null { return this.external; }
+
   ingestBoundaryFrame(frame: EventFrame<BoundaryEvent>): number {
     const stream = this.boundaryStream;
     stream.droppedReported = Math.max(stream.droppedReported, frame.dropped);
@@ -236,7 +254,12 @@ export class Collector {
         continue;
       }
       const record = this.records.get(event.nonce);
-      if (!record) { this.anomaly("unknown_nonce", null, event.kind); continue; }
+      if (!record) {
+        // A downstream event may beat the plane's ingress here (separate pipes): the reducer holds it until the ingress claims it.
+        if (this.external?.ingestBoundary(event)) continue;
+        this.anomaly("unknown_nonce", null, event.kind);
+        continue;
+      }
       if (record.boundary.length >= this.limits.maxEventsPerRecord) { this.anomaly("ledger_capacity_exceeded", event.nonce, "events per record"); continue; }
       record.boundary.push(event);
       this.journal?.append({ src: "b", rid: record.rid, seq: event.seq, k: event.kind, reason: event.reason ?? null, hop: event.hop ?? null, pb: event.pbTag ?? null, ba: event.baTag ?? null, status: event.status ?? null, fwd: event.forwardError ?? null });
@@ -255,6 +278,7 @@ export class Collector {
       if (this.frozen) { this.lateEvents++; this.anomaly("late_event_after_finalization", event.nonce, event.kind); continue; }
       const record = event.nonce === null ? undefined : this.records.get(event.nonce);
       if (!record) {
+        if (this.external?.ingestApp(event)) continue;
         // An unattributable refusal is counted (bounded: one counter per kind); an unattributable ADMISSION is an anomaly by itself.
         if (event.kind === "APP_REFUSED") { stream.anonymous.set(event.kind, (stream.anonymous.get(event.kind) ?? 0) + 1); this.journal?.append({ src: "a", seq: event.seq, k: event.kind, reason: event.reason ?? null }); }
         else this.anomaly("unknown_nonce", null, event.kind);
@@ -292,6 +316,8 @@ export class Collector {
 
   freeze(): void { this.frozen = true; }
   get isFrozen(): boolean { return this.frozen; }
+  /** Anomalies recorded so far (finalization adds the end-of-run checks). The field runner watches it live. */
+  get anomalyTotalSoFar(): number { return this.anomalyCount; }
 
   // ---- reads
 
@@ -306,6 +332,8 @@ export class Collector {
 
   /** Final validation of every lifecycle plus the channel-level checks. Pure over the current state; call after `freeze()`. */
   finalize(): { anomalies: Anomaly[]; anomalyTotal: number } {
+    // Requests still open in the external lane are reduced (an unresolved one is an anomaly) and every unclaimed downstream event is flagged.
+    this.external?.finalize();
     const found: Anomaly[] = [];
     for (const record of this.records.values()) {
       const view: LifecycleView = {

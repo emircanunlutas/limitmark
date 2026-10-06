@@ -19,6 +19,8 @@ const REVIEWED = {
   "demo-submission-post": { requestsPerSecond: 5, concurrency: 4, durationSeconds: 30, totalRequests: 150 },
   "app-restart": { requestsPerSecond: 4, concurrency: 1, durationSeconds: 80, totalRequests: 340 },
   "postgres-outage": { requestsPerSecond: 2, concurrency: 1, durationSeconds: 85, totalRequests: 170 },
+  // The BA0 first external L7 level (closed loop, N = 1, remote-only). A higher level is a new reviewed entry here, never a flag.
+  "ba0-l7-pressure-c1": { requestsPerSecond: 25, concurrency: 1, durationSeconds: 60, totalRequests: 1500 },
 } as const;
 
 test("the hard ceilings are pinned", () => {
@@ -65,14 +67,15 @@ test("the catalogue validator catches a workload that exceeds its ceilings or th
   assert.ok(validateWorkloadCatalogue(clone((w) => { w.phases = []; })).length > 0);
 });
 
-test("POST appears only in the demo submission workload and only on its one path; failure workloads are local-only", () => {
+test("POST appears only in the demo submission workload and the BA0 closed-loop level, and only on the one reviewed path; failure workloads are local-only", () => {
   for (const workload of Object.values(WORKLOADS)) {
     if (workload.methods.includes("POST")) {
-      assert.equal(workload.id, "demo-submission-post");
-      assert.deepEqual([...workload.paths], ["/api/public-inquiries"]);
+      assert.ok(["demo-submission-post", "ba0-l7-pressure-c1"].includes(workload.id), workload.id);
+      if (workload.fixtures === undefined) assert.deepEqual([...workload.paths], ["/api/public-inquiries"]);
+      else assert.deepEqual(workload.fixtures.filter((fixture) => fixture.method === "POST").map((fixture) => fixture.path), ["/api/public-inquiries"]);
     }
     for (const path of workload.paths) assert.doesNotMatch(path, /cron|admin|\/v1/);
-    if (workload.engine !== "http") assert.equal(workload.localOnly, true, workload.id);
+    if (workload.engine.startsWith("managed")) assert.equal(workload.localOnly, true, workload.id);
   }
 });
 

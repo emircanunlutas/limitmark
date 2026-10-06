@@ -46,3 +46,16 @@ sudo env LAB_REPO_URL=https://<repo> LAB_REPO_COMMIT=<40-hex> LAB_APP_ORIGIN=htt
 2. Reserve the VM's external address: an ephemeral address that is released may be reassigned to a
    stranger, which is why target definitions expire within 72 h.
 3. Review this directory with `--dry-run` on a scratch Ubuntu container or VM.
+
+## `--ba0-field` (one BA0 field level instead of the Field Lab Next service)
+
+```text
+sudo env LAB_REPO_URL=https://<repo> LAB_REPO_COMMIT=<40-hex> LAB_SSH_ALLOW_CIDRS=<cidr,...> LAB_LOADGEN_CIDRS=<one /32> LAB_BA0_PLANE_PORT=<8000..8999> \
+  ./sut-bootstrap.sh --i-am-a-disposable-lab-vm --ba0-field [--dry-run]
+```
+
+* The old `limitmark-lab-app.service` is stopped, disabled, its unit removed and proven inactive; **no port-3000 firewall rule is added** and one an earlier run added is removed (it is not in the desired set).
+* The firewall allows exactly the reviewed Plane port from exactly ONE source, the single `/32` in `LAB_LOADGEN_CIDRS` (a network, two hosts or `Anywhere` is refused). The port is confined to 8000..8999 so it is never 3000, a database port or a standard service port.
+* The lab user gets exactly one read-only privilege, `sudo -n /usr/sbin/ufw status numbered` (validated with `visudo` before it is installed), so the field preflight can PROVE the firewall state. Teardown removes it.
+* Nothing is started: no Next build is made. The operator runs `npm run lab:ba0:field` as the lab user. The runner binds the Plane to the target definition's exact IPv4 and port, and refuses (never falls back to a wildcard) when that address is not assigned to an interface of this host: a NAT'd public address that is not on an interface cannot be used; assign the address or define the target with the address the generator can reach.
+* The cloud firewall remains the primary perimeter and is the operator's. The runner's exposure proof reads host listener state only.

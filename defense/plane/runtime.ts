@@ -16,10 +16,11 @@ import { JourneyLanes } from "../core/lanes";
 import type { VerdictOverridePort } from "../core/override-port";
 import type { Layer } from "../core/types";
 import { PB_MAX_LIFETIME_MS, importPrivateKey, issuePb } from "../core/hop-proof";
+import { ProcessSampler, TickSource } from "../core/telemetry";
 import { ShapeGate } from "../layers/a7-shape-gate";
 import { createFront, type Front, type HopIssuer } from "./front";
 import { L2Stage } from "./l2-stage";
-import type { PlaneL2Advisory, PlaneL2Init } from "./l2-protocol";
+import type { PlaneL2Advisory, PlaneL2Init, PlaneTickData } from "./l2-protocol";
 import type { PlaneMessage } from "./protocol";
 import { SemanticGate } from "./semantic-gate";
 
@@ -42,7 +43,8 @@ export type PlaneRuntimeHandle = {
   send(message: unknown): void;
 };
 
-type Control = PlaneL2Init | { type: "ack"; received: number } | { type: "fin" } | { type: "stop" };
+/** init | ack | fin | close_ingress | stop. close_ingress only stops the listener accepting; it is reachable over the IPC pipe alone. */
+type Control = PlaneL2Init | { type: "ack"; received: number } | { type: "fin" } | { type: "close_ingress" } | { type: "stop" };
 
 export function startPlane(deps: PlaneRuntimeDeps = {}): PlaneRuntimeHandle {
   if (typeof process.send !== "function") throw new Error("the defense plane must be started with an IPC channel");
@@ -51,6 +53,8 @@ export function startPlane(deps: PlaneRuntimeDeps = {}): PlaneRuntimeHandle {
   let front: Front | null = null;
   let gate: ShapeGate | null = null;
   let stage: L2Stage | null = null;
+  let ticks: TickSource<PlaneTickData> | null = null;
+  let tickTimer: NodeJS.Timeout | null = null;
   const loop = monitorEventLoopDelay({ resolution: 10 });
   loop.enable();
   let rssMax = 0;
@@ -74,13 +78,33 @@ export function startPlane(deps: PlaneRuntimeDeps = {}): PlaneRuntimeHandle {
         stage = new L2Stage(lanes, { composer: raw.l2.stage, wrapLayer: deps.wrapL2, maxResponseBytes: MAX_RESPONSE_BYTES });
         front = createFront({
           upstream: { host: "127.0.0.1", port: raw.upstreamPort }, emit: (event) => ch.emit(event), layer: l1, hop, l2: stage, verdictOverride: deps.verdictOverride,
-          composer: raw.composer, bodyDeadlineMs: raw.bodyDeadlineMs, egressTimeoutMs: raw.egressTimeoutMs, maxResponseBytes: MAX_RESPONSE_BYTES,
+          composer: raw.composer, bodyDeadlineMs: raw.bodyDeadlineMs, egressTimeoutMs: raw.egressTimeoutMs, maxResponseBytes: MAX_RESPONSE_BYTES, ingress: raw.ingress,
         });
-        send({ type: "ready", port: await front.listen() });
+        const ready = await front.listen();
+        const tickMs = raw.telemetry?.tickMs;
+        if (typeof tickMs === "number" && Number.isSafeInteger(tickMs) && tickMs >= 100 && tickMs <= 10_000) {
+          const owned = { front, stage, gate, channel: ch };
+          ticks = new TickSource<PlaneTickData>("plane", new ProcessSampler(), () => {
+            const interval = owned.front.intervalInFlight();
+            const l2 = owned.stage.stats();
+            return {
+              ingressOpen: owned.front.listening(), front: owned.front.stats(), inFlightMax: interval.max, inFlightExternalMax: interval.maxExternal,
+              external: owned.front.externalStats(), connections: owned.front.connectionStats(), l1Composer: owned.front.layerComposerStats(),
+              l1Occupancy: owned.front.composerOccupancy(), l1: owned.gate.stats(), hop: owned.front.hopStats(), l2, channel: owned.channel.stats(),
+            };
+          });
+          // Observation only: a tick that fails to build or send changes nothing about any request.
+          tickTimer = setInterval(() => { try { send(ticks!.next()); } catch { /* a missing tick is a measurement gap, never a verdict */ } }, tickMs);
+          tickTimer.unref();
+        }
+        send({ type: "ready", port: ready });
       } else if (raw.type === "ack") {
         channel?.acknowledge(raw.received);
+      } else if (raw.type === "close_ingress" && front) {
+        send({ type: "ingress_closed", closed: front.closeIngress() });
       } else if (raw.type === "fin" && channel && front && gate && stage) {
         const drained = await channel.drain(3_000);
+        if (ticks) { try { send(ticks.next(true)); } catch { /* see above */ } }
         rssMax = Math.max(rssMax, process.memoryUsage.rss());
         const cpu = process.cpuUsage();
         const advisory: PlaneL2Advisory = {
@@ -91,6 +115,7 @@ export function startPlane(deps: PlaneRuntimeDeps = {}): PlaneRuntimeHandle {
         };
         send({ type: "fin_result", drained, channel: channel.stats(), advisory });
       } else if (raw.type === "stop") {
+        if (tickTimer) clearInterval(tickTimer);
         await front?.close();
         process.exit(0);
       }

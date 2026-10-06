@@ -50,10 +50,10 @@ cidr_list_check() {
 # ufw prints a /32 as the bare address; compare in that form.
 ufw_normalize_cidr() { printf '%s\n' "${1%/32}"; }
 
-# ufw_lab_rules < `ufw status numbered` -> "number|port|from" for every rule carrying the lab comment tag.
+# ufw_lab_rules < `ufw status numbered` -> "number|port|from" for every rule carrying the lab comment tag (ssh, app, or ba0 plane).
 # Handles single-digit numbering ("[ 1]") as well as two digits ("[10]").
 ufw_lab_rules() {
-  sed -nE 's/^\[ *([0-9]+)\][[:space:]]+([0-9]+)\/tcp[[:space:]]+ALLOW IN[[:space:]]+([0-9./]+)[[:space:]]+#[[:space:]]*limitmark-lab (ssh|app)[[:space:]]*$/\1|\2|\3/p'
+  sed -nE 's/^\[ *([0-9]+)\][[:space:]]+([0-9]+)\/tcp[[:space:]]+ALLOW IN[[:space:]]+([0-9./]+)[[:space:]]+#[[:space:]]*limitmark-lab (ssh|app|ba0 plane)[[:space:]]*$/\1|\2|\3/p'
 }
 
 # ufw_lab_rule_numbers < `ufw status numbered` -> rule numbers of every lab rule, highest first (so deleting one does not renumber the next).

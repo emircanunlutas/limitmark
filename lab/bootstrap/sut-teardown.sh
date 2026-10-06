@@ -45,6 +45,8 @@ if [ "$DRY_RUN" = 1 ] || systemctl list-unit-files limitmark-lab-app.service 2>/
 fi
 run rm -f /etc/systemd/system/limitmark-lab-app.service
 run systemctl daemon-reload
+# The one read-only privilege a --ba0-field bootstrap granted the lab user.
+run rm -f /etc/sudoers.d/limitmark-lab-ba0
 
 log "removing the lab PostgreSQL containers and volumes (containers carrying the lab label only)"
 if [ "$DRY_RUN" = 1 ]; then

@@ -31,6 +31,7 @@ export type PolicyRefusalCode =
   | "target-address-forbidden"
   | "workload-unknown"
   | "workload-local-only"
+  | "workload-remote-only"
   | "method-forbidden"
   | "path-forbidden"
   | "path-denied-endpoint"
@@ -383,6 +384,8 @@ function authorizeOne(target: LabTarget, workload: WorkloadSpec, method: TargetM
   checkPath(path);
   if (!workload.paths.includes(path) || !target.allowedPaths.includes(path)) throw new PolicyRefusal("path-forbidden", `${path} is not allowlisted for this workload and target`);
   if (method === "POST" && !POST_PATHS.includes(path)) throw new PolicyRefusal("method-forbidden", "POST is limited to the demo submission path");
+  // A closed-loop workload names its exact requests: nothing outside that list is authorized, even a method and path each of which is allowed.
+  if (workload.fixtures !== undefined && !workload.fixtures.some((fixture) => fixture.method === method && fixture.path === path)) throw new PolicyRefusal("method-forbidden", `${method} ${path} is not one of the workload's reviewed requests`);
   const authorized = Object.freeze({
     method, url: `${target.origin}${path}`, targetId: target.id, path, scheme: target.scheme, host: target.host, port: target.port,
   }) as unknown as AuthorizedRequest;
@@ -408,8 +411,11 @@ export function authorizeRun(request: RunRequest): AuthorizedRun {
   const assertStillAuthorized = () => {
     if (authorizedUntilMs !== null && clock() >= authorizedUntilMs) throw new PolicyRefusal("target-expired", "the target authorization expired while the run was in progress");
   };
-  // Eagerly authorize every (method, path) the workload can issue: any refusal happens now, before any network.
-  for (const method of workload.methods) for (const path of workload.paths) authorizeOne(target, workload, method, path);
+  if (workload.remoteOnly && target.class !== "lab-remote") throw new PolicyRefusal("workload-remote-only", "this workload runs only against a reviewed remote disposable target");
+  // Eagerly authorize every (method, path) the workload can issue: any refusal happens now, before any network. A closed-loop workload names
+  // its exact requests; every other workload is the product of its methods and paths, as before.
+  if (workload.fixtures !== undefined) for (const fixture of workload.fixtures) authorizeOne(target, workload, fixture.method, fixture.path);
+  else for (const method of workload.methods) for (const path of workload.paths) authorizeOne(target, workload, method, path);
   return Object.freeze({
     target,
     workload,

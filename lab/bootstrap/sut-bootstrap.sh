@@ -7,7 +7,14 @@
 # an earlier run added for CIDRs that are no longer supplied, and restarting the application on the new build).
 # Use --dry-run to print every action.
 #
-#   sudo ./sut-bootstrap.sh --i-am-a-disposable-lab-vm [--dry-run]
+#   sudo ./sut-bootstrap.sh --i-am-a-disposable-lab-vm [--dry-run] [--ba0-field]
+#
+# --ba0-field prepares the VM for ONE BA0 field level (the Defense Plane qualification) instead of the Field Lab Next service: the old
+# application service is stopped, disabled and removed (it must not be a parallel exposed target), NO port-3000 firewall rule is added (and
+# any this lab added earlier is removed), the firewall allows exactly ONE port, LAB_BA0_PLANE_PORT, from exactly ONE source, a single /32 in
+# LAB_LOADGEN_CIDRS, and the lab user is given exactly one read-only privilege: `ufw status numbered`, so the field preflight can PROVE the firewall
+# state. Nothing is started: the operator runs the field runner. Extra environment in this mode:
+#   LAB_BA0_PLANE_PORT    the reviewed Defense Plane port (8000..8999, so never the old application port or a database port); LAB_APP_ORIGIN is not used
 #
 # Required environment (all operator-supplied, none stored here):
 #   LAB_REPO_URL          https URL of the repository (no userinfo / credentials)
@@ -22,10 +29,12 @@ umask 027
 
 DRY_RUN=0
 ACK=0
+BA0_FIELD=0
 for argument in "$@"; do
   case "$argument" in
     --dry-run) DRY_RUN=1 ;;
     --i-am-a-disposable-lab-vm) ACK=1 ;;
+    --ba0-field) BA0_FIELD=1 ;;
     *) echo "unknown argument: $argument" >&2; exit 64 ;;
   esac
 done
@@ -74,16 +83,26 @@ fi
 
 : "${LAB_REPO_URL:?LAB_REPO_URL is required}"
 : "${LAB_REPO_COMMIT:?LAB_REPO_COMMIT is required}"
-: "${LAB_APP_ORIGIN:?LAB_APP_ORIGIN is required}"
+if [ "$BA0_FIELD" = 0 ]; then
+  : "${LAB_APP_ORIGIN:?LAB_APP_ORIGIN is required}"
+fi
 : "${LAB_SSH_ALLOW_CIDRS:?LAB_SSH_ALLOW_CIDRS is required}"
 : "${LAB_LOADGEN_CIDRS:?LAB_LOADGEN_CIDRS is required}"
 [[ "$LAB_REPO_URL" =~ ^https://[A-Za-z0-9._/-]+$ ]] || die "LAB_REPO_URL must be a plain https URL without credentials"
 [[ "$LAB_REPO_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "LAB_REPO_COMMIT must be a full 40-hex commit"
-[[ "$LAB_APP_ORIGIN" =~ ^http://([0-9]{1,3}\.){3}[0-9]{1,3}:3000$ ]] || die "LAB_APP_ORIGIN must look like http://203.0.113.10:3000"
-origin_host="${LAB_APP_ORIGIN:7}"; origin_host="${origin_host%:3000}"
-ipv4_to_int "$origin_host" >/dev/null || die "LAB_APP_ORIGIN host is not a valid IPv4 address"
+if [ "$BA0_FIELD" = 0 ]; then
+  [[ "$LAB_APP_ORIGIN" =~ ^http://([0-9]{1,3}\.){3}[0-9]{1,3}:3000$ ]] || die "LAB_APP_ORIGIN must look like http://203.0.113.10:3000"
+  origin_host="${LAB_APP_ORIGIN:7}"; origin_host="${origin_host%:3000}"
+  ipv4_to_int "$origin_host" >/dev/null || die "LAB_APP_ORIGIN host is not a valid IPv4 address"
+fi
 cidr_list_check "$LAB_SSH_ALLOW_CIDRS" "LAB_SSH_ALLOW_CIDRS" || die "invalid LAB_SSH_ALLOW_CIDRS"
 cidr_list_check "$LAB_LOADGEN_CIDRS" "LAB_LOADGEN_CIDRS" || die "invalid LAB_LOADGEN_CIDRS"
+if [ "$BA0_FIELD" = 1 ]; then
+  # One reviewed Plane port, from exactly one authorised generator host (a single /32): nothing broader can be configured in this mode.
+  : "${LAB_BA0_PLANE_PORT:?LAB_BA0_PLANE_PORT is required with --ba0-field}"
+  [[ "$LAB_BA0_PLANE_PORT" =~ ^8[0-9]{3}$ ]] || die "LAB_BA0_PLANE_PORT must be a port in 8000..8999 (never the old application port, a database port or a standard service port)"
+  [[ "$LAB_LOADGEN_CIDRS" =~ ^[0-9.]+/32$ ]] || die "with --ba0-field LAB_LOADGEN_CIDRS must be exactly one /32 (the one authorised generator host)"
+fi
 
 log "validated; dry-run=$DRY_RUN"
 
@@ -105,7 +124,7 @@ install_packages() {
   run env DEBIAN_FRONTEND=noninteractive apt-get update -y
   # docker.io + compose v2 come from the Ubuntu archive: no third-party apt key is added.
   run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates curl git jq xz-utils sysstat ufw docker.io docker-compose-v2 iproute2 procps
+    ca-certificates curl git jq xz-utils sysstat ufw docker.io docker-compose-v2 iproute2 procps sudo
 }
 
 # ---------------------------------------------------------------- node (pinned, digest-verified, re-verified on every run)
@@ -179,8 +198,14 @@ configure_firewall() {
     desired+=("22|$(ufw_normalize_cidr "$cidr")")
   done
   for cidr in "${load_cidrs[@]}"; do
-    run ufw allow from "$cidr" to any port 3000 proto tcp comment 'limitmark-lab app'
-    desired+=("3000|$(ufw_normalize_cidr "$cidr")")
+    if [ "$BA0_FIELD" = 1 ]; then
+      # The reviewed Defense Plane port from the single generator /32 only; port 3000 gets no rule (and an earlier one is removed below).
+      run ufw allow from "$cidr" to any port "$LAB_BA0_PLANE_PORT" proto tcp comment 'limitmark-lab ba0 plane'
+      desired+=("${LAB_BA0_PLANE_PORT}|$(ufw_normalize_cidr "$cidr")")
+    else
+      run ufw allow from "$cidr" to any port 3000 proto tcp comment 'limitmark-lab app'
+      desired+=("3000|$(ufw_normalize_cidr "$cidr")")
+    fi
   done
   if [ "$DRY_RUN" = 1 ]; then
     printf '[dry-run] delete every limitmark-lab ufw rule whose port and source are not in: %s\n' "${desired[*]}"
@@ -209,7 +234,40 @@ build_application() {
   if [ "$DRY_RUN" = 0 ]; then
     [ "$(runuser -u "$LAB_USER" -- git -C "$app" rev-parse HEAD)" = "$LAB_REPO_COMMIT" ] || die "checked-out commit differs from LAB_REPO_COMMIT"
   fi
-  run runuser -u "$LAB_USER" -- bash -c "cd '$app' && npm ci --no-audit --no-fund && npm run build"
+  if [ "$BA0_FIELD" = 1 ]; then
+    # The BA0 runner runs from source (tsx): no Next build is needed, and none is made.
+    run runuser -u "$LAB_USER" -- bash -c "cd '$app' && npm ci --no-audit --no-fund"
+  else
+    run runuser -u "$LAB_USER" -- bash -c "cd '$app' && npm ci --no-audit --no-fund && npm run build"
+  fi
+}
+
+# --ba0-field: the old Field Lab application must not be a parallel exposed target. Stopped, disabled and its unit removed, then proven inactive.
+retire_old_app_service() {
+  log "ba0-field: stopping, disabling and removing the old Field Lab application service"
+  if [ "$DRY_RUN" = 1 ] || systemctl list-unit-files limitmark-lab-app.service 2>/dev/null | grep -q '^limitmark-lab-app.service'; then
+    run systemctl disable --now limitmark-lab-app.service
+  fi
+  run rm -f /etc/systemd/system/limitmark-lab-app.service
+  run systemctl daemon-reload
+  if [ "$DRY_RUN" = 1 ]; then printf '[dry-run] prove the old application service is not active\n'; else
+    if systemctl is-active --quiet limitmark-lab-app.service; then die "the old application service is still active"; fi
+  fi
+}
+
+# --ba0-field: the ONE privilege the lab user gets: reading the firewall status (the field preflight proves the rules from it). Validated with
+# visudo before it is installed; nothing else, no shell, no write.
+install_ba0_sudoers() {
+  log "ba0-field: allowing the lab user one read-only command (ufw status numbered)"
+  local fragment=/etc/sudoers.d/limitmark-lab-ba0
+  if [ "$DRY_RUN" = 1 ]; then printf '[dry-run] write %s allowing only: /usr/sbin/ufw status numbered\n' "$fragment"; else
+    local tmp
+    tmp="$(mktemp)"
+    printf '%s ALL=(root) NOPASSWD: /usr/sbin/ufw status numbered\n' "$LAB_USER" > "$tmp"
+    visudo -cf "$tmp" >/dev/null || { run rm -f "$tmp"; die "the sudoers fragment is invalid"; }
+    run install -m 0440 -o root -g root "$tmp" "$fragment"
+    run rm -f "$tmp"
+  fi
 }
 
 # After a rebuild or an environment change the RUNNING process still has the old code and the old environment:
@@ -224,6 +282,13 @@ verify_app_ready() {
 }
 
 install_app_service() {
+  if [ "$BA0_FIELD" = 1 ]; then
+    # --ba0-field: no application service is installed. The old one is retired and the lab user gets its one read-only privilege.
+    retire_old_app_service
+    install_ba0_sudoers
+    log "ba0-field ready. Next (operator, as the lab user): npm run lab:ba0:field -- --target <id> --level <level> --campaign <id>; start the generator on the other host only after ARMED."
+    return 0
+  fi
   log "installing the application systemd unit"
   local unit=/etc/systemd/system/limitmark-lab-app.service
   if [ "$DRY_RUN" = 1 ]; then printf '[dry-run] write %s\n' "$unit"; else
