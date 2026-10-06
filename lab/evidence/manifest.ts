@@ -19,9 +19,10 @@ export const EVIDENCE_ROOT = path.join(REPOSITORY_ROOT, "artifacts", "lab", "evi
 
 /**
  * BASELINE-VALID / INVALID are the only conclusions a BA0 Slice 1 run may reach; APP-NON-BYPASS-VALID / INVALID the only ones a Slice 2
- * run may. None is PASS: no defense qualification is claimed, and APP-NON-BYPASS-VALID says nothing about network or transport isolation.
+ * run may; LAYER-DIVERSITY-VALID / INVALID the only ones a Slice 3 run may. None is PASS: no defense qualification is claimed, and
+ * APP-NON-BYPASS-VALID says nothing about network or transport isolation.
  */
-export type EvidenceResult = "PASS" | "FAIL" | "STOP" | "REFUSED" | "ERROR" | "BASELINE-VALID" | "APP-NON-BYPASS-VALID" | "INVALID";
+export type EvidenceResult = "PASS" | "FAIL" | "STOP" | "REFUSED" | "ERROR" | "BASELINE-VALID" | "APP-NON-BYPASS-VALID" | "LAYER-DIVERSITY-VALID" | "INVALID";
 
 export type EvidenceEnvironment = {
   os: string;

@@ -9,17 +9,22 @@ import { fork, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { REPOSITORY_ROOT } from "../evidence/manifest";
 import type { PlaneControl, PlaneInit, PlaneMessage } from "../../defense/plane/protocol";
+import type { L2Params } from "../../defense/plane/l2-protocol";
 import type { Collector, PlaneFin } from "./collector";
 
 const PLANE_ENTRY = path.join(REPOSITORY_ROOT, "defense", "plane", "main.ts");
+/** The Slice-3 production entry (L2 always present, no injected dependency). */
+export const PLANE_L2_ENTRY = path.join(REPOSITORY_ROOT, "defense", "plane", "main-l2.ts");
 
-export type PlaneStartOptions = Omit<PlaneInit, "type">;
+/** `l2` is meaningful only to an entry whose composition has L2. */
+export type PlaneStartOptions = Omit<PlaneInit, "type"> & { l2?: L2Params };
 
 export class PlaneProcess {
   private exited = false;
   private stopping = false;
   private finWaiter: ((fin: PlaneFin | null) => void) | null = null;
   private readonly exitWaiters: (() => void)[] = [];
+  private readonly extraListeners: ((message: { type: string }) => void)[] = [];
 
   private constructor(private readonly child: ChildProcess, private readonly collector: Collector, readonly port: number) {
     child.on("message", (raw) => this.onMessage(raw as PlaneMessage));
@@ -31,8 +36,8 @@ export class PlaneProcess {
     });
   }
 
-  static async start(collector: Collector, options: PlaneStartOptions, timeoutMs = 20_000): Promise<PlaneProcess> {
-    const child = fork(PLANE_ENTRY, [], { execArgv: process.execArgv, cwd: REPOSITORY_ROOT, stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json" });
+  static async start(collector: Collector, options: PlaneStartOptions, timeoutMs = 20_000, entry: string = PLANE_ENTRY): Promise<PlaneProcess> {
+    const child = fork(entry, [], { execArgv: process.execArgv, cwd: REPOSITORY_ROOT, stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json" });
     return new Promise<PlaneProcess>((resolve, reject) => {
       let instance: PlaneProcess | null = null;
       const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("the defense plane did not become ready")); }, timeoutMs);
@@ -59,8 +64,16 @@ export class PlaneProcess {
       const fin: PlaneFin = { drained: message.drained, channel: message.channel, advisory: message.advisory };
       this.collector.planeFinished(fin);
       this.finWaiter?.(fin);
+    } else if (typeof (message as { type?: unknown }).type === "string") {
+      for (const listener of this.extraListeners) listener(message as { type: string });
     }
   }
+
+  /** Harness-only: a listener for message types the standard plane protocol does not define (a harness entry's own replies). */
+  onExtra(listener: (message: { type: string }) => void): void { this.extraListeners.push(listener); }
+
+  /** Harness-only: sends a control message the standard protocol does not define. Reachable only over this IPC pipe. */
+  sendControl(message: object): void { if (!this.exited && this.child.connected) this.child.send(message, () => undefined); }
 
   private send(message: PlaneControl): void {
     if (!this.exited && this.child.connected) this.child.send(message, () => undefined);

@@ -18,6 +18,7 @@ import {
   type HarnessEvent, type LifecycleView, type OriginEvent, type PlaneEvent, type TerminalOutcome,
 } from "../../defense/core/ledger";
 import { validateOriginLineage } from "../../defense/core/lineage";
+import { validateL2Lifecycle } from "../../defense/core/l2-lifecycle";
 import type { PlaneAdvisory } from "../../defense/plane/protocol";
 import type { BoundaryStats } from "../../defense/boundary/protocol";
 import type { AppFinStats } from "../../defense/origin/app-protocol";
@@ -119,6 +120,7 @@ export class Collector {
   private capacityExceeded = false;
   private readonly journal: Journal | null;
   private originStreams = false;
+  private laneStreams = false;
   private readonly boundaryStream = new StreamState<BoundaryFin>();
   private readonly appStream = new StreamState<AppFin>();
 
@@ -183,6 +185,18 @@ export class Collector {
       this.journal?.append({
         src: "p", rid: record.rid, seq: event.seq, k: event.kind, reason: event.reason ?? null, stage: event.stage ?? null, err: event.errorKind ?? null,
         status: event.status ?? null, egress: event.egressError ?? null, stripped: event.stripped ?? null, uncorr: event.uncorrelated ?? null,
+        // Slice 3 fields appear only on events that carry them, so a Slice-1/2 journal is byte-for-byte what it was.
+        ...(event.class !== undefined ? { cls2: event.class, lane: event.lane ?? null, out: event.outcome ?? null } : {}),
+        ...(event.shedReason !== undefined ? { shed: event.shedReason } : {}),
+        ...(event.l2ErrorKind !== undefined ? { l2err: event.l2ErrorKind } : {}),
+        ...(event.spent !== undefined ? { spent: event.spent } : {}),
+        ...(event.touched !== undefined ? { touched: event.touched } : {}),
+        ...(event.creditTag !== undefined ? { ctag: event.creditTag } : {}),
+        ...(event.dt !== undefined ? { dt: event.dt, lvl: event.lvl ?? null, lseq: event.lseq ?? null } : {}),
+        ...(event.basis !== undefined ? { basis: event.basis, shadow: event.shadow ?? null } : {}),
+        ...(event.skipReason !== undefined ? { skip: event.skipReason } : {}),
+        ...(event.fill !== undefined ? { fill: event.fill } : {}),
+        ...(event.failStage !== undefined ? { fstage: event.failStage } : {}),
       });
     }
     return this.planeEventsReceived;
@@ -203,6 +217,9 @@ export class Collector {
 
   /** Turns on the boundary/app checks. A Slice-1 run never calls this, so every Slice-1 rule stays exactly as it was. */
   enableOriginStreams(): void { this.originStreams = true; }
+
+  /** Slice 3: the plane composition has L2, so every protected request is validated with the L2 automaton and the L2 rules. */
+  enableLaneStreams(): void { this.laneStreams = true; }
 
   ingestBoundaryFrame(frame: EventFrame<BoundaryEvent>): number {
     const stream = this.boundaryStream;
@@ -294,9 +311,11 @@ export class Collector {
       const view: LifecycleView = {
         nonce: record.nonce, expected: record.meta.lane, harness: record.harness, plane: record.plane, origin: record.origin,
         ...(this.originStreams ? { boundary: record.boundary, app: record.app } : {}),
+        ...(this.laneStreams ? { l2: true } : {}),
       };
       for (const anomaly of validateLifecycle(view, true)) found.push({ ...anomaly, nonce: record.rid });
       for (const anomaly of validateOriginLineage(view, true)) found.push({ ...anomaly, nonce: record.rid });
+      for (const anomaly of validateL2Lifecycle(view, true)) found.push({ ...anomaly, nonce: record.rid });
     }
     if (this.originStreams) {
       const check = (name: "boundary" | "app", state: StreamState<BoundaryFin | AppFin>) => {
