@@ -29,7 +29,8 @@ export type WorkloadId =
   | "demo-submission-post"
   | "app-restart"
   | "postgres-outage"
-  | "ba0-l7-pressure-c1";
+  | "ba0-l7-pressure-c1"
+  | "ba0-l7-pressure-c2";
 
 export type PhaseSpec = {
   name: string;
@@ -142,6 +143,19 @@ const catalogue = [
     ],
     phases: [{ name: "pressure", durationSeconds: 60, ratePerSecond: 25, concurrency: 1, timeoutMs: 5_000 }],
     ceilings: { requestsPerSecond: 25, concurrency: 1, durationSeconds: 60, totalRequests: 1_500 },
+  },
+  {
+    id: "ba0-l7-pressure-c2",
+    description: "BA0 second external L7 qualification level (N equals 2): two closed-loop workers sharing a 25 requests per second aggregate pacing ceiling, the same fixed four-request cycle, no retries, no pipelining. Reviewed target only.",
+    engine: "http-closed-loop", methods: ["GET", "POST"], paths: ["/", "/gizlilik", "/test-talep-et", "/api/public-inquiries"], localOnly: false, remoteOnly: true,
+    fixtures: [
+      { id: "get_home", method: "GET", path: "/" },
+      { id: "get_privacy", method: "GET", path: "/gizlilik" },
+      { id: "get_form", method: "GET", path: "/test-talep-et" },
+      { id: "post_inquiry", method: "POST", path: "/api/public-inquiries" },
+    ],
+    phases: [{ name: "pressure", durationSeconds: 60, ratePerSecond: 25, concurrency: 2, timeoutMs: 5_000 }],
+    ceilings: { requestsPerSecond: 25, concurrency: 2, durationSeconds: 60, totalRequests: 1_500 },
   },
   {
     id: "app-restart",

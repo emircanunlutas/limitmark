@@ -3,11 +3,67 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { requiredLedgerCapacity } from "../defense/core/lanes";
-import { BA0_FIELD_V1, BUDGET_CONSTANTS, ba0FieldFingerprint, evaluateBudgetGates, failedGates, type Ba0FieldThresholds } from "../lab/defense/field-thresholds";
+import { BA0_FIELD_V1, BA0_FIELD_C2_V1, FIELD_LEVELS, fieldLevel, fieldLevelForWorkload, BUDGET_CONSTANTS, ba0FieldFingerprint, evaluateBudgetGates, failedGates, type Ba0FieldThresholds } from "../lab/defense/field-thresholds";
+import { workloadFingerprint } from "../lab/defense/generator-report";
 import { WORKLOADS } from "../lab/policy/workloads";
 
 const root = path.join(__dirname, "..");
 const mutate = (change: (copy: Ba0FieldThresholds) => void): Ba0FieldThresholds => { const copy = structuredClone(BA0_FIELD_V1) as Ba0FieldThresholds; change(copy); return copy; };
+
+test("N=1 historical canonical fingerprints stay pinned and N=2 changes only identity and worker count", () => {
+  assert.equal(ba0FieldFingerprint(BA0_FIELD_V1).sha256, "5f7fbb865fcc8f44219a01af4cb02a48113a20fb75436a7f42f5ddd772b3e625");
+  assert.equal(workloadFingerprint(WORKLOADS["ba0-l7-pressure-c1"]), "a91b1014db56a16b808703b3616a73ab2b8f19492e61de81727737a33a2f5cec");
+  const n2 = BA0_FIELD_C2_V1;
+  assert.equal(n2.id, "ba0-field-c2-v1");
+  assert.deepEqual(n2.level, { ...BA0_FIELD_V1.level, id: "ba0-l7-c2", workers: 2 });
+  assert.deepEqual({ ...n2, id: BA0_FIELD_V1.id, description: BA0_FIELD_V1.description, status: BA0_FIELD_V1.status, level: BA0_FIELD_V1.level }, BA0_FIELD_V1,
+    "all defense, evidence, acceptance, resource, saturation and recovery parameters are identical");
+  assert.equal(n2.canary.jcrMinimum, 1);
+  assert.equal(n2.recovery.quietMs, 135_000);
+  assert.equal(n2.recovery.quietMs, 2 * n2.l2.epochMs + n2.recovery.settleMarginMs);
+  assert.notEqual(ba0FieldFingerprint(n2).sha256, ba0FieldFingerprint(BA0_FIELD_V1).sha256);
+  assert.equal(ba0FieldFingerprint(n2).sha256, "e5173d8dcc1c5c04757ae3e479d5d8410a9ee13d1145e3ddb66efed94f5d658d");
+  assert.notEqual(workloadFingerprint(WORKLOADS["ba0-l7-pressure-c2"]), workloadFingerprint(WORKLOADS["ba0-l7-pressure-c1"]));
+  assert.equal(workloadFingerprint(WORKLOADS["ba0-l7-pressure-c2"]), "0fa05c0ca19bfa898d7784e75d4ae1d403fe7d5ea1324be2ddc9f7d724182239");
+  assert.ok(Object.isFrozen(n2) && Object.isFrozen(n2.level));
+});
+
+test("each participant selects the exact reviewed level independently by level or workload", () => {
+  for (const [id, entry] of Object.entries(FIELD_LEVELS)) {
+    const t = entry.thresholds;
+    const w = WORKLOADS[entry.workload];
+    assert.equal(fieldLevel(id), entry);
+    assert.equal(fieldLevelForWorkload(w.id), entry);
+    assert.deepEqual(w.phases, [{ name: "pressure", durationSeconds: 60, ratePerSecond: 25, concurrency: t.level.workers, timeoutMs: 5_000 }]);
+    assert.deepEqual(w.ceilings, { requestsPerSecond: 25, concurrency: t.level.workers, durationSeconds: 60, totalRequests: 1_500 });
+    assert.deepEqual(w.fixtures?.map(({ method, path }) => ({ method, path })), t.level.fixtureCycle);
+  }
+  for (const id of ["ba0-l7-c3", "toString", "__proto__"]) assert.equal(fieldLevel(id), undefined);
+  assert.equal(fieldLevelForWorkload("burst"), undefined);
+});
+
+test("N=2 fits every unchanged evidence capacity and added proof gates fail when insufficient", () => {
+  const gates = evaluateBudgetGates(BA0_FIELD_C2_V1, 3_600_000);
+  assert.deepEqual(failedGates(gates), []);
+  const checks: [string, (t: Ba0FieldThresholds) => void][] = [
+    ["level.n_equals_two", (t) => { t.level.workers = 1; }],
+    ["external.active_cover_stall", (t) => { t.external.maxActive = 401; }],
+    ["external.orphans_cover_stall", (t) => { t.external.maxOrphans = 526; }],
+    ["external.traces_cover_level", (t) => { t.external.maxTraces = 1_499; }],
+    ["external.recent_cover_level", (t) => { t.external.recentRing = 1_499; }],
+    ["evidence.per_stream_events", (t) => { t.external.maxEventsPerStream = 11; }],
+    ["evidence.per_stream_events", (t) => { t.collector.maxEventsPerRecord = 11; }],
+    ["channel.stall_with_canary_and_burst", (t) => { t.channel.queueCap = 13_727; }],
+    ["hop.replay_with_canary_and_burst", (t) => { t.hop.replayCapacity = 821; }],
+    ["journal.with_origin_events", (t) => { t.collector.maxJournalBytes = 1_000_000; }],
+    ["recovery.quiet_derived", (t) => { t.recovery.quietMs--; }],
+  ];
+  for (const [id, change] of checks) {
+    const t = structuredClone(BA0_FIELD_C2_V1);
+    change(t);
+    assert.ok(failedGates(evaluateBudgetGates(t)).includes(id), id);
+  }
+});
 
 test("ba0-field-v1 is exactly the reviewed provisional N=1 parameter set, and is labelled as such", () => {
   const t = BA0_FIELD_V1;

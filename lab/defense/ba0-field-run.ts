@@ -48,7 +48,7 @@ import { FieldAppProcess, FieldBoundaryProcess } from "./field-processes";
 import { TickMonitor } from "./field-monitor";
 import { realFieldEnvironment, runFieldPreflight, type FieldEnvironment, type PreflightResult } from "./field-preflight";
 import { FieldMachine, runSequence, type SequenceStep, type StepResult } from "./field-state";
-import { BA0_FIELD_V1, ba0FieldFingerprint, evaluateBudgetGates, type Ba0FieldThresholds } from "./field-thresholds";
+import { BA0_FIELD_V1, fieldLevel, ba0FieldFingerprint, evaluateBudgetGates, type Ba0FieldThresholds } from "./field-thresholds";
 import { FIELD_EXIT, decideServerSide, type Reason, type ServerSideDecision } from "./field-verdict";
 import { workloadFingerprint } from "./generator-report";
 import { HopTrustRoot } from "./hop-keys";
@@ -59,9 +59,7 @@ import type { ServerLevelEvidence } from "./reconcile";
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** The reviewed levels. A new level is a code addition with its own parameter set, never an option. */
-export const FIELD_LEVELS: Readonly<Record<string, { workload: "ba0-l7-pressure-c1"; thresholds: Ba0FieldThresholds }>> = Object.freeze({
-  "ba0-l7-c1": { workload: "ba0-l7-pressure-c1", thresholds: BA0_FIELD_V1 },
-});
+export { FIELD_LEVELS } from "./field-thresholds";
 
 export type FieldLevelArgs = { targetId: string; levelId: string; campaignId: string };
 
@@ -141,7 +139,7 @@ function identityReason(id: string): Reason {
 }
 
 export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams = {}): Promise<FieldRunOutcome> {
-  const level = FIELD_LEVELS[args.levelId];
+  const level = fieldLevel(args.levelId);
   const t = seams.thresholds ?? level?.thresholds ?? BA0_FIELD_V1;
   const log = seams.log ?? (() => undefined);
   const clock = () => performance.now();
@@ -152,7 +150,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
   const machine = new FieldMachine(clock);
   const evidence = new EvidenceRun("field-level", args.levelId.slice(0, 30) || "level", startedAt, seams.evidenceRoot ?? EVIDENCE_ROOT);
   const fingerprint = ba0FieldFingerprint(t);
-  const workload = WORKLOADS["ba0-l7-pressure-c1"];
+  const workload = WORKLOADS[level?.workload ?? "ba0-l7-pressure-c1"];
   const workloadHash = workloadFingerprint(workload);
   const lockFile = seams.lockFile ?? path.join(REPOSITORY_ROOT, "artifacts", "lab", "field-run.lock");
   let lockHeld = false;
@@ -660,7 +658,7 @@ async function main(argv: readonly string[]): Promise<number> {
     return result.ok ? 0 : FIELD_EXIT.error;
   }
   if (cli.dryRun) {
-    const level = FIELD_LEVELS[cli.levelId];
+    const level = fieldLevel(cli.levelId);
     if (!level) { console.error("REFUSED  level_not_reviewed"); return FIELD_EXIT.refused; }
     const gates = evaluateBudgetGates(level.thresholds, null);
     console.log(JSON.stringify({ dryRun: true, level: cli.levelId, campaign: cli.campaignId, parameters: ba0FieldFingerprint(level.thresholds), gates: gates.map((gate) => ({ id: gate.id, ok: gate.ok })), networkActivity: false }, null, 2));

@@ -194,3 +194,118 @@ no automatic retries, no pipelining, exact `inFlight` / `maxInFlightObserved`, c
 never a failure and never proof of what the server did. The reviewed workload `ba0-l7-pressure-c1` is remote-only and takes no limit override (its verdict is scoped to the exact reviewed level).
 It writes `generator-report.json` (evidence about the generator only; nothing in it feeds any enforcement decision). The server side is `npm run lab:ba0:field` on the disposable Linux host, and the final verdict
 comes only from `npm run lab:ba0:field:reconcile`. See `defense/README.md` (BA0 field qualification readiness) for the claim vocabulary and the continuous exposure proof, and `lab/bootstrap/README.md` for `--ba0-field`.
+
+### Reviewed BA0 N=2 progression
+
+The user-reported two-host N=1 qualification at `c250fd440018641f67120a36786975b857341555` concluded `EXTERNAL-L7-QUALIFICATION-VALID`;
+master `f6a7ab6399984849ef39fcdb9b28c3247a0f0e23` retains its exact parameter/workload definitions. N=2 is a separate reviewed code entry.
+This progression changes no defense decision, lane capacity, credit behavior, Boundary/App admission, canary acceptance threshold, or evidence capacity.
+One invocation still runs one level. These commands document a future separately authorized campaign; adding the level does not authorize running it.
+
+| Parameter | N=1 | N=2 |
+| --- | --- | --- |
+| Level | `ba0-l7-c1` | `ba0-l7-c2` |
+| Workload | `ba0-l7-pressure-c1` | `ba0-l7-pressure-c2` |
+| Parameter set / version | `ba0-field-v1` / 1 | `ba0-field-c2-v1` / 1 |
+| Planned workers / logical in-flight ceiling | 1 | 2 |
+| Aggregate pacing ceiling | 25 req/s | 25 req/s |
+| Duration / total request ceiling | 60 s / 1,500 | 60 s / 1,500 |
+| Request timeout / response byte ceiling | 5,000 ms / 1,048,576 | 5,000 ms / 1,048,576 |
+| Request cycle | GET home, privacy, form; POST inquiry | identical |
+| Retries / pipelining | 0 / false | 0 / false |
+| Recovery quiet period | 135,000 ms | 135,000 ms |
+| JCR minimum, every required group | 100% | 100% |
+| Generator schedule lag p99 / ELD p99 ceilings | 50 ms / 100 ms | 50 ms / 100 ms |
+
+Canonical SHA-256 fingerprints, pinned in tests:
+
+| Level | Parameters | Workload |
+| --- | --- | --- |
+| N=1 | `5f7fbb865fcc8f44219a01af4cb02a48113a20fb75436a7f42f5ddd772b3e625` | `a91b1014db56a16b808703b3616a73ab2b8f19492e61de81727737a33a2f5cec` |
+| N=2 | `e5173d8dcc1c5c04757ae3e479d5d8410a9ee13d1145e3ddb66efed94f5d658d` | `0fa05c0ca19bfa898d7784e75d4ae1d403fe7d5ea1324be2ddc9f7d724182239` |
+
+The read-only implementation survey found the accidental single-level restrictions in `field-thresholds.ts` (literal level/worker types and N=1 gate),
+`ba0-field-run.ts` (registry and hardcoded workload hash), `lab/run.ts` (hardcoded generator set), `ba0-field-reconcile.ts` (hardcoded limits and manifest fingerprint),
+`policy/workloads.ts` (catalogue/type), and `policy/thresholds.ts` (exclusion from open-loop thresholds). The exact `BA0_FIELD_V1` object, c1 workload,
+default fingerprint, N=1 selftest, and existing N=1 fixtures in field thresholds/workload/run/evidence/preflight, closed-loop, reducer/accounting/reconcile,
+and telemetry tests intentionally describe N=1 and remain valid. Only `lab-workloads.test.ts` and `lab-ba0-field-run.test.ts` asserted a one-entry catalogue.
+The historical field sections in both READMEs describe N=1; this section records the new progression. No worker/rate/level tuning lives in `defense/`.
+
+The existing closed-loop engine already supports N workers with one shared pacing schedule. Starts reserve aggregate 40 ms slots;
+each worker awaits its preceding request's settlement before sending again. Increasing concurrency independently of the offered-rate ceiling is supported.
+Holding 25 req/s, duration, request mix and total fixed is the cleanest next experiment. A different or doubled rate would change both factors.
+Closed-loop backpressure can change achieved throughput, so report observed latency, achieved rate, generator and server maximum in-flight together.
+If responses complete below 40 ms, N=2 may still observe a maximum of one; that result does not demonstrate sustained concurrency-two pressure.
+No artificial latency or burst synchronization is introduced. Low achieved rate alone is not generator saturation: the pinned schedule-lag and ELD checks decide that.
+
+The same unverified budget (capacity 3, refill 1/s) and credited budget (10, 2/s) apply; increased shedding is an observation.
+The window mutation bound remains `3 + floor(windowMs / 1000) + 1`, checked with exact bucket replay.
+Credit state spans two 60-second epochs, so recovery remains `2 * 60,000 + 15,000 = 135,000 ms`.
+Two concurrent requests settle in parallel; the margin still covers the 5,000 ms PB lifetime plus 5,000 ms Plane egress timeout.
+
+All evidence capacities remain unchanged. Preflight evaluates the existing gates plus eight N=2 proofs:
+
+| Budget | Conservative N=2 requirement | Existing capacity |
+| --- | --- | --- |
+| Canary collector records | 320: (46 protected + 18 control journeys) * 5 steps | 4,000 |
+| Per-request events, per stream | Plane 12 / Boundary 7 / App 5 | 32, external and collector |
+| Active reducer records | 2 + ceil(25 * (10 s stall + 5 s grace + 1 s sweep)) = 402 | 1,024 |
+| Orphan reducer records | 2 + ceil(25 * (10 s stall + 10 s grace + 1 s sweep)) = 527 | 1,024 |
+| Decisions including conservative canary allowance | 1,500 + 320 = 1,820 | 20,000 |
+| Full external traces, even if every request is selected | 1,500 | 2,000 |
+| Recently reduced external nonces | 1,500 | 4,096 |
+| Journal including harness and derived origin events | 320 * (24 + 2 + 2) * 256 = 2,293,760 bytes | half of 48 MiB budget |
+| Event queue: 10 s hostile arrivals, burst and ALL canary events | (250 + 2 + 320) * 24 = 13,728 | 16,384; window 8,192 <= queue |
+| Hop replay: existing rate/lifetime safety factor, all canaries and burst | 25 * 5 * 4 + 320 + 2 = 822 | 4,096 |
+| L2 ledger, two epochs of credited admissions | 10 + ceil(2 * 120) + 1 = 251 | 512 |
+| Bloom inserts, treating every external request as a render | 1,500 + 46 + 18 = 1,564; 0.1305% fill; FPR bound 6.45e-21 | 2^23 bits, 7 hashes |
+| External reducer plus channel retained memory bound | 235.8 MiB | 256 MiB evidence-model budget |
+
+The state/channel stall bounds assume healthy bounded evidence delivery; they do not promise lossless collection under arbitrary stalls or malformed traffic.
+Longer stalls, overflow, unresolved requests, missing events, telemetry gaps and journal loss still invalidate the measurement explicitly.
+The memory proof is the existing conservative event-size model, not a JavaScript RSS measurement; runtime RSS/resource ceilings still apply.
+The 90-second window still covers 20-second start slack + 60-second generator + 4-second allowances (84 seconds).
+Stop steps still total 40 seconds within the 45-second cap, and the target still needs at least 900 seconds remaining.
+
+The shared registry selects the server by level and generator by workload, independently before either starts. Parameter and workload hashes bind both views.
+The v1 generator/server schemas already carry string level ids, numeric workers and both hashes, so no schema version or historical reinterpretation is needed.
+G1–G6 cross-level equality remains mandatory. N=2 additionally verifies both inputs against the exact reviewed set, planned workers, zero remaining in-flight,
+aggregate rate ceiling, total ceiling, and conservation of generator response/outcome/fixture fates. The offline manifest uses the selected level's fingerprint.
+Historical N=1 parameters, fingerprints, gate ids/output and reconciliation criteria are unchanged. Cross-level inputs are INVALID.
+Every required journey group must complete at 100%; any legitimate false reject, L2 non-admit, refusal, parity mismatch, unexplained status,
+accounting anomaly, evidence loss or required recovery failure still prevents VALID.
+
+Regression risks are wrong-level selection/hashing, mutation of canonical N=1 JSON, altered historical reconcile semantics,
+accidental per-worker rate multiplication, and weakened legitimate-user/recovery criteria. Tests pin both hashes, both exact parameter sets,
+capacity failures, cross-level refusal, in-flight 2 versus 3, explicit transport failures, saturation boundaries, and unchanged acceptance parameters.
+Local field-runner tests use a deliberately scaled test-only epoch/window and a fake `/proc`; they do not qualify the real N=2 external level.
+The N=1 evidence selftest remains unchanged. No defense source file changes are required.
+
+```text
+npm run lab:ba0:field -- --target <id> --level ba0-l7-c2 --campaign <id> --dry-run
+# A later separately authorized campaign would select ba0-l7-c2 on the server and ba0-l7-pressure-c2 on the generator.
+# Final reconciliation uses the same offline command as N=1.
+```
+
+Validation of this progression on Windows / Node 22.22.0 used local fixtures and loopback only:
+
+| Check | Result |
+| --- | --- |
+| Focused thresholds, workload, reconcile, accounting, external-chain, closed-loop and catalogue suites | 89 passed; no failures, cancellations or skips |
+| Field runner, field evidence/selftest, static field safeguards and reconcile suites | 51 passed; no failures, cancellations or skips |
+| Final reconcile suite including matching-aggregate unexplained 429/5xx rejection | 22 passed |
+| Docker confinement suite with ambient context unset | 27 passed |
+| Existing `lab:ba0:field -- --selftest` | SELFTEST-OK; 13 artifacts written, zero refused |
+| N=2 field dry-run | All 30 applicable gates pass; no network activity; target-lifetime gate also passes with 3,600 seconds remaining |
+| `npm.cmd run typecheck`, `npm.cmd run lint`, `git diff --check` | Pass |
+| Full suite, serialized | 1,477 tests: 1,417 passed, zero failed, one cancelled, 59 skipped; exit 1 |
+
+The full command was `node --import tsx --conditions=react-server --test --test-concurrency=1 tests/*.test.ts`, with `TEST_DATABASE_URL` unset,
+`NEXT_TELEMETRY_DISABLED=1`, and no ambient `DOCKER_CONTEXT`. Skips are the existing database and platform-dependent cases, not passes.
+All Slice-1/2/3 and field regressions pass. The sole cancellation is the unchanged `tests/resend-notification.test.ts` case
+"the HTTPS client bounds calls, sends the official idempotency header, and discards raw errors": "Promise resolution is still pending but the event loop has already resolved".
+It reproduced on a clean local checkout of master `f6a7ab6399984849ef39fcdb9b28c3247a0f0e23` (four passed, one cancelled, no tracked changes);
+another clean-master probe passed, establishing timing dependence. No notification code or test was modified.
+An initial full invocation also failed a confinement test because validation had set an artificial `DOCKER_CONTEXT`; correcting the invocation resolved it.
+Local TAP logs are retained under `artifacts/lab/n2-validation-*.tap`, including the clean-master reproduction. No commit, push, deployment,
+external traffic, real GCP campaign, or cloud/firewall configuration change occurred. N=2 remains prepared for review, not externally qualified.

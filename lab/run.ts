@@ -15,7 +15,7 @@ import { LocalApp } from "./host/local-app";
 import { executeHttpWorkload, warmUp, type EngineResult } from "./load/engine";
 import { runK6 } from "./load/k6";
 import { executeClosedLoop } from "./load/closed-loop";
-import { BA0_FIELD_V1, ba0FieldFingerprint } from "./defense/field-thresholds";
+import { fieldLevelForWorkload, ba0FieldFingerprint } from "./defense/field-thresholds";
 import { buildGeneratorReport, campaignIdPattern, workloadFingerprint } from "./defense/generator-report";
 import { assertSameLabAppContainer, inspectLabContainer } from "./host/docker";
 import { runAppRestart } from "./failure/app-restart";
@@ -251,7 +251,8 @@ async function main(): Promise<number> {
  * runs is exactly the one whose fingerprint the VALID verdict is scoped to.
  */
 async function runClosedLoopLevel(run: AuthorizedRun, args: ParsedArguments, git: ReturnType<typeof collectGitState>, startedAt: Date, refuse: (e: PolicyRefusal, label: string) => number): Promise<number> {
-  const field = BA0_FIELD_V1;
+  const field = fieldLevelForWorkload(run.workload.id)?.thresholds;
+  if (field === undefined) return refuse(new PolicyRefusal("limit-invalid", "closed-loop workload is not a reviewed field level"), "level-not-reviewed");
   if (args.campaign === undefined || !campaignIdPattern.test(args.campaign)) return refuse(new PolicyRefusal("limit-invalid", "--campaign must be a plain label (lowercase letters, digits, hyphens; 6 to 41 characters)"), "bad-campaign");
   if (args.engine !== undefined || args.manageApp || args.appContainer !== undefined || args.k6Netns !== undefined || args.thresholds !== undefined) {
     return refuse(new PolicyRefusal("limit-invalid", "a closed-loop level takes only --target, --workload and --campaign"), "bad-options");
@@ -262,7 +263,7 @@ async function runClosedLoopLevel(run: AuthorizedRun, args: ParsedArguments, git
   const phase = run.limits.phases[0];
   if (phase.concurrency !== field.level.workers || phase.ratePerSecond !== field.level.maxRequestsPerSecond || phase.durationSeconds !== field.level.durationSeconds
     || run.limits.maxTotalRequests !== field.level.maxTotalRequests || phase.timeoutMs !== field.level.requestTimeoutMs) {
-    return refuse(new PolicyRefusal("limit-above-reviewed-ceiling", "the workload catalogue and ba0-field-v1 disagree about the level"), "level-mismatch");
+    return refuse(new PolicyRefusal("limit-above-reviewed-ceiling", `the workload catalogue and ${field.id} disagree about the level`), "level-mismatch");
   }
   const fingerprint = ba0FieldFingerprint(field);
   const workloadHash = workloadFingerprint(run.workload);

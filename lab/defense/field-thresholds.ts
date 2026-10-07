@@ -21,14 +21,14 @@ const EPOCH_MS = 60_000;
 const SETTLE_MARGIN_MS = 15_000;
 
 export type Ba0FieldThresholds = {
-  id: "ba0-field-v1";
+  id: "ba0-field-v1" | "ba0-field-c2-v1";
   version: 1;
   description: string;
   calibration: "provisional-uncalibrated";
-  status: "first level qualification parameters; not production defaults";
+  status: "first level qualification parameters; not production defaults" | "second level qualification parameters; not production defaults";
   level: {
-    id: "ba0-l7-c1";
-    workers: 1;
+    id: "ba0-l7-c1" | "ba0-l7-c2";
+    workers: 1 | 2;
     durationSeconds: number;
     maxRequestsPerSecond: number;
     maxTotalRequests: number;
@@ -96,6 +96,29 @@ export const BA0_FIELD_V1: Ba0FieldThresholds = Object.freeze({
   targetMinRemainingMs: 15 * 60_000,
 }) as Ba0FieldThresholds;
 
+/** Concurrency-only progression: every defense, acceptance and evidence parameter is inherited unchanged. */
+export const BA0_FIELD_C2_V1: Ba0FieldThresholds = Object.freeze({
+  ...BA0_FIELD_V1,
+  id: "ba0-field-c2-v1",
+  description: "BA0 second external L7 qualification level (N equals 2): two closed-loop workers sharing the same aggregate pacing and request ceilings as N equals 1; existing defense behaviour is observational.",
+  status: "second level qualification parameters; not production defaults",
+  level: Object.freeze({ ...BA0_FIELD_V1.level, id: "ba0-l7-c2", workers: 2 }),
+});
+
+/** Shared selection only: both participants independently select the exact reviewed set before running. */
+export const FIELD_LEVELS = Object.freeze({
+  "ba0-l7-c1": Object.freeze({ workload: "ba0-l7-pressure-c1" as const, thresholds: BA0_FIELD_V1 }),
+  "ba0-l7-c2": Object.freeze({ workload: "ba0-l7-pressure-c2" as const, thresholds: BA0_FIELD_C2_V1 }),
+});
+
+export function fieldLevel(id: string): (typeof FIELD_LEVELS)[keyof typeof FIELD_LEVELS] | undefined {
+  return Object.hasOwn(FIELD_LEVELS, id) ? FIELD_LEVELS[id as keyof typeof FIELD_LEVELS] : undefined;
+}
+
+export function fieldLevelForWorkload(id: string): (typeof FIELD_LEVELS)[keyof typeof FIELD_LEVELS] | undefined {
+  return Object.values(FIELD_LEVELS).find((level) => level.workload === id);
+}
+
 export function ba0FieldFingerprint(set: Ba0FieldThresholds = BA0_FIELD_V1): { id: string; version: number; sha256: string } {
   return { id: set.id, version: set.version, sha256: createHash("sha256").update(canonicalJson(set)).digest("hex") };
 }
@@ -140,7 +163,9 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
   // ---- level arithmetic
   gate("level.total_equals_duration_times_rate", set.level.maxTotalRequests === set.level.durationSeconds * set.level.maxRequestsPerSecond,
     `${set.level.maxTotalRequests} requests vs ${set.level.durationSeconds} s x ${set.level.maxRequestsPerSecond} per second`);
-  gate("level.n_equals_one", set.level.workers === 1, `workers ${set.level.workers}`);
+  // Preserve the historical N=1 gate (including its id); N=2 must bind to its distinct reviewed level.
+  if (set.level.id === "ba0-l7-c1") gate("level.n_equals_one", set.level.workers === 1, `workers ${set.level.workers}`);
+  else gate("level.n_equals_two", set.level.id === "ba0-l7-c2" && set.level.workers === 2, `workers ${set.level.workers}`);
   gate("level.window_covers_generator", set.window.hardDeadlineMs >= set.window.startSlackMs + set.level.durationSeconds * 1000 + set.window.setupAllowanceMs + set.window.drainAllowanceMs,
     `deadline ${set.window.hardDeadlineMs} ms vs slack ${set.window.startSlackMs} + generator ${set.level.durationSeconds * 1000} + allowances ${set.window.setupAllowanceMs + set.window.drainAllowanceMs}`);
   gate("level.request_timeout_within_boundary_chain", set.level.requestTimeoutMs >= set.plane.egressTimeoutMs, `generator timeout ${set.level.requestTimeoutMs} ms vs plane egress ${set.plane.egressTimeoutMs} ms`);
@@ -191,6 +216,32 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
   // ---- hop replay state
   const replayNeeded = set.level.maxRequestsPerSecond * (set.hop.pbLifetimeMs / 1000) * 4;
   gate("hop.replay_capacity", set.hop.replayCapacity >= replayNeeded, `capacity ${set.hop.replayCapacity} vs ${replayNeeded} (rate x PB lifetime x 4)`);
+
+  // Additional N=2 proofs only: historical N=1 gate output and interpretation stay unchanged.
+  // Healthy evidence delivery allows a 10 s collector stall and a full telemetry tick before sweeping.
+  // Longer stalls/losses remain explicit runtime anomalies, never an assumption of lossless delivery.
+  if (set.level.id === "ba0-l7-c2") {
+    const stallMs = 10_000;
+    const burst = set.level.workers;
+    const arrivals = (ms: number) => burst + Math.ceil(set.level.maxRequestsPerSecond * ms / 1000);
+    const activeNeeded = arrivals(stallMs + set.external.downstreamGraceMs + set.telemetry.tickMs);
+    const orphanNeeded = arrivals(stallMs + set.external.orphanGraceMs + set.telemetry.tickMs);
+    gate("external.active_cover_stall", set.external.maxActive >= activeNeeded, `capacity ${set.external.maxActive} vs ${activeNeeded} including stall, grace, sweep and burst`);
+    gate("external.orphans_cover_stall", set.external.maxOrphans >= orphanNeeded, `capacity ${set.external.maxOrphans} vs ${orphanNeeded} including stall, grace, sweep and burst`);
+    gate("external.traces_cover_level", set.external.maxTraces >= hostileRequests, `capacity ${set.external.maxTraces} vs all ${hostileRequests} external requests`);
+    gate("external.recent_cover_level", set.external.recentRing >= hostileRequests, `capacity ${set.external.recentRing} vs all ${hostileRequests} external nonces`);
+    const streamMax = Math.max(k.maxPlaneEventsPerRequest, k.maxBoundaryEventsPerRequest, k.maxAppEventsPerRequest);
+    gate("evidence.per_stream_events", set.external.maxEventsPerStream >= streamMax && set.collector.maxEventsPerRecord >= streamMax,
+      `external ${set.external.maxEventsPerStream}, collector ${set.collector.maxEventsPerRecord} vs ${streamMax} events per stream`);
+    // Charge ALL campaign canary events to one stall, stronger than assuming a canary peak rate.
+    const stallEvents = (arrivals(stallMs) + canaryRequests) * eventsPerRequest;
+    gate("channel.stall_with_canary_and_burst", set.channel.queueCap >= stallEvents, `queue ${set.channel.queueCap} vs ${stallEvents} events for stall, all canaries and burst`);
+    const replayWithCanary = replayNeeded + canaryRequests + burst;
+    gate("hop.replay_with_canary_and_burst", set.hop.replayCapacity >= replayWithCanary, `capacity ${set.hop.replayCapacity} vs ${replayWithCanary}`);
+    // The collector also derives up to two legacy origin events for each protected request.
+    const journalWithOrigin = (canaryEvents + 2 * canaryRequests) * k.journalBytesPerEventMax;
+    gate("journal.with_origin_events", journalWithOrigin <= set.collector.maxJournalBytes / 2, `predicted ${mib(journalWithOrigin)} vs half of ${mib(set.collector.maxJournalBytes)}`);
+  }
 
   // ---- telemetry cadence
   gate("telemetry.cadence", Number.isSafeInteger(set.telemetry.tickMs) && set.telemetry.tickMs >= 100 && set.telemetry.tickMs <= 10_000 && set.telemetry.gapToleranceMs >= 2 * set.telemetry.tickMs, `tick ${set.telemetry.tickMs} ms, gap tolerance ${set.telemetry.gapToleranceMs} ms`);

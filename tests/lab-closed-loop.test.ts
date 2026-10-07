@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { after, test } from "node:test";
 import { executeClosedLoop, sendClosedLoop, TRANSPORT_FAILURES, type ClosedLoopResult } from "../lab/load/closed-loop";
 import { buildGeneratorReport } from "../lab/defense/generator-report";
-import { BA0_FIELD_V1, ba0FieldFingerprint } from "../lab/defense/field-thresholds";
+import { BA0_FIELD_V1, BA0_FIELD_C2_V1, ba0FieldFingerprint } from "../lab/defense/field-thresholds";
 import { assertEvidenceSafe } from "../lab/evidence/redact";
 import { authorizeRun, buildRegistry, type AuthorizedRun, type EffectiveLimits } from "../lab/policy/target-policy";
 import { WORKLOADS } from "../lab/policy/workloads";
@@ -96,6 +96,50 @@ test("N workers means at most N in flight: with N=3 the generator reaches exactl
   assert.ok(server.maxActive() <= 3, `server saw ${server.maxActive()}`);
   assert.equal(server.maxPerSocket(), 1, "each worker used its own connection: no pipelining");
   assert.ok(result.connections.new <= 3);
+});
+
+test("reviewed N=2 reaches two in flight under latency, with shared 25/s pacing, exact fates and no retries or pipelining", async () => {
+  const server = await listen((_request, response) => setTimeout(() => ok(response), 120));
+  const run = closedRun(server.port, { concurrency: 2 }, { maxConcurrency: 2, maxTotalRequests: 12 });
+  const result = await executeClosedLoop({ run: { ...run, workload: WORKLOADS["ba0-l7-pressure-c2"] } });
+  assert.equal(result.workers, 2);
+  assert.deepEqual(result.concurrency, { planned: 2, inFlightNow: 0, maxInFlightObserved: 2 });
+  assert.equal(server.maxActive(), 2);
+  assert.equal(server.maxPerSocket(), 1);
+  assert.equal(result.attempted, 12);
+  assert.equal(result.responses, 12);
+  assert.equal(result.transportFailures, 0);
+  assert.equal(server.requests.length, 12);
+  assert.deepEqual(Object.values(result.perFixture).map((entry) => entry.attempted), [3, 3, 3, 3]);
+  assert.equal(result.retries, 0);
+  assert.equal(result.pipelining, false);
+  const report = buildGeneratorReport({ result, runId: "20261006T100000Z-load-aaaaaa", campaignId: "campaign-one", levelId: "ba0-l7-c2", gitSha: "a".repeat(40),
+    paramsFingerprintSha256: ba0FieldFingerprint(BA0_FIELD_C2_V1).sha256, workload: WORKLOADS["ba0-l7-pressure-c2"], targetId: "sut-test", ceilingRatePerSecond: 25 });
+  assert.equal(report.workers, 2);
+  assert.equal(report.levelId, "ba0-l7-c2");
+  assert.doesNotThrow(() => assertEvidenceSafe(report, "$report"));
+});
+
+test("N=2 fast responses retain the aggregate pacing ceiling rather than doubling rate", async () => {
+  const server = await listen((_request, response) => ok(response));
+  const run = closedRun(server.port, { concurrency: 2 }, { maxConcurrency: 2 });
+  const result = await executeClosedLoop({ run: { ...run, workload: WORKLOADS["ba0-l7-pressure-c2"] } });
+  assert.ok(result.attempted <= 26, `shared 25/s pacing: ${result.attempted} attempts in one second`);
+  assert.equal(result.responses, result.attempted);
+  assert.ok(result.concurrency.maxInFlightObserved <= 2);
+});
+
+test("N=2 transport failure remains explicit while the other worker settles, with no new request after failure", async () => {
+  const server = await listen((request, response, _seen, index) => setTimeout(() => { if (index === 0) request.socket.destroy(); else ok(response); }, 150));
+  const run = closedRun(server.port, { concurrency: 2 }, { maxConcurrency: 2 });
+  const result = await executeClosedLoop({ run });
+  assert.equal(result.attempted, 2);
+  assert.equal(result.responses, 1);
+  assert.equal(result.transportFailures, 1);
+  assert.equal(result.outcomes.conn_reset, 1);
+  assert.equal(result.stop.kind, "transport_failure");
+  assert.equal(result.concurrency.inFlightNow, 0);
+  assert.equal(server.requests.length, 2);
 });
 
 test("D7: there are NO automatic retries: a connection reset is recorded once, the generator stops, and the server saw the request exactly once", async () => {

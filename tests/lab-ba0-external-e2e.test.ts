@@ -23,6 +23,7 @@ import { ExternalReducer } from "../lab/defense/external-reducer";
 import { runFieldJourney } from "../lab/defense/field-canary";
 import { HopTrustRoot } from "../lab/defense/hop-keys";
 import { BA0_ORIGIN_LOCAL_V1 } from "../lab/defense/origin-thresholds";
+import { BA0_FIELD_C2_V1 } from "../lab/defense/field-thresholds";
 
 /**
  * The whole external lane, end to end and in one process: the REAL plane front (with L1, the semantic gate, L2 and PB issuance), the REAL Origin
@@ -38,7 +39,7 @@ const L2: L2Params = {
 const HOP = BA0_ORIGIN_LOCAL_V1.hop;
 const FORM = "application/x-www-form-urlencoded";
 
-async function chain() {
+async function chain(l2: L2Params = L2) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ba0-e2e-"));
   const collector = new Collector(path.join(dir, "journal.ndjson"), { maxRequests: 4_000, maxEventsPerRecord: 32, maxJournalBytes: 8 * 1_048_576, maxAnomalies: 200 });
   collector.enableOriginStreams();
@@ -67,8 +68,8 @@ async function chain() {
 
   const planeHop = root.planeInit(HOP.pbLifetimeMs);
   const config = { kid: planeHop.kid, privateKey: importPrivateKey(planeHop.privateKey), boundaryId: planeHop.boundaryId, lifetimeMs: Math.min(planeHop.lifetimeMs, PB_MAX_LIFETIME_MS), now: () => Date.now() };
-  const lanes = new JourneyLanes({ ...L2, mono: () => performance.now(), key: randomBytes(32) });
-  const stage = new L2Stage(lanes, { composer: L2.stage, maxResponseBytes: 1_048_576 });
+  const lanes = new JourneyLanes({ ...l2, mono: () => performance.now(), key: randomBytes(32) });
+  const stage = new L2Stage(lanes, { composer: l2.stage, maxResponseBytes: 1_048_576 });
   let mode: PeerClass = "remote";
   const front = createFront({
     upstream: { host: "127.0.0.1", port: boundaryPort }, emit: planeEmit, layer: new SemanticGate(new ShapeGate()), hop: { issue: (approved, context) => issuePb(config, approved, context) }, l2: stage,
@@ -171,6 +172,44 @@ test("remote requests and a local canary run through the real plane, Boundary an
     assert.equal(report.buckets.unverified.gaps, 0);
     assert.equal(report.buckets.credited.decisions, 1, "the canary's credited admission is part of the replay");
     assert.equal(boundaryStats.rejected, 0);
+  } finally { await c.close(); }
+});
+
+test("N=2 overlapping external lifecycles conserve exactly through the real unchanged defense chain", async () => {
+  const t = BA0_FIELD_C2_V1;
+  const c = await chain(t.l2);
+  try {
+    for (let pair = 0; pair < 3; pair++) {
+      const replies = await Promise.all([request(c.port, "GET", "/gizlilik"), request(c.port, "POST", "/api/public-inquiries", fabricated())]);
+      assert.ok(replies.every((reply) => reply.status === 200 || reply.status === 503));
+      assert.ok(replies.every((reply) => reply.headers["x-ba0-outcome"] === undefined));
+    }
+    assert.equal(c.front.externalStats().inFlightHighWater, 2);
+    assert.equal(c.front.externalStats().inFlight, 0);
+    c.setMode("local");
+    const journey = await runFieldJourney(c.collector, { lane: "protected", host: "127.0.0.1", port: c.port, phase: "recovery", journey: 1, timeoutMs: t.canary.timeoutMs });
+    assert.equal(journey.completed, true);
+    await settle(c.collector, c.reducer);
+    finish(c);
+    c.collector.freeze();
+    const { anomalies, anomalyTotal } = c.collector.finalize();
+    assert.deepEqual(anomalies, []);
+    assert.equal(anomalyTotal, 0);
+    const counters = c.reducer.counters();
+    assert.equal(counters.accepted, 6);
+    assert.equal(counters.reduced, 6);
+    assert.equal(counters.terminal.unresolved ?? 0, 0);
+    assert.equal(counters.status503.unexplained, 0);
+    const accounting = deriveExternalAccounting({
+      external: counters, externalDecisions: c.reducer.decisions(), canary: canaryCounts([...c.collector.allRecords()], 1),
+      planeFin: c.collector.channel.fin, boundaryFin: c.collector.boundaryInfo.fin, appFin: c.collector.appInfo.fin,
+      connections: null, l2: t.l2, windowElapsedMs: 5_000, workers: 2, externalInFlightMax: c.front.externalStats().inFlightHighWater,
+      streams: { planeDropped: 0, boundaryDropped: 0, appDropped: 0, drained: true, finalTicks: { plane: true, boundary: true, app: true }, tickGaps: 0 },
+    });
+    assert.deepEqual(accounting.identities.filter((entry) => !entry.ok), []);
+    assert.equal(accounting.buckets.unverified.mismatches, 0);
+    assert.equal(accounting.buckets.credited.mismatches, 0);
+    await c.collector.closeJournal();
   } finally { await c.close(); }
 });
 

@@ -41,6 +41,15 @@ test("a clean level satisfies every identity E1..E11, and the bucket replay is e
   for (const group of ["e1.", "e2.", "e3.", "e4.", "e5.", "e6.", "e7.", "e8.", "e9.", "e10.", "e11."]) assert.ok(ids.some((id) => id.startsWith(group)), group);
 });
 
+test("N=2 server accounting accepts exactly two in flight and catches three without changing budgets", () => {
+  const input = clean();
+  input.workers = 2;
+  input.externalInFlightMax = 2;
+  assert.deepEqual(failedIds(deriveExternalAccounting(input)), []);
+  input.externalInFlightMax = 3;
+  assert.ok(failedIds(deriveExternalAccounting(input)).includes("e11.external_in_flight_within_n"));
+});
+
 test("E1: an unresolved or double-reduced request breaks the ingress identities", () => {
   assert.ok(failedIds(run((input) => mutateCounters(input, (c) => { c.terminal.unresolved = 1; }))).includes("e1.unresolved_is_zero"));
   assert.ok(failedIds(run((input) => mutateCounters(input, (c) => { c.reduced++; }))).includes("e1.reduced_equals_accepted"));

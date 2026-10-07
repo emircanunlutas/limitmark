@@ -27,6 +27,20 @@ test("the closed-loop level is a coherent reviewed workload: one phase, N worker
   assert.deepEqual(level.fixtures?.map((fixture) => fixture.id), ["get_home", "get_privacy", "get_form", "post_inquiry"]);
 });
 
+test("N=2 authorization pins two workers and preserves remote-only, clean-tree, path and ceiling restrictions", () => {
+  const registry = buildRegistry([remoteTarget()], NOW);
+  const options = { targetId: "sut-test", workloadId: "ba0-l7-pressure-c2" as const, registry, now: NOW, treeIsClean: true };
+  const run = authorizeRun(options);
+  assert.deepEqual(run.limits.phases, [{ name: "pressure", durationSeconds: 60, ratePerSecond: 25, concurrency: 2, timeoutMs: 5_000 }]);
+  assert.equal(run.limits.maxTotalRequests, 1_500);
+  assert.equal(run.workload.remoteOnly, true);
+  assert.throws(() => authorizeRun({ ...options, treeIsClean: false }), refusal("clean-tree-required"));
+  assert.throws(() => authorizeRun({ ...options, targetId: "local-app" }), refusal("workload-remote-only"));
+  assert.throws(() => authorizeRun({ ...options, limits: { maxConcurrency: 3 } }), refusal("limit-above-reviewed-ceiling"));
+  assert.throws(() => authorizeRun({ ...options, limits: { maxRate: 26 } }), refusal("limit-above-reviewed-ceiling"));
+  assert.throws(() => run.authorizeRequest("POST", "/"), refusal("method-forbidden"));
+});
+
 test("the catalogue validator catches a malformed closed-loop workload", () => {
   const clone = (change: (workload: { fixtures?: { id: string; method: string; path: string }[]; phases: { concurrency: number }[]; methods: string[]; paths: string[]; engine: string; localOnly: boolean; remoteOnly: boolean }) => void) => {
     const copy = structuredClone(WORKLOADS["ba0-l7-pressure-c1"]) as unknown as Parameters<typeof change>[0];

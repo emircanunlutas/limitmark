@@ -4,7 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { reconcileLevel, parseReconcileArguments } from "../lab/defense/ba0-field-reconcile";
-import { BA0_FIELD_V1 } from "../lab/defense/field-thresholds";
+import { BA0_FIELD_V1, BA0_FIELD_C2_V1, ba0FieldFingerprint } from "../lab/defense/field-thresholds";
+import { workloadFingerprint } from "../lab/defense/generator-report";
+import { WORKLOADS } from "../lab/policy/workloads";
 import { GENERATOR_REPORT_SCHEMA, parseGeneratorReport, type GeneratorReport } from "../lab/defense/generator-report";
 import { SERVER_LEVEL_SCHEMA, finalFrom, reconcile, type ServerLevelEvidence } from "../lab/defense/reconcile";
 import { EvidenceRun, collectEnvironment, collectGitState, REPOSITORY_ROOT } from "../lab/evidence/manifest";
@@ -37,6 +39,85 @@ function consistent(): { server: ServerLevelEvidence; report: GeneratorReport } 
 
 const codes = (server: ServerLevelEvidence, report: GeneratorReport | null): string[] => reconcile(server, report, LIMITS).reasons.map((reason) => reason.code);
 const failedIds = (server: ServerLevelEvidence, report: GeneratorReport): string[] => reconcile(server, report, LIMITS).identities.filter((entry) => !entry.ok).map((entry) => entry.id);
+
+function consistentN2() {
+  const c = consistent();
+  for (const side of [c.server, c.report]) {
+    side.levelId = "ba0-l7-c2";
+    side.workers = 2;
+    side.paramsFingerprintSha256 = ba0FieldFingerprint(BA0_FIELD_C2_V1).sha256;
+    side.workloadFingerprintSha256 = workloadFingerprint(WORKLOADS["ba0-l7-pressure-c2"]);
+  }
+  c.report.concurrency = { planned: 2, inFlightNow: 0, maxInFlightObserved: 2 };
+  c.server.reconcileInput.externalInFlightMax = 2;
+  return c;
+}
+
+test("N=2 reconciles exactly, refuses both directions of cross-level evidence and catches forged reviewed bindings", () => {
+  const c = consistentN2();
+  assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
+  assert.deepEqual(failedIds(c.server, c.report), []);
+  for (const [server, report] of [[c.server, consistent().report], [consistent().server, c.report]] as const) {
+    assert.equal(finalFrom(server, report, LIMITS).decision.verdict, "INVALID");
+    assert.ok(codes(server, report).includes("identity_binding_mismatch"));
+  }
+  for (const change of [
+    (c: ReturnType<typeof consistentN2>) => { c.server.workers = c.report.workers = 1; },
+    (c: ReturnType<typeof consistentN2>) => { c.server.paramsFingerprintSha256 = c.report.paramsFingerprintSha256 = "e".repeat(64); },
+    (c: ReturnType<typeof consistentN2>) => { c.server.workloadFingerprintSha256 = c.report.workloadFingerprintSha256 = "f".repeat(64); },
+    (c: ReturnType<typeof consistentN2>) => { c.report.concurrency.planned = 1; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.concurrency.inFlightNow = 1; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.rate.ceilingPerSecond = 50; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.attempted = 1_501; },
+  ]) {
+    const c = consistentN2(); change(c);
+    assert.ok(failedIds(c.server, c.report).includes("g6.n2_reviewed_binding"));
+    assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "INVALID");
+  }
+});
+
+test("N=2 saturation, concurrency, missing fates and transport ambiguity cannot yield VALID", () => {
+  for (const change of [
+    (c: ReturnType<typeof consistentN2>) => { c.report.schedule.lagMs.p99 = LIMITS.scheduleLagP99Ms + 1; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.generatorHealth.eldP99Ms = LIMITS.eldP99Ms + 1; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.concurrency.maxInFlightObserved = 3; },
+    (c: ReturnType<typeof consistentN2>) => { c.server.reconcileInput.externalInFlightMax = 3; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.responses--; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.outcomes.ok--; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.perFixture.get_home.attempted--; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.transportFailures = 1; c.report.perFixture.get_home.transportFailures = 1; },
+    (c: ReturnType<typeof consistentN2>) => { (c.report as { pipelining: boolean }).pipelining = true; },
+  ]) {
+    const c = consistentN2(); change(c);
+    assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "INVALID");
+  }
+  const c = consistentN2();
+  c.report.schedule.lagMs.p99 = LIMITS.scheduleLagP99Ms;
+  c.report.generatorHealth.eldP99Ms = LIMITS.eldP99Ms;
+  assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "EXTERNAL-L7-QUALIFICATION-VALID", "ceilings remain inclusive; low achieved rate is not saturation");
+});
+
+test("N=2 retains every legitimate-user and recovery failure as INVALID even with clean generator evidence", () => {
+  for (const code of ["jcr_below_minimum", "legitimate_refusal", "l1_false_reject", "l2_legitimate_non_admit", "parity_mismatch", "latency_envelope_exceeded", "recovery_failed", "residual_denial", "unattributed_503", "ledger_anomaly", "evidence_gap"]) {
+    const c = consistentN2();
+    c.server.serverSide = { status: "invalid", failureClass: "defense", reasons: [{ code }] };
+    assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "INVALID", code);
+  }
+});
+
+test("N=2 cannot hide an unexplained 429 or 5xx behind matching status aggregates", () => {
+  for (const status of ["429", "500", "502", "504"]) {
+    const c = consistentN2();
+    c.report.statuses["200"]--;
+    c.server.reconcileInput.statusHistogram["200"]--;
+    c.report.statuses[status] = c.server.reconcileInput.statusHistogram[status] = 1;
+    assert.ok(failedIds(c.server, c.report).includes("g2.n2_no_unexplained_status"), status);
+    assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "INVALID", status);
+  }
+  const c = consistentN2();
+  c.server.reconcileInput.status503.unexplained = 1;
+  assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "INVALID");
+});
 
 test("two views that agree produce no reasons, every identity holds, and the final verdict is VALID", () => {
   const { server, report } = consistent();
@@ -211,6 +292,23 @@ function serverEvidence(root: string, server: ServerLevelEvidence): string {
   evidence.finalize({ git: collectGitState(), environment: collectEnvironment(), target: null, workload: null, ceilings: null, thresholds: null, engine: "test", result: "SERVER-COMPLETE", resultReasons: [], metrics: {} });
   return evidence.id;
 }
+
+test("offline N=2 reconcile records its exact manifest fingerprint and rejects N=1 generator evidence", () => {
+  const root = testRoot();
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ba0-n2-report-"));
+  try {
+    const { server, report } = consistentN2();
+    const id = serverEvidence(root, server);
+    const reportPath = path.join(tmp, "generator-report.json");
+    fs.writeFileSync(reportPath, JSON.stringify(report));
+    const outcome = reconcileLevel({ serverId: id, reportPath }, root);
+    assert.equal(outcome.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, outcome.evidenceId!, "manifest.json"), "utf8"));
+    assert.deepEqual(manifest.thresholds, ba0FieldFingerprint(BA0_FIELD_C2_V1));
+    fs.writeFileSync(reportPath, JSON.stringify(consistent().report));
+    assert.equal(reconcileLevel({ serverId: id, reportPath }, root).verdict, "INVALID");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(tmp, { recursive: true, force: true }); }
+});
 
 test("the offline reconcile verifies the server evidence's checksums, compares it with the report and writes a final verdict; nothing else produces one", () => {
   const root = testRoot();

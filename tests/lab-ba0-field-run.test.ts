@@ -8,6 +8,8 @@ import { FIELD_LEVELS, parseFieldArguments, runFieldLevel, type AuthorizationLik
 import { DISPOSABLE_MARKER_CONTENT, type FieldEnvironment } from "../lab/defense/field-preflight";
 import { REPOSITORY_ROOT } from "../lab/evidence/manifest";
 import { FakeProc, SSHD } from "./support/fake-proc";
+import { workloadFingerprint } from "../lab/defense/generator-report";
+import { WORKLOADS } from "../lab/policy/workloads";
 
 /**
  * The REAL field runner end to end on loopback: real Defense Plane, Boundary and App child processes (the field entries, with ticks), the real
@@ -179,6 +181,31 @@ test("a full level runs PREFLIGHT -> ... -> DONE: ordered states, every finaliza
 });
 
 // ------------------------------------------------------------------------------------------------ STOP: forensic freeze
+test("N=2 runner uses its own workload binding and preserves complete journeys, accounting, parity and derived recovery", { timeout: 120_000 }, async () => {
+  const r = await rig({ thresholds: fast((t) => { t.id = "ba0-field-c2-v1"; t.level.id = "ba0-l7-c2"; t.level.workers = 2; }) });
+  try {
+    const outcome = await runFieldLevel({ targetId: "sut-test", levelId: "ba0-l7-c2", campaignId: "selftest-campaign" }, r.seams);
+    assert.equal(outcome.status, "complete", JSON.stringify(outcome.serverSide?.reasons));
+    assert.deepEqual(outcome.write!.failed, []);
+    assert.equal(outcome.bundle!.collector.anomalyTotal, 0);
+    assert.deepEqual(outcome.bundle!.accounting!.identities.filter((entry) => !entry.ok), []);
+    assert.equal(outcome.bundle!.canary.jcr.length, 6);
+    assert.ok(outcome.bundle!.canary.jcr.every((entry) => entry.rate === 1));
+    assert.equal(outcome.bundle!.canary.legitimateRefusals, 0);
+    assert.equal(outcome.bundle!.canary.l1FalseRejects, 0);
+    assert.equal(outcome.bundle!.canary.l2NonAdmits, 0);
+    assert.equal(outcome.bundle!.canary.parityMismatches, 0);
+    assert.equal(outcome.bundle!.recovery.ok, true);
+    assert.equal(outcome.bundle!.recovery.quietMs, 2 * r.thresholds.l2.epochMs + r.thresholds.recovery.settleMarginMs);
+    const level = readJson(outcome, "server-level.json");
+    assert.equal(level.levelId, "ba0-l7-c2");
+    assert.equal(level.workers, 2);
+    assert.equal(level.paramsFingerprintSha256, ba0FieldFingerprint(r.thresholds).sha256);
+    assert.equal(level.workloadFingerprintSha256, workloadFingerprint(WORKLOADS["ba0-l7-pressure-c2"]));
+    await assertTornDown(r);
+  } finally { r.cleanup(); }
+});
+
 test("D5: a STOP latches the FIRST reason, closes the ingress at once, blocks new work, drains, snapshots and finalizes BEFORE any process is terminated", { timeout: 120_000 }, async () => {
   let armedAt = 0;
   const r = await rig({
@@ -364,7 +391,7 @@ test("the field command line accepts exactly --target, --level and --campaign (p
     ["--target", "sut-test", "--level", "ba0-l7-c1", "--campaign", "first-campaign", "--target", "other"], ["--target=sut-test", "--level", "ba0-l7-c1", "--campaign", "first-campaign"], ["--target", "sut-test", "--level", "ba0-l7-c1", "--campaign", "x"]]) {
     assert.throws(() => parseFieldArguments(argv), Error, JSON.stringify(argv));
   }
-  assert.deepEqual(Object.keys(FIELD_LEVELS), ["ba0-l7-c1"], "exactly one reviewed level exists");
+  assert.deepEqual(Object.keys(FIELD_LEVELS), ["ba0-l7-c1", "ba0-l7-c2"], "only the two reviewed levels exist");
 });
 
 void NOT_LISTENING;

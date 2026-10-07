@@ -17,6 +17,9 @@
 import type { Identity } from "./accounting";
 import { decideFinal, type FinalDecision, type Reason, type ServerSideDecision } from "./field-verdict";
 import type { GeneratorReport } from "./generator-report";
+import { workloadFingerprint } from "./generator-report";
+import { BA0_FIELD_C2_V1, FIELD_LEVELS, ba0FieldFingerprint } from "./field-thresholds";
+import { WORKLOADS } from "../policy/workloads";
 
 export const SERVER_LEVEL_SCHEMA = "ba0-server-level-v1" as const;
 
@@ -78,6 +81,33 @@ export function reconcile(server: ServerLevelEvidence, report: GeneratorReport |
   identities.push(identity("g6.binding_matches", "campaign, level, commit, parameter and workload fingerprints and N are identical in both inputs", binding.filter(Boolean).length, binding.length));
   if (binding.some((ok) => !ok)) reasons.push({ code: "identity_binding_mismatch" });
 
+  // The new level also verifies its reviewed binding locally. Historical N=1 evidence keeps G1..G6 unchanged.
+  if (server.levelId === "ba0-l7-c2" || report.levelId === "ba0-l7-c2") {
+    const t = BA0_FIELD_C2_V1;
+    const params = ba0FieldFingerprint(t).sha256;
+    const workload = workloadFingerprint(WORKLOADS[FIELD_LEVELS["ba0-l7-c2"].workload]);
+    const reviewed = [server, report].every((side) => side.levelId === t.level.id && side.workers === t.level.workers
+      && side.paramsFingerprintSha256 === params && side.workloadFingerprintSha256 === workload)
+      && report.concurrency.planned === t.level.workers && report.concurrency.inFlightNow === 0
+      && report.rate.ceilingPerSecond === t.level.maxRequestsPerSecond && report.attempted <= t.level.maxTotalRequests;
+    identities.push(identity("g6.n2_reviewed_binding", "both inputs bind the exact reviewed N equals 2 parameters, workload, worker count and ceilings", reviewed ? 0 : 1, 0));
+    if (!reviewed) reasons.push({ code: "identity_binding_mismatch", detail: "n2_reviewed_binding" });
+    const sum = (table: Record<string, number>) => Object.values(table).reduce((total, value) => total + value, 0);
+    const fixtures = Object.values(report.perFixture);
+    // VALID has zero transport ambiguity. Every attempted request must therefore have exactly one reported response and outcome.
+    const fates = report.responses === report.attempted && sum(report.statuses) === report.responses && sum(report.outcomes) === report.attempted
+      && fixtures.reduce((total, item) => total + item.attempted, 0) === report.attempted
+      && fixtures.reduce((total, item) => total + item.responses, 0) === report.responses
+      && fixtures.reduce((total, item) => total + item.transportFailures, 0) === report.transportFailures;
+    identities.push(identity("g1.n2_generator_fates_complete", "all generator attempts, responses, outcomes and fixture fates conserve exactly for a zero-ambiguity VALID level", fates ? 0 : 1, 0));
+    if (!fates) reasons.push({ code: "generator_report_mismatch", detail: "n2_generator_fates" });
+    const unexpectedStatuses = (table: Record<string, number>) => Object.entries(table)
+      .reduce((total, [status, count]) => total + (status === "429" || (Number(status) >= 500 && Number(status) <= 599 && status !== "503") ? count : 0), 0);
+    const unexplained = unexpectedStatuses(report.statuses) + unexpectedStatuses(input.statusHistogram) + input.status503.unexplained;
+    identities.push(identity("g2.n2_no_unexplained_status", "no unreviewed 429 or 5xx response or unattributed 503 exists in either view", unexplained, 0));
+    if (unexplained !== 0) reasons.push({ code: "unexplained_traffic", detail: "n2_response_status" });
+  }
+
   // ---- generator ambiguity: requests whose server-side fate the generator cannot know
   const ambiguity = report.transportFailures;
   if (ambiguity > 0) reasons.push({ code: "generator_ambiguity", detail: `${ambiguity} transport failure(s)` });
@@ -123,6 +153,7 @@ export function reconcile(server: ServerLevelEvidence, report: GeneratorReport |
   identities.push(identity("g5.server_external_in_flight_within_n", "the server's external in-flight never exceeded N", input.externalInFlightMax, Math.min(input.externalInFlightMax, server.workers), input.externalInFlightMax <= server.workers));
   if (report.concurrency.maxInFlightObserved > server.workers || input.externalInFlightMax > server.workers) reasons.push({ code: "generator_in_flight_exceeded" });
   identities.push(identity("g5.no_retries_no_pipelining", "the generator used no retries and no pipelining", report.retries === 0 && !report.pipelining ? 0 : 1, 0));
+  if (server.levelId === "ba0-l7-c2" && (report.retries !== 0 || report.pipelining)) reasons.push({ code: "identity_failed", detail: "g5.no_retries_no_pipelining" });
   const saturated = report.schedule.lagMs.p99 > limits.scheduleLagP99Ms || report.generatorHealth.eldP99Ms > limits.eldP99Ms;
   identities.push(identity("g5.generator_not_saturated", "the generator's schedule lag and event-loop delay stayed under their ceilings", saturated ? 1 : 0, 0));
   if (saturated) reasons.push({ code: "generator_saturation" });

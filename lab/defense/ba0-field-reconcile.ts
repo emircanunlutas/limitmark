@@ -25,7 +25,7 @@ import path from "node:path";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory, verifyEvidenceDirectory } from "../evidence/manifest";
 import { evidenceSafeError } from "../evidence/redact";
 import { NOT_CLAIMED_FIELD, SCOPE_STATEMENT_FIELD } from "./field-evidence";
-import { BA0_FIELD_V1, ba0FieldFingerprint } from "./field-thresholds";
+import { BA0_FIELD_V1, fieldLevel, ba0FieldFingerprint } from "./field-thresholds";
 import { FIELD_EXIT, type FinalVerdict } from "./field-verdict";
 import { parseGeneratorReport, type GeneratorReport } from "./generator-report";
 import { SERVER_LEVEL_SCHEMA, finalFrom, type ReconcileResult, type ServerLevelEvidence } from "./reconcile";
@@ -82,7 +82,9 @@ export function reconcileLevel(cli: ReconcileCli, root: string = EVIDENCE_ROOT, 
       report = parseGeneratorReport(text);
     } catch (error) { return refuse(`generator report unusable: ${evidenceSafeError(error)}`.slice(0, 160)); }
   }
-  const { decision, result } = finalFrom(server, report, BA0_FIELD_V1.generator);
+  // N=1 evidence retains the historical reconciliation contract; the selected set supplies only limits and manifest identity.
+  const field = fieldLevel(server.levelId)?.thresholds ?? BA0_FIELD_V1;
+  const { decision, result } = finalFrom(server, report, field.generator);
   for (const reason of decision.reasons) reasons.push(`${reason.code}${reason.detail ? ` ${reason.detail}` : ""}`);
 
   const evidence = new EvidenceRun("field-final", "reconcile", now, root);
@@ -100,7 +102,7 @@ export function reconcileLevel(cli: ReconcileCli, root: string = EVIDENCE_ROOT, 
     claims: { defenseQualification: "not_claimed", networkNonBypass: "not_measured", originNetworkIsolation: "not_measured", notClaimed: [...NOT_CLAIMED_FIELD] },
   });
   evidence.finalize({
-    git: collectGitState(), environment: collectEnvironment(), target: null, workload: null, ceilings: null, thresholds: ba0FieldFingerprint(BA0_FIELD_V1), engine: "offline-reconcile",
+    git: collectGitState(), environment: collectEnvironment(), target: null, workload: null, ceilings: null, thresholds: ba0FieldFingerprint(field), engine: "offline-reconcile",
     result: decision.verdict === "EXTERNAL-L7-QUALIFICATION-VALID" ? "EXTERNAL-L7-QUALIFICATION-VALID" : decision.verdict === "INVALID" ? "INVALID" : "ABORTED",
     resultReasons: reasons.slice(0, 40).map((reason) => `field.${reason.replace(/[^A-Za-z0-9_. -]/g, "_")}`.slice(0, 200)),
     metrics: { finalVerdict: decision.verdict, failureClass: decision.failureClass, defenseQualification: "not_claimed", networkActivity: false },

@@ -268,6 +268,10 @@ npm run build && npx tsx --conditions=react-server tests/built-form-enrollment.i
 
 # BA0 field qualification readiness (external L7, first level N = 1)
 
+The historical readiness description below is retained for the N=1 implementation. The reviewed N=2 progression is documented in
+[lab/README.md](../lab/README.md#reviewed-ba0-n2-progression): two workers with the same aggregate 25 req/s, 60 s, 1,500-request ceiling,
+defense parameters, evidence capacities, acceptance criteria and derived recovery. The progression modifies no `defense/` source file.
+
 Status: **readiness patch only.** It adds NO defense layer and changes no Slice-1/2/3 decision. It makes the existing system measurable and safely
 operable for the future first authorized external HTTP qualification. Nothing here has been run against an external generator, and the field runner
 itself runs only on a disposable Linux host. The 29 Slice-1/2 files the Slice-3 acceptance pins are still byte-identical; the field entries are NEW files.
