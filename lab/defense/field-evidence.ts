@@ -20,6 +20,7 @@ import type { ServerSideDecision } from "./field-verdict";
 import { SERVER_LEVEL_SCHEMA, type ServerLevelEvidence } from "./reconcile";
 import { EXPOSURE_STATEMENT } from "./exposure-proof";
 import type { ServerN2Measurement } from "./n2-measurement";
+import type { ServerSalvoMeasurement } from "./salvo-measurement";
 
 /** Exact strings the evidence carries about what is NOT claimed. A test pins that no other string over-claims. */
 export const NOT_CLAIMED_FIELD: readonly string[] = Object.freeze([
@@ -58,6 +59,7 @@ export type CanarySummary = {
 
 export type FieldEvidenceBundle = {
   n2?: ServerN2Measurement;
+  salvo?: ServerSalvoMeasurement;
   level: { id: string; campaignId: string; workers: number };
   parameters: { id: string; version: number; sha256: string };
   workloadSha256: string;
@@ -132,6 +134,7 @@ export function writeFieldEvidence(evidence: EvidenceRun, bundle: FieldEvidenceB
     serverSide: { status: bundle.serverSide.status, failureClass: bundle.serverSide.failureClass, reasons: bundle.serverSide.reasons.map((reason) => ({ code: reason.code })) },
     window: bundle.window, reconcileInput: bundle.reconcileInput,
     ...(bundle.n2 ? { n2: bundle.n2 } : {}),
+    ...(bundle.salvo ? { salvo: bundle.salvo } : {}),
   });
   put("external.json", {
     scope: SCOPE_STATEMENT_FIELD, counters: bundle.external, anonymousRefusals: bundle.anonymousRefusals,

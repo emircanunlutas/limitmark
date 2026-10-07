@@ -56,6 +56,7 @@ import { PLANE_L2_ENTRY, PlaneProcess } from "./plane-process";
 import { ProcSampler } from "./proc-sampler";
 import type { ServerLevelEvidence } from "./reconcile";
 import { N2ServerObserver, n2ExerciseSpec } from "./n2-measurement";
+import { SalvoServerObserver } from "./salvo-measurement";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -200,7 +201,8 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
   // ====================================================================================== runtime state
   const baselineAmbient = preflight.ambientNonLoopbackPorts;
   const collector = new Collector(path.join(evidence.directory, "ledger-journal-field.ndjson"), { ...t.collector });
-  const n2 = args.levelId === "ba0-l7-c2" ? new N2ServerObserver(n2ExerciseSpec(t)) : undefined;
+  const salvo = args.levelId === "ba0-l7-c2-salvo" ? new SalvoServerObserver(n2ExerciseSpec(t)) : undefined;
+  const n2 = args.levelId === "ba0-l7-c2" ? new N2ServerObserver(n2ExerciseSpec(t)) : salvo;
   collector.enableOriginStreams();
   collector.enableLaneStreams();
   const reducer = new ExternalReducer({ limits: t.external, allowedShed: t.allowedShed, now: clock, report: (code, rid, detail) => collector.externalAnomaly(code, rid, detail) });
@@ -496,7 +498,8 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       telemetry: { gaps: monitor.tickGaps, gapDetails: monitor.gapDetails(), finalTicks: monitor.finalTicks(), ring: monitor.ring(), harnessEld, peaks },
       connections, externalInFlightMax, processes: { plane: planeFinal, boundary: boundaryFinal, app: appFinal },
       collector: { anomalyTotal, anomalies, records: records.length, journal }, recovery, reconcileInput, anonymousRefusals: reducer.anonymousRefusals(),
-      ...(n2 ? { n2: n2.snapshot() } : {}),
+      ...(args.levelId === "ba0-l7-c2" && n2 ? { n2: n2.snapshot() } : {}),
+      ...(salvo ? { salvo: salvo.snapshotSalvo() } : {}),
     };
     const write = writeFieldEvidence(evidence, bundle);
     const status = serverSide.status;

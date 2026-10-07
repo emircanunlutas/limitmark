@@ -354,3 +354,90 @@ Database URLs and Next telemetry were disabled; no ambient Docker context was se
 and `artifacts/lab/n2-remediation-full.tap`. The sandbox's TSX user lookup failed with `uv_os_get_passwd ENOMEM`; local tests were rerun outside that sandbox.
 No external campaign was run, and no commit, push, deployment or cloud/firewall change was performed. Under fast N=1-like latency,
 the unchanged offered workload is expected to remain unexercised; the remediation makes that result fail qualification instead of manufacturing overlap.
+
+### Separately reviewed N=2 salvo
+
+The field specimen lineage is `aff793e4968cd5615e25665c5437e20d268d744f`. Historical `ba0-l7-c1` and `ba0-l7-c2` retain their parameters,
+workloads, report shapes and reconciliation interpretation. The real `first-gcp-n2` result remains INVALID: completion, exercise and the
+completion-dependent historical phase identity fail. The new level does not reinterpret that evidence.
+
+| Identity | Value |
+| --- | --- |
+| Level | `ba0-l7-c2-salvo` |
+| Workload | `ba0-l7-pressure-c2-salvo` |
+| Parameters | `ba0-field-c2-salvo-v1` |
+| Parameter SHA-256 | `231a5ccd8574f3bb21d61ff160e424636076090bb451c7b43ef5651700ac400f` |
+| Workload SHA-256 | `43ee3f7c0aaacea44384cc7e614eb58fe126bb042698417cf6c65f8f138d4264` |
+
+The isolated scheduler releases 750 pairs at `80 * index` ms, indices 0 through 749, over a full 60-second monotonic phase. The final release is
+59,920 ms. Even pairs send home + privacy; odd pairs send form + inquiry. Both sends begin before either response is awaited. Counts remain
+375 per fixture, 1,125 reads, 375 mutations and a hard maximum of 1,500 requests. No HTTP warm-up is added.
+
+This is 25 requests/second **campaign average**, with burst two and nominal one-second bins alternating 26/24. It changes temporal clustering
+as well as actual concurrency compared with historical C1/C2. A claim isolating concurrency causally needs a fresh separately identified N=1
+control with the same paired release opportunities; historical N=1 is a reference observation. No defense, lane, credit or canary value changes.
+
+Timer wakes always recheck the monotonic not-before time. Every dispatch must be less than 40 ms late. An active pair at the next release,
+excessive lateness, expiry, transport failure or operator abort stops dispatch and latches a non-completion reason. Missed pairs never catch up.
+Only finite schedule exhaustion, all clean fates, full phase duration and bounded drain qualify as `completed`. A hard watchdog acts at 64,000 ms;
+elapsed above 64,000 ms cannot qualify. `total_ceiling` is a safety stop, never normal completion. No request 1501 slot is reserved.
+Authorization is checked at each dispatch and again after the full-duration wait and final drain; expiry after the last response still cannot qualify.
+
+Generator `salvo` evidence records monotonic stop-latch time, per-pair starts/settlements and fixture latency summaries derived from those records.
+Salvo latency summaries measure logical dispatch-to-settlement lifetimes; historical C1/C2 sender latency summaries are unchanged.
+Server `salvo` evidence records the existing source ARMED/CLOSED phase counters/barriers and 750 bounded pair records. Pair association uses
+consecutive external-ingress ordinals; generator waiting for both responses before the next release and zero-ambiguity accounting support that
+association. Arrival order within a pair can reverse. Existing source events are observed; no new defense events or client identity headers are added.
+Only two active nonce associations are retained. Missing, duplicate, malformed, overflowing or temporally inconsistent records cannot qualify.
+
+For each source and pair, opportunity is `P = min(endA-startA, endB-startB)` and actual overlap is
+`O = max(0, min(endA,endB)-max(startA,startB))`. A material pair has positive opportunity and `O >= 0.75 * P`; the generator additionally proves
+start separation at most 0.5 ms. Source lifetimes are independent measurements, not counterfactual service-time estimates.
+
+Qualification requires matching material pair-index sets containing at least 743 pairs. Every planned one-second bin admits at most one missed
+material pair: 12/13 or 11/12. On both sources, the opportunity-weighted ratio including **all** pairs in every planned bin is at least 0.75;
+every actual source-clock second has at least 11 material overlap starts. Planned bins group whole pairs by reviewed release index; actual bins
+use the later start on each emitting source clock. Residency includes each pair's bounded settlement, including any final drain.
+All summaries are derived offline from the bounded records; claimed aggregates cannot override them. Boundaries are evaluated without rounding
+up. The 743 threshold is a preregistered seven-opportunity loss budget, not a statistical confidence level.
+
+Successful pair sets must agree exactly. Thus differing local success sets, including a cold-start phase miss seen only by the generator, can
+invalidate qualification even when each source separately passes aggregate thresholds. This is reported honestly; requests are never held to
+manufacture overlap. Fast requests can qualify with much less than the old 9.6-second absolute residency requirement.
+
+The new completion and phase-only predicates are independent diagnostics and both are mandatory. `final.json` persists their failed subconditions
+and both derived exposure summaries. Phase binding verifies source barriers, zero pre-arm/post-close ingress, complete ingress/settlement counts,
+clean close, every pair's clock bounds and the runner window. The existing 2,000 ms clock agreement is assumed, not measured. Transport ambiguity,
+unexplained 429/5xx, unaccounted 503, retries, pipelining, saturation, server evidence failures and existing legitimate-user/recovery failures remain fatal.
+
+No capacity is resized. Source ingress allows network jitter using `2 * (1 + ceil(intervalMs / 80))` arrivals: consecutive pairs can bunch even
+though the generator releases remain spaced. Normal pairs must settle before the next release; the final pair can only arrive later. Bounds are
+402 active / 528 orphan records, 1,820 decisions, 1,500 traces/recent nonces, 320 canary records,
+12/7/5 events per request per stream, 13,728 queued events for a 10-second stall plus all canaries, and 832 hop replay entries. Existing capacities
+are respectively 1,024 / 1,024, 20,000, 2,000 / 4,096, 4,000, 32 per stream, 16,384 queue entries and 4,096 replay entries. Collector window remains
+8,192. L2 use ledger remains 251 required / 512 available; worst Bloom inserts remain 1,564, with 0.1305% fill and FPR estimate 6.45e-21.
+
+Pair memory conservatively charges both participants and three representations at 512 bytes per pair: `2 * 3 * 750 * 512 = 2,304,000` bytes.
+Modeled external/channel/pair accounting becomes **238.0 MiB / 256 MiB**. Modeled journal including origin events plus both pair JSON artifacts
+is `4,587,520 + 2 * 750 * 512 = 5,355,520` bytes, within half of the enforced 48 MiB journal budget. Pair records are separate JSON evidence,
+not journal lines; this additional charge is conservative. Neither 512 bytes per record/event nor the legacy 256-byte journal value is a runtime
+maximum. Runtime resource ceilings and evidence-loss invalidation remain mandatory. Recovery remains `2 * 60,000 + 15,000 = 135,000` ms.
+
+The synthetic scheduler tests run the exact full schedule on a deterministic clock. The short real HTTP test uses loopback only and intentionally
+aborts after eight responses to verify two keep-alive connections and no pipelining. Neither test qualifies an external field campaign.
+
+Validation against the working tree based on `aff793e4968cd5615e25665c5437e20d268d744f`:
+
+| Check | Result |
+| --- | --- |
+| Focused salvo scheduler, qualification, historical, field, workload and defense static suites | 138 passed; zero failed, cancelled or skipped |
+| Exact historical comparisons | C1/C2 parameters, fingerprints, workload objects, budget gates, reports, all 13 writer artifacts and reconcile scenarios match the field specimen; historical scheduler body is unchanged |
+| Real `first-gcp-n2` evidence reproduction | Exactly the original three failed identities and INVALID result |
+| Typecheck, repository lint, diff check | Pass |
+| Full suite, serialized | 1,524 tests: 1,464 passed, zero failed, one cancelled, 59 skipped; exit 1 |
+
+The full suite includes the final authorization-expiry and delayed-watchdog regressions. Its cancellation is the unchanged notification HTTPS
+test described above, with the same pending-promise/event-loop message. Database and platform skips remain skips. Logs are
+`artifacts/lab/salvo-focused-final.tap`, `artifacts/lab/salvo-full-final.tap`, `artifacts/lab/salvo-typecheck.log` and `artifacts/lab/salvo-lint.log`.
+All 34 applicable capacity gates pass with 3,600 seconds of target lifetime, recorded in `artifacts/lab/salvo-capacity.json`.
+No commit, push, deployment, external host contact, external traffic or cloud/firewall configuration change was performed.

@@ -99,6 +99,7 @@ export function reconcileLevel(cli: ReconcileCli, root: string = EVIDENCE_ROOT, 
     inputs: { server: { runId: cli.serverId, levelSha256: sha256(readFileSync(serverFile)) }, generator: { reportSha256: reportSha ?? "not_supplied" } },
     serverSide: { status: server.serverSide.status, failureClass: server.serverSide.failureClass },
     identities: result.identities, informational: result.informational,
+    ...(result.salvo ? { salvo: result.salvo } : {}),
     claims: { defenseQualification: "not_claimed", networkNonBypass: "not_measured", originNetworkIsolation: "not_measured", notClaimed: [...NOT_CLAIMED_FIELD] },
   });
   evidence.finalize({

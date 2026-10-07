@@ -24,6 +24,8 @@ import { summarizeLatencies, type LatencySummary } from "../policy/thresholds";
 import { syntheticSubmissionBody, type Outcome } from "./engine";
 import { BA0_FIELD_C2_V1 } from "../defense/field-thresholds";
 import { n2ExerciseSpec, OverlapMeter, type GeneratorN2Measurement } from "../defense/n2-measurement";
+import { executeSalvo, type SalvoClock } from "./salvo";
+import type { GeneratorSalvoMeasurement } from "../defense/salvo-measurement";
 
 export const CLOSED_LOOP_SETUP_ALLOWANCE_MS = 2_000;
 export const CLOSED_LOOP_DRAIN_GRACE_MS = 2_000;
@@ -120,7 +122,7 @@ export function sendClosedLoop(request: AuthorizedRequest, run: AuthorizedRun, o
   });
 }
 
-export type ClosedLoopStopKind = "completed" | "deadline" | "total_ceiling" | "transport_failure" | "authorization_expired" | "operator_abort" | "in_flight_exceeded";
+export type ClosedLoopStopKind = "completed" | "deadline" | "total_ceiling" | "transport_failure" | "authorization_expired" | "operator_abort" | "in_flight_exceeded" | "schedule_incomplete";
 
 export type ClosedLoopResult = {
   workers: number;
@@ -146,6 +148,7 @@ export type ClosedLoopResult = {
   retries: 0;
   pipelining: false;
   n2?: GeneratorN2Measurement;
+  salvo?: GeneratorSalvoMeasurement;
 };
 
 export type ClosedLoopOptions = {
@@ -156,12 +159,15 @@ export type ClosedLoopOptions = {
   send?: typeof sendClosedLoop;
   /** The generator stops on the first transport failure (always true for the first field level, N = 1). */
   stopOnTransportFailure?: boolean;
+  /** Deterministic scheduler seam, used only by the separately reviewed salvo engine. */
+  salvoClock?: SalvoClock;
 };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const roundMs = (value: number): number => Math.round(value * 100) / 100;
 
 export async function executeClosedLoop(options: ClosedLoopOptions): Promise<ClosedLoopResult> {
+  if (options.run.workload.id === "ba0-l7-pressure-c2-salvo") return executeSalvo(options);
   const { run } = options;
   const send = options.send ?? sendClosedLoop;
   const stopOnTransport = options.stopOnTransportFailure ?? true;
