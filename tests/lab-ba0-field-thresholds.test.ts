@@ -10,19 +10,22 @@ import { WORKLOADS } from "../lab/policy/workloads";
 const root = path.join(__dirname, "..");
 const mutate = (change: (copy: Ba0FieldThresholds) => void): Ba0FieldThresholds => { const copy = structuredClone(BA0_FIELD_V1) as Ba0FieldThresholds; change(copy); return copy; };
 
-test("N=1 historical canonical fingerprints stay pinned and N=2 changes only identity and worker count", () => {
+test("N=1 historical canonical fingerprints stay pinned; N=2 adds only identity, workers and qualification rules", () => {
   assert.equal(ba0FieldFingerprint(BA0_FIELD_V1).sha256, "5f7fbb865fcc8f44219a01af4cb02a48113a20fb75436a7f42f5ddd772b3e625");
   assert.equal(workloadFingerprint(WORKLOADS["ba0-l7-pressure-c1"]), "a91b1014db56a16b808703b3616a73ab2b8f19492e61de81727737a33a2f5cec");
   const n2 = BA0_FIELD_C2_V1;
   assert.equal(n2.id, "ba0-field-c2-v1");
   assert.deepEqual(n2.level, { ...BA0_FIELD_V1.level, id: "ba0-l7-c2", workers: 2 });
-  assert.deepEqual({ ...n2, id: BA0_FIELD_V1.id, description: BA0_FIELD_V1.description, status: BA0_FIELD_V1.status, level: BA0_FIELD_V1.level }, BA0_FIELD_V1,
+  const { qualification, ...inherited } = n2;
+  assert.deepEqual(qualification, { version: 1, exercise: "cycle-per-tick", completion: "duration-completed", clockAgreementMs: 2000 });
+  assert.equal(Object.hasOwn(BA0_FIELD_V1, "qualification"), false);
+  assert.deepEqual({ ...inherited, id: BA0_FIELD_V1.id, description: BA0_FIELD_V1.description, status: BA0_FIELD_V1.status, level: BA0_FIELD_V1.level }, BA0_FIELD_V1,
     "all defense, evidence, acceptance, resource, saturation and recovery parameters are identical");
   assert.equal(n2.canary.jcrMinimum, 1);
   assert.equal(n2.recovery.quietMs, 135_000);
   assert.equal(n2.recovery.quietMs, 2 * n2.l2.epochMs + n2.recovery.settleMarginMs);
   assert.notEqual(ba0FieldFingerprint(n2).sha256, ba0FieldFingerprint(BA0_FIELD_V1).sha256);
-  assert.equal(ba0FieldFingerprint(n2).sha256, "e5173d8dcc1c5c04757ae3e479d5d8410a9ee13d1145e3ddb66efed94f5d658d");
+  assert.equal(ba0FieldFingerprint(n2).sha256, "cf56f4e3272c9a4cd8257deacf153eaaf154501ceb3749e31179d756134917ab");
   assert.notEqual(workloadFingerprint(WORKLOADS["ba0-l7-pressure-c2"]), workloadFingerprint(WORKLOADS["ba0-l7-pressure-c1"]));
   assert.equal(workloadFingerprint(WORKLOADS["ba0-l7-pressure-c2"]), "0fa05c0ca19bfa898d7784e75d4ae1d403fe7d5ea1324be2ddc9f7d724182239");
   assert.ok(Object.isFrozen(n2) && Object.isFrozen(n2.level));
@@ -45,6 +48,8 @@ test("each participant selects the exact reviewed level independently by level o
 test("N=2 fits every unchanged evidence capacity and added proof gates fail when insufficient", () => {
   const gates = evaluateBudgetGates(BA0_FIELD_C2_V1, 3_600_000);
   assert.deepEqual(failedGates(gates), []);
+  assert.match(gates.find((g) => g.id === "memory.total_budget")!.detail, /modeled 235.8 MiB/);
+  assert.match(gates.find((g) => g.id === "journal.with_origin_events")!.detail, /modeled 4.4 MiB/);
   const checks: [string, (t: Ba0FieldThresholds) => void][] = [
     ["level.n_equals_two", (t) => { t.level.workers = 1; }],
     ["external.active_cover_stall", (t) => { t.external.maxActive = 401; }],

@@ -1,7 +1,6 @@
 /**
  * Field qualification: the parameter set `ba0-field-v1` for the FIRST external L7 qualification level (N = 1), and the preflight BUDGET
- * GATES that prove, before the Plane binds its public address, that the planned level fits the evidence, memory, journal, channel, Bloom
- * and ledger budgets.
+ * GATES that compare the planned level with evidence, modeled memory/journal, channel, Bloom and ledger budgets before any public bind.
  *
  * STATUS: provisional and uncalibrated. These are the reviewed first-level qualification parameters. They are NOT production defaults and
  * NOT calibrated production parameters; the Slice-3 attenuation figures were measured with a scaled-down filter and a two-second epoch and
@@ -58,6 +57,8 @@ export type Ba0FieldThresholds = {
   exposure: { ambientAllowedPorts: readonly number[]; forbiddenAmbientPorts: readonly number[]; forbiddenPlanePorts: readonly number[] };
   stop: { closeIngressMs: number; drainMs: number; finalTelemetryMs: number; snapshotMs: number; finalizeMs: number; terminateMs: number; hardCapMs: number };
   targetMinRemainingMs: number;
+  /** Present only for N=2: qualification rules, never enforcement inputs. */
+  qualification?: { version: 1; exercise: "cycle-per-tick"; completion: "duration-completed"; clockAgreementMs: number };
 };
 
 export const BA0_FIELD_V1: Ba0FieldThresholds = Object.freeze({
@@ -96,13 +97,14 @@ export const BA0_FIELD_V1: Ba0FieldThresholds = Object.freeze({
   targetMinRemainingMs: 15 * 60_000,
 }) as Ba0FieldThresholds;
 
-/** Concurrency-only progression: every defense, acceptance and evidence parameter is inherited unchanged. */
+/** All defense/canary parameters and evidence capacities are inherited; qualification requires N=2 exercise and phase evidence. */
 export const BA0_FIELD_C2_V1: Ba0FieldThresholds = Object.freeze({
   ...BA0_FIELD_V1,
   id: "ba0-field-c2-v1",
   description: "BA0 second external L7 qualification level (N equals 2): two closed-loop workers sharing the same aggregate pacing and request ceilings as N equals 1; existing defense behaviour is observational.",
   status: "second level qualification parameters; not production defaults",
   level: Object.freeze({ ...BA0_FIELD_V1.level, id: "ba0-l7-c2", workers: 2 }),
+  qualification: Object.freeze({ version: 1, exercise: "cycle-per-tick", completion: "duration-completed", clockAgreementMs: 2_000 }),
 });
 
 /** Shared selection only: both participants independently select the exact reviewed set before running. */
@@ -129,13 +131,15 @@ export function ba0FieldFingerprint(set: Ba0FieldThresholds = BA0_FIELD_V1): { i
 
 export type BudgetGate = { id: string; ok: boolean; detail: string };
 
-/** Upper bounds used by the gates: the most events one request can produce in the three streams, and the most bytes one journal line or retained event takes. */
+/** Event-count bounds and byte ACCOUNTING ESTIMATES. Byte estimates are not enforced line/heap maxima or an RSS proof. */
 export const BUDGET_CONSTANTS = Object.freeze({
   maxPlaneEventsPerRequest: 12,
   maxBoundaryEventsPerRequest: 7,
   maxAppEventsPerRequest: 5,
   maxHarnessEventsPerRequest: 2,
   journalBytesPerEventMax: 256,
+  // Preserve the historical N=1 arithmetic. Its legacy "Max" name is an estimate: a credited line can exceed 256 bytes.
+  n2JournalBytesPerEventEstimate: 512,
   memoryBytesPerEventMax: 512,
   memoryBudgetBytes: 256 * 1_048_576,
   canaryStepsPerJourney: 5,
@@ -190,8 +194,9 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
 
   // ---- journal: what the collector writes live (the canary and harness events; external traces are written at finalization)
   const canaryEvents = canaryRequests * (eventsPerRequestForCanary() + k.maxHarnessEventsPerRequest);
-  const journalBytes = canaryEvents * k.journalBytesPerEventMax;
-  gate("journal.budget", journalBytes <= set.collector.maxJournalBytes / 2, `predicted ${mib(journalBytes)} vs half of ${mib(set.collector.maxJournalBytes)}`);
+  const n2 = set.level.id === "ba0-l7-c2";
+  const journalBytes = canaryEvents * (n2 ? k.n2JournalBytesPerEventEstimate : k.journalBytesPerEventMax);
+  gate("journal.budget", journalBytes <= set.collector.maxJournalBytes / 2, `${n2 ? "modeled" : "predicted"} ${mib(journalBytes)} vs half of ${mib(set.collector.maxJournalBytes)}`);
   gate("collector.records_budget", canaryRequests + set.external.maxTraces < set.collector.maxRequests + set.external.maxTraces && canaryRequests <= set.collector.maxRequests, `canary requests ${canaryRequests} vs maxRequests ${set.collector.maxRequests}`);
 
   // ---- external lane memory bounds (explicit, finite)
@@ -202,10 +207,10 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
   const recentBytes = set.external.recentRing * 64;
   const channelBytes = 3 * (set.channel.queueCap + set.channel.windowCap) * k.memoryBytesPerEventMax;
   const total = stateBytes + traceBytes + decisionBytes + recentBytes + channelBytes;
-  gate("external.state_memory", stateBytes <= k.memoryBudgetBytes / 2, `active plus orphan state at most ${mib(stateBytes)}`);
-  gate("external.trace_memory", traceBytes <= k.memoryBudgetBytes / 2, `retained traces at most ${mib(traceBytes)}`);
+  gate("external.state_memory", stateBytes <= k.memoryBudgetBytes / 2, `active plus orphan state ${n2 ? "modeled" : "at most"} ${mib(stateBytes)}`);
+  gate("external.trace_memory", traceBytes <= k.memoryBudgetBytes / 2, `retained traces ${n2 ? "modeled" : "at most"} ${mib(traceBytes)}`);
   gate("external.decisions_cover_level", set.external.maxDecisions >= hostileRequests + canaryRequests, `decision cap ${set.external.maxDecisions} vs ${hostileRequests} hostile plus ${canaryRequests} canary requests`);
-  gate("memory.total_budget", total <= k.memoryBudgetBytes, `external lane plus channels at most ${mib(total)} vs ${mib(k.memoryBudgetBytes)}`);
+  gate("memory.total_budget", total <= k.memoryBudgetBytes, `external lane plus channels ${n2 ? "modeled" : "at most"} ${mib(total)} vs ${mib(k.memoryBudgetBytes)}`);
 
   // ---- channel: the queue must absorb a collector stall at the level's peak event rate
   const peakEventsPerSecond = set.level.maxRequestsPerSecond * eventsPerRequest;
@@ -239,8 +244,8 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
     const replayWithCanary = replayNeeded + canaryRequests + burst;
     gate("hop.replay_with_canary_and_burst", set.hop.replayCapacity >= replayWithCanary, `capacity ${set.hop.replayCapacity} vs ${replayWithCanary}`);
     // The collector also derives up to two legacy origin events for each protected request.
-    const journalWithOrigin = (canaryEvents + 2 * canaryRequests) * k.journalBytesPerEventMax;
-    gate("journal.with_origin_events", journalWithOrigin <= set.collector.maxJournalBytes / 2, `predicted ${mib(journalWithOrigin)} vs half of ${mib(set.collector.maxJournalBytes)}`);
+    const journalWithOrigin = (canaryEvents + 2 * canaryRequests) * k.n2JournalBytesPerEventEstimate;
+    gate("journal.with_origin_events", journalWithOrigin <= set.collector.maxJournalBytes / 2, `modeled ${mib(journalWithOrigin)} vs half of ${mib(set.collector.maxJournalBytes)}`);
   }
 
   // ---- telemetry cadence

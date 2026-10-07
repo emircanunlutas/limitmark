@@ -57,6 +57,11 @@ export type PlaneTickData = {
 };
 export type PlaneTick = Tick<PlaneTickData>;
 
+/** N=2 observation barrier: source-clock/sequence watermark, with no admission or listener effect. IPC only. */
+export type MeasurementBarrier = {
+  phase: "armed" | "closed"; seq: number; atMs: number; wallAt: string; acceptedExternal: number; inFlightExternal: number;
+};
+
 export type PlaneL2Advisory = PlaneAdvisory & {
   l2: { composer: ComposerStats; occupancy: number; lanes: LanesSnapshot };
   /** True only when a harness-only verdict-override implementation was injected. A normal entry always reports false. */

@@ -270,7 +270,8 @@ npm run build && npx tsx --conditions=react-server tests/built-form-enrollment.i
 
 The historical readiness description below is retained for the N=1 implementation. The reviewed N=2 progression is documented in
 [lab/README.md](../lab/README.md#reviewed-ba0-n2-progression): two workers with the same aggregate 25 req/s, 60 s, 1,500-request ceiling,
-defense parameters, evidence capacities, acceptance criteria and derived recovery. The progression modifies no `defense/` source file.
+defense parameters, evidence capacities, legitimate-user criteria and derived recovery. N=2 adds completion, repeated concurrency exposure and measurement-phase
+qualification evidence. Its IPC-only Plane observation barrier reports source timestamps, event watermarks and external counters; it changes no defense decision.
 
 Status: **readiness patch only.** It adds NO defense layer and changes no Slice-1/2/3 decision. It makes the existing system measurable and safely
 operable for the future first authorized external HTTP qualification. Nothing here has been run against an external generator, and the field runner

@@ -50,8 +50,112 @@ function consistentN2() {
   }
   c.report.concurrency = { planned: 2, inFlightNow: 0, maxInFlightObserved: 2 };
   c.server.reconcileInput.externalInFlightMax = 2;
+  c.report.attempted = c.report.responses = c.server.reconcileInput.externalAccepted = 1500;
+  c.report.statuses = { "200": 1200, "503": 300 };
+  c.report.outcomes = { ok: 1200, http_5xx: 300 };
+  c.server.reconcileInput.statusHistogram = { ...c.report.statuses };
+  c.server.reconcileInput.status503 = { total: 300, expectedShed: 300, unexplained: 0 };
+  c.server.reconcileInput.classes = { open: 1125, mutation: 375 };
+  for (const item of Object.values(c.report.perFixture)) item.attempted = item.responses = 375;
+  c.report.connections = { new: 2, reused: 1498 };
+  c.server.reconcileInput.connections.acceptedRemote = 2;
+  const exposure = () => ({ binMs: 1000, overlappingStarts: Array(60).fill(4), overlapMs: Array(60).fill(160) });
+  c.report.n2 = { elapsedMs: 60000, firstDispatchMs: 0, lastDispatchMs: 59960, lastSettlementMs: 59990, exposure: exposure() };
+  c.server.n2 = {
+    armed: { phase: "armed", seq: 0, atMs: 0, wallAt: c.server.window!.openedAt, acceptedExternal: 0, inFlightExternal: 0 },
+    closed: { phase: "closed", seq: 20000, atMs: 70000, wallAt: c.server.window!.closedAt, acceptedExternal: 1500, inFlightExternal: 0 },
+    beforeArmed: 0, inWindow: 1500, afterClosed: 0, settledInWindow: 1500, inFlightAtClose: 0,
+    firstIngressMs: 5000, lastIngressMs: 64960, lastSettlementMs: 64990, faults: 0, exposure: exposure(),
+  };
+  c.server.window!.openedAt = c.report.startedAt;
+  c.server.window!.elapsedMs = 65000;
   return c;
 }
+
+test("N=2 rejects every non-reviewed completion state even when both sides conserve all request fates", () => {
+  for (const kind of ["operator_abort", "authorization_expired", "transport_failure", "deadline", "total_ceiling", "in_flight_exceeded"] as const) {
+    const c = consistentN2(); c.report.stop.kind = kind;
+    assert.ok(failedIds(c.server, c.report).includes("g6.n2_completion"), kind);
+    assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "INVALID", kind);
+  }
+  for (const change of [
+    (c: ReturnType<typeof consistentN2>) => { c.report.n2!.elapsedMs = 59999; c.report.wallClockSeconds = 60; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.n2!.elapsedMs = 64001; c.report.wallClockSeconds = 64; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.stop.detail = "unreviewed"; },
+    (c: ReturnType<typeof consistentN2>) => { delete c.report.n2; },
+  ]) {
+    const c = consistentN2(); change(c);
+    assert.ok(failedIds(c.server, c.report).includes("g6.n2_completion"));
+    assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "INVALID");
+  }
+});
+
+test("NO-GO reproduction: five clean responses then abort between pacing waits cannot qualify a partial N=2 experiment", () => {
+  const c = consistentN2();
+  c.report.attempted = c.report.responses = c.server.reconcileInput.externalAccepted = 5;
+  c.report.statuses = c.server.reconcileInput.statusHistogram = { "200": 5 };
+  c.report.outcomes = { ok: 5 };
+  c.server.reconcileInput.status503 = { total: 0, expectedShed: 0, unexplained: 0 };
+  c.server.reconcileInput.classes = { open: 4, mutation: 1 };
+  Object.values(c.report.perFixture).forEach((item, i) => { item.attempted = item.responses = i === 0 ? 2 : 1; });
+  c.report.stop.kind = "operator_abort";
+  c.report.n2!.elapsedMs = 250; c.report.wallClockSeconds = .25;
+  c.report.endedAt = "2026-10-06T10:00:05.250Z";
+  c.server.n2!.inWindow = c.server.n2!.settledInWindow = c.server.n2!.closed!.acceptedExternal = 5;
+  assert.equal(reconcile(c.server, c.report, LIMITS).identities.find((i) => i.id === "g1.attempted_equals_ingress_plus_preingress")!.ok, true);
+  assert.ok(failedIds(c.server, c.report).includes("g6.n2_completion"));
+  assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "INVALID");
+});
+
+test("NO-GO reproduction: serialized N=2 and a single incidental timer-jitter overlap both fail material exercise", () => {
+  for (const side of ["generator", "server", "both"] as const) {
+    for (const incidental of [false, true]) {
+      const c = consistentN2();
+      for (const exposure of [side !== "server" ? c.report.n2!.exposure : null, side !== "generator" ? c.server.n2!.exposure : null]) {
+        if (!exposure) continue;
+        exposure.overlapMs.fill(0); exposure.overlappingStarts.fill(0);
+        if (incidental) { exposure.overlapMs[30] = 19.76; exposure.overlappingStarts[30] = 1; }
+      }
+      if (!incidental && side !== "server") c.report.concurrency.maxInFlightObserved = 1;
+      if (!incidental && side !== "generator") c.server.reconcileInput.externalInFlightMax = 1;
+      assert.ok(failedIds(c.server, c.report).includes("g5.n2_exercised"));
+      assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "INVALID", `${side} incidental:${incidental}`);
+    }
+  }
+});
+
+test("NO-GO reproduction: pre-ARMED ingress and disagreeing generator/server timing are consequential despite matching totals", () => {
+  const changes = [
+    (c: ReturnType<typeof consistentN2>) => { c.server.n2!.beforeArmed = 63; },
+    // Source barrier catches pre-arm events still queued in IPC, even if a consumer incorrectly called them in-window.
+    (c: ReturnType<typeof consistentN2>) => { c.server.n2!.armed!.acceptedExternal = 63; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.startedAt = "2026-10-06T09:59:57.500Z"; c.report.endedAt = "2026-10-06T10:00:57.500Z"; },
+    (c: ReturnType<typeof consistentN2>) => { c.server.n2!.afterClosed = 1; },
+    (c: ReturnType<typeof consistentN2>) => { c.server.n2!.settledInWindow--; },
+    (c: ReturnType<typeof consistentN2>) => { c.server.n2!.closed!.inFlightExternal = 2; },
+    (c: ReturnType<typeof consistentN2>) => { c.server.n2!.lastSettlementMs = 70001; },
+    (c: ReturnType<typeof consistentN2>) => { c.server.n2!.closed!.atMs = 90001; },
+    (c: ReturnType<typeof consistentN2>) => { c.server.n2!.firstIngressMs = -2500; },
+    (c: ReturnType<typeof consistentN2>) => { c.server.n2!.lastIngressMs! += 2001; },
+    (c: ReturnType<typeof consistentN2>) => { c.report.endedAt = "invalid-time"; },
+    (c: ReturnType<typeof consistentN2>) => { delete c.server.n2; },
+  ];
+  for (const change of changes) {
+    const c = consistentN2(); change(c);
+    assert.ok(failedIds(c.server, c.report).includes("g6.n2_measurement_phase"));
+    assert.equal(finalFrom(c.server, c.report, LIMITS).decision.verdict, "INVALID");
+  }
+});
+
+test("N=1 historical completion and informational timing interpretation are unchanged", () => {
+  const c = consistent();
+  c.report.stop.kind = "operator_abort"; c.report.wallClockSeconds = .25;
+  c.report.startedAt = "2026-10-06T09:59:57.500Z";
+  const result = finalFrom(c.server, c.report, LIMITS);
+  assert.equal(result.result.informational.windowConsistent, false);
+  assert.deepEqual(result.result.reasons, []);
+  assert.equal(result.decision.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
+});
 
 test("N=2 reconciles exactly, refuses both directions of cross-level evidence and catches forged reviewed bindings", () => {
   const c = consistentN2();

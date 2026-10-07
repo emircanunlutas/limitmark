@@ -43,8 +43,9 @@ export type PlaneRuntimeHandle = {
   send(message: unknown): void;
 };
 
-/** init | ack | fin | close_ingress | stop. close_ingress only stops the listener accepting; it is reachable over the IPC pipe alone. */
-type Control = PlaneL2Init | { type: "ack"; received: number } | { type: "fin" } | { type: "close_ingress" } | { type: "stop" };
+/** IPC lifecycle controls plus an observation-only measurement barrier. close_ingress only stops the listener accepting. */
+type Control = PlaneL2Init | { type: "ack"; received: number } | { type: "fin" } | { type: "close_ingress" } | { type: "stop" }
+  | { type: "measurement_barrier"; phase: "armed" | "closed" };
 
 export function startPlane(deps: PlaneRuntimeDeps = {}): PlaneRuntimeHandle {
   if (typeof process.send !== "function") throw new Error("the defense plane must be started with an IPC channel");
@@ -100,6 +101,11 @@ export function startPlane(deps: PlaneRuntimeDeps = {}): PlaneRuntimeHandle {
         send({ type: "ready", port: ready });
       } else if (raw.type === "ack") {
         channel?.acknowledge(raw.received);
+      } else if (raw.type === "measurement_barrier" && channel && front && (raw.phase === "armed" || raw.phase === "closed")) {
+        // N=2 harness observation only. The watermark also classifies events still queued when this reply is sent.
+        const external = front.externalStats();
+        send({ type: "measurement_barrier", phase: raw.phase, seq: channel.stats().lastSeq, atMs: performance.now(), wallAt: new Date().toISOString(),
+          acceptedExternal: external.accepted, inFlightExternal: external.inFlight });
       } else if (raw.type === "close_ingress" && front) {
         send({ type: "ingress_closed", closed: front.closeIngress() });
       } else if (raw.type === "fin" && channel && front && gate && stage) {

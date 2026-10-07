@@ -172,6 +172,7 @@ test("a full level runs PREFLIGHT -> ... -> DONE: ordered states, every finaliza
     assert.equal(core.finalVerdict, "not_decided_here");
     assert.equal(core.serverSide.status, "complete");
     const level = readJson(outcome, "server-level.json") as { schema: string; paramsFingerprintSha256: string; reconcileInput: { externalAccepted: number } };
+    assert.equal(Object.hasOwn(level, "n2"), false, "historical N=1 evidence shape is unchanged");
     assert.equal(level.schema, "ba0-server-level-v1");
     assert.equal(level.paramsFingerprintSha256, ba0FieldFingerprint(r.thresholds).sha256);
     const manifest = readJson(outcome, "manifest.json") as { result: string };
@@ -202,6 +203,13 @@ test("N=2 runner uses its own workload binding and preserves complete journeys, 
     assert.equal(level.workers, 2);
     assert.equal(level.paramsFingerprintSha256, ba0FieldFingerprint(r.thresholds).sha256);
     assert.equal(level.workloadFingerprintSha256, workloadFingerprint(WORKLOADS["ba0-l7-pressure-c2"]));
+    assert.deepEqual(level.n2, outcome.bundle!.n2, "the real writer preserves the source barriers and bounded exposure");
+    assert.equal(outcome.bundle!.n2!.armed!.phase, "armed");
+    assert.equal(outcome.bundle!.n2!.closed!.phase, "closed");
+    assert.equal(outcome.bundle!.n2!.armed!.acceptedExternal, 0);
+    assert.equal(outcome.bundle!.n2!.closed!.inFlightExternal, 0);
+    assert.ok(outcome.bundle!.n2!.closed!.seq > outcome.bundle!.n2!.armed!.seq, "watermark includes intervening canary events");
+    assert.equal(outcome.bundle!.n2!.exposure.overlapMs.length, 5, "scaled test seam; production has 60 intervals");
     await assertTornDown(r);
   } finally { r.cleanup(); }
 });

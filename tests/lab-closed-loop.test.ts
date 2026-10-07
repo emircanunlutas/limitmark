@@ -78,6 +78,7 @@ test("D7: N=1 means exactly one logical request in flight: the generator's own c
   assert.equal(result.stop.kind, "completed");
   assert.equal(result.retries, 0);
   assert.equal(result.pipelining, false);
+  assert.equal(Object.hasOwn(result, "n2"), false);
 });
 
 test("D7: connection reuse is measured SEPARATELY and never changes logical concurrency", async () => {
@@ -117,7 +118,29 @@ test("reviewed N=2 reaches two in flight under latency, with shared 25/s pacing,
     paramsFingerprintSha256: ba0FieldFingerprint(BA0_FIELD_C2_V1).sha256, workload: WORKLOADS["ba0-l7-pressure-c2"], targetId: "sut-test", ceilingRatePerSecond: 25 });
   assert.equal(report.workers, 2);
   assert.equal(report.levelId, "ba0-l7-c2");
+  assert.deepEqual(report.n2, result.n2);
+  assert.equal(report.n2!.exposure.overlappingStarts.length, 60);
+  assert.ok(report.n2!.exposure.overlappingStarts[0] > 0);
+  assert.ok(report.n2!.exposure.overlapMs[0] > 0);
   assert.doesNotThrow(() => assertEvidenceSafe(report, "$report"));
+});
+
+test("NO-GO reproduction: abort between pacing waits yields five clean fates but incomplete N=2 duration evidence", async () => {
+  const controller = new AbortController();
+  const run = closedRun(1, { concurrency: 2 }, { maxConcurrency: 2 });
+  let sends = 0;
+  const result = await executeClosedLoop({
+    run: { ...run, workload: WORKLOADS["ba0-l7-pressure-c2"] }, signal: controller.signal,
+    send: async () => {
+      if (++sends === 5) setTimeout(() => controller.abort(), 1);
+      return { outcome: "ok", status: 200, latencyMs: 0, wireBytesSent: 0, wireBytesReceived: 0, bodyBytesReceived: 0, reusedSocket: sends > 1 };
+    },
+  });
+  assert.equal(result.attempted, 5); assert.equal(result.responses, 5); assert.equal(result.transportFailures, 0);
+  assert.equal(result.stop.kind, "operator_abort");
+  assert.equal(result.concurrency.inFlightNow, 0);
+  assert.ok(result.n2!.elapsedMs < 1000);
+  assert.equal(result.n2!.exposure.overlappingStarts.reduce((a, b) => a + b, 0), 0);
 });
 
 test("N=2 fast responses retain the aggregate pacing ceiling rather than doubling rate", async () => {

@@ -110,10 +110,10 @@ test("the override port and the L2 port are interface-only: no runtime export ex
   }
 });
 
-test("the plane runtime handles exactly init | ack | close_ingress | fin | stop: no fault, collapse or probe message exists in any production file", () => {
+test("the plane runtime handles lifecycle controls and an observation-only measurement barrier: no fault, collapse or probe message", () => {
   const types = [...code("defense/plane/runtime.ts").matchAll(/raw\.type === "([a-z_:]+)"/g)].map((match) => match[1]);
   // close_ingress (field qualification) only stops the listener accepting; it is reachable over the IPC pipe alone and changes no decision.
-  assert.deepEqual(types, ["init", "ack", "close_ingress", "fin", "stop"]);
+  assert.deepEqual(types, ["init", "ack", "measurement_barrier", "close_ingress", "fin", "stop"]);
   for (const file of ["defense/plane/runtime.ts", "defense/plane/main-l2.ts", "defense/plane/l2-protocol.ts", "defense/plane/l2-stage.ts"]) {
     assert.doesNotMatch(code(file), /["']fault["']|collapse|probe|armId/i, file);
   }

@@ -22,6 +22,8 @@ import { HARD_CEILINGS } from "../policy/workloads";
 import { isAuthorizedRequest, type AuthorizedRequest, type AuthorizedRun, type TargetMethod } from "../policy/target-policy";
 import { summarizeLatencies, type LatencySummary } from "../policy/thresholds";
 import { syntheticSubmissionBody, type Outcome } from "./engine";
+import { BA0_FIELD_C2_V1 } from "../defense/field-thresholds";
+import { n2ExerciseSpec, OverlapMeter, type GeneratorN2Measurement } from "../defense/n2-measurement";
 
 export const CLOSED_LOOP_SETUP_ALLOWANCE_MS = 2_000;
 export const CLOSED_LOOP_DRAIN_GRACE_MS = 2_000;
@@ -143,6 +145,7 @@ export type ClosedLoopResult = {
   /** Constants of this engine, recorded so the report states them rather than implying them. */
   retries: 0;
   pipelining: false;
+  n2?: GeneratorN2Measurement;
 };
 
 export type ClosedLoopOptions = {
@@ -171,11 +174,16 @@ export async function executeClosedLoop(options: ClosedLoopOptions): Promise<Clo
   let stop: { kind: ClosedLoopStopKind; detail: string | null } = { kind: "completed", detail: null };
   const stopWith = (kind: ClosedLoopStopKind, detail: string | null): void => { if (stop.kind === "completed") stop = { kind, detail }; };
   const wallStart = performance.now();
+  const overlap = run.workload.id === "ba0-l7-pressure-c2" ? new OverlapMeter(n2ExerciseSpec(BA0_FIELD_C2_V1)) : undefined;
+  let firstDispatchMs: number | null = null; let lastDispatchMs: number | null = null; let lastSettlementMs: number | null = null;
   const phaseEnd = wallStart + phase.durationSeconds * 1000;
   const startedAt = new Date();
   const dispatchDeadline = wallStart + run.limits.maxDurationSeconds * 1000 + CLOSED_LOOP_SETUP_ALLOWANCE_MS;
   const hardStop = new AbortController();
-  const hardStopTimer = setTimeout(() => hardStop.abort(), run.limits.maxDurationSeconds * 1000 + CLOSED_LOOP_SETUP_ALLOWANCE_MS + CLOSED_LOOP_DRAIN_GRACE_MS);
+  const hardStopTimer = setTimeout(() => {
+    if (overlap) stopWith("deadline", null);
+    hardStop.abort();
+  }, run.limits.maxDurationSeconds * 1000 + CLOSED_LOOP_SETUP_ALLOWANCE_MS + CLOSED_LOOP_DRAIN_GRACE_MS);
   const onCallerAbort = () => { if (stop.kind === "completed") stop = { kind: "operator_abort", detail: null }; hardStop.abort(); };
   if (options.signal?.aborted) onCallerAbort(); else options.signal?.addEventListener("abort", onCallerAbort, { once: true });
 
@@ -198,7 +206,7 @@ export async function executeClosedLoop(options: ClosedLoopOptions): Promise<Clo
 
   async function worker(): Promise<void> {
     while (!stopped()) {
-      // Pacing ceiling: starts are at least intervalMs apart across all workers; a slot is taken before sleeping so workers cannot burst.
+      // Slots share one aggregate schedule. Overdue sleepers can start together; the finite burst is bounded by workers.
       const now = performance.now();
       // The level's duration is the normal end (the run is "completed"); the dispatch deadline is only the backstop against a stuck schedule.
       if (now >= phaseEnd) return;
@@ -214,6 +222,11 @@ export async function executeClosedLoop(options: ClosedLoopOptions): Promise<Clo
       const fixture = fixtures[index];
       attempted++;
       inFlight++;
+      if (overlap) {
+        const at = performance.now() - wallStart;
+        firstDispatchMs ??= at; lastDispatchMs = at;
+        overlap.change(at, inFlight, true);
+      }
       if (inFlight > maxInFlight) maxInFlight = inFlight;
       lags.push(Math.max(0, performance.now() - slot));
       if (inFlight > workers) stopWith("in_flight_exceeded", `${inFlight} in flight with ${workers} workers`);
@@ -227,12 +240,14 @@ export async function executeClosedLoop(options: ClosedLoopOptions): Promise<Clo
       } catch (error) {
         // The sender refuses (an unauthorized request or an expired authorization) before opening a socket: nothing was attempted on the wire.
         inFlight--;
+        if (overlap) { lastSettlementMs = performance.now() - wallStart; overlap.change(lastSettlementMs, inFlight); }
         attempted--;
         perFixture[fixture.id].attempted--;
         stopWith("authorization_expired", error instanceof Error ? error.name : "error");
         return;
       }
       inFlight--;
+      if (overlap) { lastSettlementMs = performance.now() - wallStart; overlap.change(lastSettlementMs, inFlight); }
       latencies.push(result.latencyMs);
       wireSent += result.wireBytesSent; wireReceived += result.wireBytesReceived; bodyReceived += result.bodyBytesReceived;
       if (result.reusedSocket === true) reusedSockets++; else if (result.reusedSocket === false) newSockets++;
@@ -268,5 +283,6 @@ export async function executeClosedLoop(options: ClosedLoopOptions): Promise<Clo
     generatorHealth: { eldP50Ms: roundMs(loopLag.p50), eldP99Ms: roundMs(loopLag.p99), eldMaxMs: roundMs(loopLag.max), cpuUserMs: Math.round(cpu.user / 1000), cpuSystemMs: Math.round(cpu.system / 1000), rssMb: Math.round(process.memoryUsage.rss() / 1_048_576) },
     startedAt: startedAt.toISOString(), endedAt: new Date().toISOString(), wallClockSeconds: round((performance.now() - wallStart) / 1000),
     stop, retries: 0, pipelining: false,
+    ...(overlap ? { n2: { elapsedMs: performance.now() - wallStart, firstDispatchMs, lastDispatchMs, lastSettlementMs, exposure: overlap.snapshot() } } : {}),
   };
 }

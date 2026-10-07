@@ -222,7 +222,7 @@ Canonical SHA-256 fingerprints, pinned in tests:
 | Level | Parameters | Workload |
 | --- | --- | --- |
 | N=1 | `5f7fbb865fcc8f44219a01af4cb02a48113a20fb75436a7f42f5ddd772b3e625` | `a91b1014db56a16b808703b3616a73ab2b8f19492e61de81727737a33a2f5cec` |
-| N=2 | `e5173d8dcc1c5c04757ae3e479d5d8410a9ee13d1145e3ddb66efed94f5d658d` | `0fa05c0ca19bfa898d7784e75d4ae1d403fe7d5ea1324be2ddc9f7d724182239` |
+| N=2 remediated | `cf56f4e3272c9a4cd8257deacf153eaaf154501ceb3749e31179d756134917ab` | `0fa05c0ca19bfa898d7784e75d4ae1d403fe7d5ea1324be2ddc9f7d724182239` |
 
 The read-only implementation survey found the accidental single-level restrictions in `field-thresholds.ts` (literal level/worker types and N=1 gate),
 `ba0-field-run.ts` (registry and hardcoded workload hash), `lab/run.ts` (hardcoded generator set), `ba0-field-reconcile.ts` (hardcoded limits and manifest fingerprint),
@@ -233,10 +233,36 @@ The historical field sections in both READMEs describe N=1; this section records
 
 The existing closed-loop engine already supports N workers with one shared pacing schedule. Starts reserve aggregate 40 ms slots;
 each worker awaits its preceding request's settlement before sending again. Increasing concurrency independently of the offered-rate ceiling is supported.
-Holding 25 req/s, duration, request mix and total fixed is the cleanest next experiment. A different or doubled rate would change both factors.
+Overdue sleepers can dispatch together after an event-loop stall; the instantaneous burst is bounded by the two workers.
+Holding 25 req/s, duration, request mix and total fixed isolates the concurrency progression. A different or doubled rate would change both factors.
 Closed-loop backpressure can change achieved throughput, so report observed latency, achieved rate, generator and server maximum in-flight together.
 If responses complete below 40 ms, N=2 may still observe a maximum of one; that result does not demonstrate sustained concurrency-two pressure.
+With the reported N=1 maximum latency of 25.85 ms, ordinary pacing is expected to serialize requests. Such an N=2 run is unexercised and INVALID.
 No artificial latency or burst synchronization is introduced. Low achieved rate alone is not generator saturation: the pinned schedule-lag and ELD checks decide that.
+
+N=2 qualification now requires direct exposure in **every one-second interval** of the 60-second campaign, independently on generator and server:
+at least four starts while another external request is active, and at least 160 ms of residency at exactly two active requests.
+Four is the length of the reviewed fixture cycle; 160 ms is four aggregate pacing slots (`4 * 1000 / 25`).
+Sixty intervals therefore require at least 240 overlapping starts and 9.6 seconds of dual-request residency, spread across the campaign.
+This is a provisional, repeatable exercise criterion derived from the existing cycle, scheduler and telemetry period; it is not a capacity or statistical-power claim,
+nor does it require that the four overlapping starts belong to four different fixtures. One incidental jitter overlap, many tiny overlaps,
+or exposure concentrated in part of the campaign cannot qualify. Each side stores just two fixed arrays of 60 counters, not a new request history.
+Generator bins use its monotonic campaign start; server bins use the first authorized ingress's source timestamp.
+
+Only generator stop `completed` with null detail qualifies, after at least 60,000 ms of monotonic execution and at most 64,000 ms including the existing
+2,000 ms setup and 2,000 ms drain allowances. Dispatch must finish before 60,000 ms and every attempt must settle.
+`operator_abort`, `authorization_expired`, `transport_failure`, `deadline`, `total_ceiling`, `in_flight_exceeded`, missing measurements and short durations all fail,
+even with matching totals. A ceiling stop does not prove duration completion; no completed state may be inferred from counts.
+
+The server requests two observation-only IPC barriers from the Plane: after baseline, immediately before announcing ARMED, and at WINDOW closure after canaries drain.
+Each carries the emitting process's monotonic time, wall time, event sequence watermark, cumulative external accepts and current external occupancy.
+The source ARMED barrier defines the authorized traffic transition; all preceding external accepts invalidate the campaign and trigger STOP, including events still queued in IPC.
+The first ingress must arrive within the existing 20-second start slack. Source closure must be within the existing 90-second ARMED deadline and have zero external requests active.
+Every accept and terminal must belong to this phase; post-close ingress and requests crossing closure invalidate qualification.
+Generator dispatch/settlement bounds and server first/last ingress/settlement timestamps must agree within the reviewed 2,000 ms clock tolerance,
+and their window/duration evidence must agree. This makes timing consequential for N=2; it assumes host clocks within that tolerance and does not measure skew.
+The server may write COMPLETE when its own phases finish; only the offline reconcile can qualify both views, including their exposure.
+Evidence from pre-remediation N=2 cannot qualify under these rules: its old parameter hash was `e5173d8dcc1c5c04757ae3e479d5d8410a9ee13d1145e3ddb66efed94f5d658d`.
 
 The same unverified budget (capacity 3, refill 1/s) and credited budget (10, 2/s) apply; increased shedding is an observation.
 The window mutation bound remains `3 + floor(windowMs / 1000) + 1`, checked with exact bucket replay.
@@ -254,16 +280,19 @@ All evidence capacities remain unchanged. Preflight evaluates the existing gates
 | Decisions including conservative canary allowance | 1,500 + 320 = 1,820 | 20,000 |
 | Full external traces, even if every request is selected | 1,500 | 2,000 |
 | Recently reduced external nonces | 1,500 | 4,096 |
-| Journal including harness and derived origin events | 320 * (24 + 2 + 2) * 256 = 2,293,760 bytes | half of 48 MiB budget |
+| Modeled journal including harness and derived origin events | 320 * (24 + 2 + 2) * 512 = 4,587,520 bytes | half of 48 MiB budget |
 | Event queue: 10 s hostile arrivals, burst and ALL canary events | (250 + 2 + 320) * 24 = 13,728 | 16,384; window 8,192 <= queue |
 | Hop replay: existing rate/lifetime safety factor, all canaries and burst | 25 * 5 * 4 + 320 + 2 = 822 | 4,096 |
 | L2 ledger, two epochs of credited admissions | 10 + ceil(2 * 120) + 1 = 251 | 512 |
 | Bloom inserts, treating every external request as a render | 1,500 + 46 + 18 = 1,564; 0.1305% fill; FPR bound 6.45e-21 | 2^23 bits, 7 hashes |
-| External reducer plus channel retained memory bound | 235.8 MiB | 256 MiB evidence-model budget |
+| External reducer plus channel modeled accounting | 235.8 MiB | 256 MiB accounting budget |
 
 The state/channel stall bounds assume healthy bounded evidence delivery; they do not promise lossless collection under arbitrary stalls or malformed traffic.
 Longer stalls, overflow, unresolved requests, missing events, telemetry gaps and journal loss still invalidate the measurement explicitly.
-The memory proof is the existing conservative event-size model, not a JavaScript RSS measurement; runtime RSS/resource ceilings still apply.
+235.8 MiB is modeled accounting using 512 bytes per retained event, not a runtime heap/RSS maximum or an enforced event-size maximum.
+JavaScript object/string overhead and transient allocations are outside that arithmetic; runtime RSS/resource ceilings still apply.
+The historical 256-byte journal-line value is also an estimate, despite its legacy `Max` name: a legitimate credited line measured 264 bytes.
+N=1 arithmetic and gate output remain unchanged. N=2 models journal lines at 512 bytes, still an estimate, with the enforced 48 MiB journal cap and loss invalidation.
 The 90-second window still covers 20-second start slack + 60-second generator + 4-second allowances (84 seconds).
 Stop steps still total 40 seconds within the 45-second cap, and the target still needs at least 900 seconds remaining.
 
@@ -271,6 +300,7 @@ The shared registry selects the server by level and generator by workload, indep
 The v1 generator/server schemas already carry string level ids, numeric workers and both hashes, so no schema version or historical reinterpretation is needed.
 G1–G6 cross-level equality remains mandatory. N=2 additionally verifies both inputs against the exact reviewed set, planned workers, zero remaining in-flight,
 aggregate rate ceiling, total ceiling, and conservation of generator response/outcome/fixture fates. The offline manifest uses the selected level's fingerprint.
+It additionally requires completion, repeated exposure and measurement-phase identities described above; missing or inconsistent evidence is INVALID.
 Historical N=1 parameters, fingerprints, gate ids/output and reconciliation criteria are unchanged. Cross-level inputs are INVALID.
 Every required journey group must complete at 100%; any legitimate false reject, L2 non-admit, refusal, parity mismatch, unexplained status,
 accounting anomaly, evidence loss or required recovery failure still prevents VALID.
@@ -279,7 +309,7 @@ Regression risks are wrong-level selection/hashing, mutation of canonical N=1 JS
 accidental per-worker rate multiplication, and weakened legitimate-user/recovery criteria. Tests pin both hashes, both exact parameter sets,
 capacity failures, cross-level refusal, in-flight 2 versus 3, explicit transport failures, saturation boundaries, and unchanged acceptance parameters.
 Local field-runner tests use a deliberately scaled test-only epoch/window and a fake `/proc`; they do not qualify the real N=2 external level.
-The N=1 evidence selftest remains unchanged. No defense source file changes are required.
+The N=1 evidence selftest remains unchanged. The only defense runtime addition is the IPC observation barrier; it changes no admission, budgets or request behavior.
 
 ```text
 npm run lab:ba0:field -- --target <id> --level ba0-l7-c2 --campaign <id> --dry-run
@@ -287,7 +317,7 @@ npm run lab:ba0:field -- --target <id> --level ba0-l7-c2 --campaign <id> --dry-r
 # Final reconciliation uses the same offline command as N=1.
 ```
 
-Validation of this progression on Windows / Node 22.22.0 used local fixtures and loopback only:
+Historical validation of the initial progression at `e538cde` on Windows / Node 22.22.0 used local fixtures and loopback only:
 
 | Check | Result |
 | --- | --- |
@@ -309,3 +339,18 @@ another clean-master probe passed, establishing timing dependence. No notificati
 An initial full invocation also failed a confinement test because validation had set an artificial `DOCKER_CONTEXT`; correcting the invocation resolved it.
 Local TAP logs are retained under `artifacts/lab/n2-validation-*.tap`, including the clean-master reproduction. No commit, push, deployment,
 external traffic, real GCP campaign, or cloud/firewall configuration change occurred. N=2 remains prepared for review, not externally qualified.
+
+Remediation validation against that exact commit, using synthetic observations and loopback only:
+
+| Check | Result |
+| --- | --- |
+| Focused N=2 measurement, reconcile, thresholds, field runner/writer, scheduler and defense static suites | 92 passed; zero failed, cancelled or skipped |
+| N=1 immutability comparisons | Parameter object, fingerprint and gate output match both `e538cde` and base master; workload, report construction, all 13 writer artifacts and 10 reconcile scenarios match `e538cde` exactly |
+| Typecheck, repository lint, diff check | Pass |
+| Full suite, serialized | 1,489 tests: 1,429 passed, zero failed, one cancelled, 59 skipped; exit 1 |
+
+The full suite's cancellation is the same unchanged notification HTTPS test described above, with the same pending-promise/event-loop message.
+Database URLs and Next telemetry were disabled; no ambient Docker context was set. Logs are `artifacts/lab/n2-remediation-focused.tap`
+and `artifacts/lab/n2-remediation-full.tap`. The sandbox's TSX user lookup failed with `uv_os_get_passwd ENOMEM`; local tests were rerun outside that sandbox.
+No external campaign was run, and no commit, push, deployment or cloud/firewall change was performed. Under fast N=1-like latency,
+the unchanged offered workload is expected to remain unexercised; the remediation makes that result fail qualification instead of manufacturing overlap.

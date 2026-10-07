@@ -9,7 +9,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { REPOSITORY_ROOT } from "../evidence/manifest";
 import type { PlaneControl, PlaneInit, PlaneMessage } from "../../defense/plane/protocol";
-import type { L2Params } from "../../defense/plane/l2-protocol";
+import type { L2Params, MeasurementBarrier } from "../../defense/plane/l2-protocol";
 import type { Collector, PlaneFin } from "./collector";
 
 const PLANE_ENTRY = path.join(REPOSITORY_ROOT, "defense", "plane", "main.ts");
@@ -77,6 +77,27 @@ export class PlaneProcess {
 
   /** Harness-only: sends a control message the standard protocol does not define. Reachable only over this IPC pipe. */
   sendControl(message: object): void { if (!this.exited && this.child.connected) this.child.send(message, () => undefined); }
+
+  /** N=2 only: observe source-clock/sequence phase boundaries; this changes no defense state. */
+  async measurementBarrier(phase: MeasurementBarrier["phase"], timeoutMs: number): Promise<MeasurementBarrier | null> {
+    if (this.exited) return null;
+    return new Promise((resolve) => {
+      const finish = (mark: MeasurementBarrier | null) => {
+        clearTimeout(timer);
+        const index = this.extraListeners.indexOf(listener);
+        if (index >= 0) this.extraListeners.splice(index, 1);
+        resolve(mark);
+      };
+      const listener = (message: { type: string }) => {
+        const mark = message as unknown as MeasurementBarrier & { type: string };
+        if (mark.type === "measurement_barrier" && mark.phase === phase) finish({ phase: mark.phase, seq: mark.seq, atMs: mark.atMs,
+          wallAt: mark.wallAt, acceptedExternal: mark.acceptedExternal, inFlightExternal: mark.inFlightExternal });
+      };
+      const timer = setTimeout(() => finish(null), timeoutMs);
+      this.extraListeners.push(listener);
+      this.sendControl({ type: "measurement_barrier", phase });
+    });
+  }
 
   private send(message: PlaneControl): void {
     if (!this.exited && this.child.connected) this.child.send(message, () => undefined);

@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import type { ClosedLoopResult } from "../load/closed-loop";
 import { canonicalJson, type LatencySummary } from "../policy/thresholds";
 import type { WorkloadSpec } from "../policy/workloads";
+import type { GeneratorN2Measurement } from "./n2-measurement";
 
 export const GENERATOR_REPORT_SCHEMA = "ba0-generator-report-v1" as const;
 
@@ -42,6 +43,8 @@ export type GeneratorReport = {
   stop: { kind: string; detail: string | null };
   retries: 0;
   pipelining: false;
+  /** Required to qualify N=2; absent from historical N=1 reports. */
+  n2?: GeneratorN2Measurement;
 };
 
 export const campaignIdPattern = /^[a-z0-9][a-z0-9-]{5,40}$/;
@@ -73,6 +76,7 @@ export function buildGeneratorReport(input: {
     concurrency: result.concurrency, connections: result.connections,
     rate: { achievedPerSecond: result.wallClockSeconds > 0 ? Math.round((result.attempted / result.wallClockSeconds) * 100) / 100 : 0, ceilingPerSecond: input.ceilingRatePerSecond },
     schedule: result.schedule, generatorHealth: result.generatorHealth, stop: { kind: result.stop.kind, detail: result.stop.detail }, retries: 0, pipelining: false,
+    ...(input.levelId === "ba0-l7-c2" && result.n2 ? { n2: result.n2 } : {}),
   };
 }
 

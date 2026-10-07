@@ -55,6 +55,7 @@ import { HopTrustRoot } from "./hop-keys";
 import { PLANE_L2_ENTRY, PlaneProcess } from "./plane-process";
 import { ProcSampler } from "./proc-sampler";
 import type { ServerLevelEvidence } from "./reconcile";
+import { N2ServerObserver, n2ExerciseSpec } from "./n2-measurement";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -199,6 +200,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
   // ====================================================================================== runtime state
   const baselineAmbient = preflight.ambientNonLoopbackPorts;
   const collector = new Collector(path.join(evidence.directory, "ledger-journal-field.ndjson"), { ...t.collector });
+  const n2 = args.levelId === "ba0-l7-c2" ? new N2ServerObserver(n2ExerciseSpec(t)) : undefined;
   collector.enableOriginStreams();
   collector.enableLaneStreams();
   const reducer = new ExternalReducer({ limits: t.external, allowedShed: t.allowedShed, now: clock, report: (code, rid, detail) => collector.externalAnomaly(code, rid, detail) });
@@ -254,6 +256,10 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
     if (machine.stopped && !ingressCloseRequested) { ingressCloseRequested = true; plane?.sendControl({ type: "close_ingress" }); }
   };
   const latchAll = (reasons: readonly Reason[], stops = true): void => { for (const reason of reasons) latch(reason, stops); };
+  if (n2) collector.observePlaneEvents((event) => {
+    n2.observe(event);
+    if (n2.earlyIngress > 0) latch({ code: "identity_failed", detail: "n2_pre_armed_ingress" });
+  });
 
   const checkExposure = (mode: "running" | "final"): ExposureResult => proveExposure({
     reader: env.reader, mode, pids, plane: ingress,
@@ -490,6 +496,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       telemetry: { gaps: monitor.tickGaps, gapDetails: monitor.gapDetails(), finalTicks: monitor.finalTicks(), ring: monitor.ring(), harnessEld, peaks },
       connections, externalInFlightMax, processes: { plane: planeFinal, boundary: boundaryFinal, app: appFinal },
       collector: { anomalyTotal, anomalies, records: records.length, journal }, recovery, reconcileInput, anonymousRefusals: reducer.anonymousRefusals(),
+      ...(n2 ? { n2: n2.snapshot() } : {}),
     };
     const write = writeFieldEvidence(evidence, bundle);
     const status = serverSide.status;
@@ -540,6 +547,14 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       await canaryPhase("baseline", { count: t.canary.baselineJourneys, gapMs: t.canary.gapMs, withControl: true });
     }
     // ---- ARMED
+    if (machine.canStartWork() && n2) {
+      const mark = await plane.measurementBarrier("armed", t.window.setupAllowanceMs);
+      if (mark === null) latch({ code: "evidence_gap", detail: "n2_armed_barrier" });
+      else {
+        n2.arm(mark);
+        if (mark.acceptedExternal !== 0 || mark.inFlightExternal !== 0) latch({ code: "identity_failed", detail: "n2_pre_armed_ingress" });
+      }
+    }
     if (machine.canStartWork()) {
       machine.advance("ARMED");
       armedAtMs = clock();
@@ -569,6 +584,14 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       }
       windowClosing = true;
       await canaryRun;
+      if (n2) {
+        const mark = await plane.measurementBarrier("closed", t.window.drainAllowanceMs);
+        if (mark === null) latch({ code: "evidence_gap", detail: "n2_closed_barrier" });
+        else {
+          n2.close(mark);
+          if (mark.inFlightExternal !== 0) latch({ code: "identity_failed", detail: "n2_undrained_window" });
+        }
+      }
       windowClosedWall = wallNow();
       windowClosedAtMs = clock();
       acceptedAtWindowClose = reducer.counters().accepted;

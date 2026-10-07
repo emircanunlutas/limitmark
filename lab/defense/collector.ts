@@ -126,6 +126,7 @@ export class Collector {
   private readonly appStream = new StreamState<AppFin>();
   /** Field qualification only: the bounded lane for REMOTE-peer requests. Absent in every Slice-1/2/3 run, which behaves exactly as before. */
   private external: ExternalReducer | null = null;
+  private planeObserver: ((event: PlaneEvent) => void) | undefined;
 
   constructor(journalPath: string | null, private readonly limits: CollectorLimits = DEFAULT_COLLECTOR_LIMITS) {
     this.journal = journalPath === null ? null : new Journal(journalPath, limits.maxJournalBytes);
@@ -176,6 +177,7 @@ export class Collector {
   ingestFrame(frame: EventFrame): number {
     this.planeDroppedReported = Math.max(this.planeDroppedReported, frame.dropped);
     for (const event of frame.events) {
+      this.planeObserver?.(event);
       this.planeEventsReceived++;
       if (event.seq <= this.lastSeq) this.anomaly("duplicate_sequence", event.nonce, `seq ${event.seq}`);
       else if (event.seq > this.lastSeq + 1) this.anomaly("event_channel_loss", event.nonce, `gap of ${event.seq - this.lastSeq - 1} before seq ${event.seq}`);
@@ -237,6 +239,8 @@ export class Collector {
 
   /** Field qualification: routes requests from remote peers to the bounded external lane. Call once, before any traffic. */
   enableExternalLane(reducer: ExternalReducer): void { this.external = reducer; }
+  /** N=2 only: an observation subscriber to the authoritative plane stream; no extra events or retained request history. */
+  observePlaneEvents(observer: (event: PlaneEvent) => void): void { this.planeObserver = observer; }
   get externalLane(): ExternalReducer | null { return this.external; }
 
   ingestBoundaryFrame(frame: EventFrame<BoundaryEvent>): number {
