@@ -431,3 +431,92 @@ test("F6 round 2: teardown uses only the state-aware container path, and its dry
   const dry = spawnSync("bash", [toBashPath(path.join(directory, "sut-teardown.sh")), "--i-am-a-disposable-lab-vm", "--dry-run"], { encoding: "utf8" });
   assert.match(dry.stdout, /unreachable docker daemon is a FAILURE/);
 });
+
+// ---------------------------------------------------------------------------------------------- --ba0-field (external L7 readiness)
+//
+// The field mode prepares the VM for ONE BA0 level: the old Next service is retired, port 3000 gets no rule (and an old one is removed), the
+// firewall allows exactly one reviewed port from exactly one /32, and the lab user gets one read-only privilege. These tests run the REAL script in
+// --dry-run (with `uname` answering Linux so a Windows Git Bash can parse it) and read what it would do.
+
+const scriptPath = toBashPath(path.join(directory, "sut-bootstrap.sh"));
+const FIELD_ENV = {
+  LAB_REPO_URL: "https://example.test/lab/repo", LAB_REPO_COMMIT: "a".repeat(40), LAB_SSH_ALLOW_CIDRS: "198.51.100.0/24", LAB_LOADGEN_CIDRS: "203.0.113.9/32", LAB_BA0_PLANE_PORT: "8080",
+};
+
+function dryRun(args: string[], env: Record<string, string | undefined>): { status: number | null; out: string } {
+  const wrapper = `uname() { if [ "$1" = "-s" ]; then echo Linux; else command uname "$@"; fi; }; export -f uname; bash "${scriptPath}" ${args.join(" ")}`;
+  const clean = Object.fromEntries(Object.entries({ ...process.env, ...env }).filter(([, value]) => value !== undefined)) as Record<string, string>;
+  for (const key of Object.keys(env)) if (env[key] === undefined) delete clean[key];
+  const result = spawnSync("bash", ["-c", wrapper], { encoding: "utf8", env: clean as NodeJS.ProcessEnv, timeout: 30_000 });
+  return { status: result.status, out: `${result.stdout}${result.stderr}` };
+}
+
+test("--ba0-field dry run: retires the old service, adds NO port-3000 rule, allows exactly the reviewed port from the single /32, installs the one read-only privilege, builds nothing for Next", { skip: bashSkip }, () => {
+  const result = dryRun(["--i-am-a-disposable-lab-vm", "--dry-run", "--ba0-field"], FIELD_ENV);
+  assert.equal(result.status, 0, result.out);
+  assert.match(result.out, /\[dry-run\] ufw allow from 203\.0\.113\.9\/32 to any port 8080 proto tcp comment limitmark-lab ba0 plane/);
+  assert.match(result.out, /\[dry-run\] ufw allow from 198\.51\.100\.0\/24 to any port 22 proto tcp comment limitmark-lab ssh/);
+  assert.doesNotMatch(result.out, /port 3000|limitmark-lab app/, "no old-application firewall rule is added in field mode");
+  assert.match(result.out, /\[dry-run\] systemctl disable --now limitmark-lab-app\.service/);
+  assert.match(result.out, /\[dry-run\] rm -f \/etc\/systemd\/system\/limitmark-lab-app\.service/);
+  assert.match(result.out, /prove the old application service is not active/);
+  assert.match(result.out, /write \/etc\/sudoers\.d\/limitmark-lab-ba0 allowing only: \/usr\/sbin\/ufw status numbered/);
+  assert.doesNotMatch(result.out, /npm run build/, "the BA0 runner runs from source; no Next build is made");
+  assert.match(result.out, /npm ci --no-audit --no-fund/);
+  assert.doesNotMatch(result.out, /systemctl (enable|restart) limitmark-lab-app/, "the old application is never started in field mode");
+  assert.match(result.out, /delete every limitmark-lab ufw rule whose port and source are not in: 22\|198\.51\.100\.0\/24\s+8080\|203\.0\.113\.9/, "an old port-3000 rule is stale, so it is deleted");
+});
+
+test("without --ba0-field the dry run is unchanged: the port-3000 rule is added and the application unit is installed", { skip: bashSkip }, () => {
+  const result = dryRun(["--i-am-a-disposable-lab-vm", "--dry-run"], { ...FIELD_ENV, LAB_APP_ORIGIN: "http://203.0.113.10:3000", LAB_LOADGEN_CIDRS: "203.0.113.0/24", LAB_BA0_PLANE_PORT: undefined });
+  assert.equal(result.status, 0, result.out);
+  assert.match(result.out, /ufw allow from 203\.0\.113\.0\/24 to any port 3000 proto tcp comment limitmark-lab app/);
+  assert.doesNotMatch(result.out, /ba0 plane|sudoers/);
+  assert.match(result.out, /npm run build/);
+  assert.match(result.out, /systemctl restart limitmark-lab-app\.service/);
+});
+
+test("--ba0-field refuses anything but ONE reviewed port from ONE /32: a network, two hosts, the old application port, a database port, a standard port, a missing port", { skip: bashSkip }, () => {
+  const refused = (overrides: Record<string, string | undefined>, pattern: RegExp) => {
+    const result = dryRun(["--i-am-a-disposable-lab-vm", "--dry-run", "--ba0-field"], { ...FIELD_ENV, ...overrides });
+    assert.notEqual(result.status, 0, JSON.stringify(overrides));
+    assert.match(result.out, pattern, JSON.stringify(overrides));
+  };
+  refused({ LAB_LOADGEN_CIDRS: "203.0.113.0/24" }, /exactly one \/32/);
+  refused({ LAB_LOADGEN_CIDRS: "203.0.113.9/32,203.0.113.10/32" }, /exactly one \/32/);
+  refused({ LAB_LOADGEN_CIDRS: "203.0.113.9" }, /invalid LAB_LOADGEN_CIDRS/);
+  for (const port of ["3000", "5432", "55416", "55417", "22", "80", "443", "7999", "9000", "08080", "80800", "abc", ""]) refused({ LAB_BA0_PLANE_PORT: port }, /LAB_BA0_PLANE_PORT/);
+  refused({ LAB_BA0_PLANE_PORT: undefined }, /LAB_BA0_PLANE_PORT is required/);
+  refused({ LAB_LOADGEN_CIDRS: "127.0.0.1/32" }, /invalid LAB_LOADGEN_CIDRS/);
+});
+
+test("--ba0-field in the script: no port-3000 rule in its branch, no database port anywhere, one read-only sudoers command validated by visudo, retired service proven inactive", () => {
+  const body = code("sut-bootstrap.sh");
+  const firewall = body.slice(body.indexOf("configure_firewall() {"), body.indexOf("build_application() {"));
+  const fieldBranch = firewall.slice(firewall.indexOf('if [ "$BA0_FIELD" = 1 ]; then'), firewall.indexOf("else\n      run ufw allow from"));
+  assert.match(fieldBranch, /port "\$LAB_BA0_PLANE_PORT" proto tcp comment 'limitmark-lab ba0 plane'/);
+  assert.doesNotMatch(fieldBranch, /3000/);
+  assert.match(body, /ALL=\(root\) NOPASSWD: \/usr\/sbin\/ufw status numbered\\n' "\$LAB_USER"/, "exactly one command");
+  assert.doesNotMatch(body, /NOPASSWD: ALL|NOPASSWD:\s*\/usr\/sbin\/ufw\s*$|NOPASSWD:[^\n]*\*/m, "no wildcard, no blanket privilege");
+  assert.match(body, /visudo -cf "\$tmp"/, "the fragment is validated before it is installed");
+  assert.match(body, /install -m 0440 -o root -g root "\$tmp" "\$fragment"/);
+  assert.match(body, /systemctl is-active --quiet limitmark-lab-app\.service\; then die "the old application service is still active"|systemctl is-active --quiet limitmark-lab-app\.service; then die "the old application service is still active"/);
+  assert.match(body, /\^8\[0-9\]\{3\}\$/, "the plane port is confined to 8000..8999");
+  assert.doesNotMatch(body, /5432|55416|55417/);
+  const teardown = code("sut-teardown.sh");
+  assert.match(teardown, /run rm -f \/etc\/sudoers\.d\/limitmark-lab-ba0/, "teardown removes the privilege this mode granted");
+});
+
+test("the ba0 plane firewall rule is a lab rule: teardown deletes it, and a changed source or port makes the old one stale", { skip: bashSkip }, () => {
+  const status = [
+    "Status: active", "",
+    "[ 1] 22/tcp                     ALLOW IN    198.51.100.7               # limitmark-lab ssh",
+    "[ 2] 8080/tcp                   ALLOW IN    203.0.113.9                # limitmark-lab ba0 plane",
+    "[ 3] 3000/tcp                   ALLOW IN    203.0.113.0/24             # limitmark-lab app",
+    "[ 4] 8080/tcp                   ALLOW IN    192.0.2.0/24               # not ours", "",
+  ].join("\n");
+  assert.deepEqual(bash(`ufw_lab_rules <<'STATUS'\n${status}\nSTATUS`).stdout.trim().split("\n"), ["1|22|198.51.100.7", "2|8080|203.0.113.9", "3|3000|203.0.113.0/24"]);
+  assert.deepEqual(bash(`ufw_lab_rule_numbers <<'STATUS'\n${status}\nSTATUS`).stdout.trim().split("\n"), ["3", "2", "1"], "teardown removes every lab rule, highest first, and never the foreign one");
+  assert.deepEqual(bash(`ufw_stale_lab_rule_numbers '22|198.51.100.7' '8080|203.0.113.9' <<'STATUS'\n${status}\nSTATUS`).stdout.trim().split("\n"), ["3"], "the old port-3000 rule is stale in field mode");
+  assert.deepEqual(bash(`ufw_stale_lab_rule_numbers '22|198.51.100.7' '8080|203.0.113.77' <<'STATUS'\n${status}\nSTATUS`).stdout.trim().split("\n"), ["3", "2"], "a changed generator host makes the old plane rule stale");
+});

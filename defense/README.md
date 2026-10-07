@@ -265,3 +265,48 @@ for the lab, with identical semantics unit-tested on an injected clock.
 npm run lab:ba0:collapse          # loopback only; takes no arguments; evidence under the gitignored artifacts/lab/evidence/
 npm run build && npx tsx --conditions=react-server tests/built-form-enrollment.integration.ts    # G1 against the real build
 ```
+
+# BA0 field qualification readiness (external L7, first level N = 1)
+
+Status: **readiness patch only.** It adds NO defense layer and changes no Slice-1/2/3 decision. It makes the existing system measurable and safely
+operable for the future first authorized external HTTP qualification. Nothing here has been run against an external generator, and the field runner
+itself runs only on a disposable Linux host. The 29 Slice-1/2 files the Slice-3 acceptance pins are still byte-identical; the field entries are NEW files.
+
+## What changed in `defense/`
+
+| Area | Change |
+| --- | --- |
+| Plane ingress (`plane/front.ts`, `core/ingress-class.ts`) | One optional reviewed bind (`ingress`: a canonical IPv4 literal and a fixed port, validated; wildcard, hostname, IPv6, reserved and port 0 are refused). Absent, the plane binds 127.0.0.1 on an ephemeral port exactly as before. Boundary and App are unchanged and loopback-only. |
+| Peer class | A request's peer is `local` (this host: loopback, or remote address equal to local address) or `remote`, from the kernel's view of the connection. A **remote** peer cannot choose the correlation nonce (the header is stripped and counted, the plane mints the id, the request is marked `ingress: "external"`) and is **never told an internal decision** (no `x-ba0-outcome`). |
+| Exact pre-ingress counters | Connections accepted (by peer class), closed (clean/error), dropped (listener cap), `clientError` by **every** code, split into raised with no request in flight vs during one, socket errors, CONNECT and non-100-continue `Expect` refusals, active and its high-water. Node 22 behaviour is pinned by raw-socket tests (`tests/defense-front-ingress.test.ts`); what Node does not distinguish (header vs request timeout: both `ERR_HTTP_REQUEST_TIMEOUT`; a server keep-alive timeout vs a polite close) is stated as ambiguous, not invented. |
+| `close_ingress` | One IPC-only control message that stops the listener accepting (the STOP path). Existing connections finish. |
+| Ticks (`core/telemetry.ts`, field entries) | One small observation-only tick per second from the Plane, Boundary and App, outside the bounded event channel, with a gapless sequence. Nothing that decides ever reads telemetry (pinned by a test, with a state-neutrality test for the L2 snapshot). A tick that fails or is lost is a measurement gap, never a verdict. |
+| Field entries | `boundary/main-field.ts` and `origin/app-main-field.ts`: the Slice-2 entries plus the tick, and **without** the lab fault control for the App. The Slice-2 entries are untouched. |
+
+## What changed in `lab/defense/`
+
+`ba0-field-run.ts` (one reviewed level per invocation: PREFLIGHT, TOPOLOGY_UP, BASELINE, ARMED, WINDOW, RESIDUAL, QUIET, RECOVERY, FINALIZING, DONE),
+`field-preflight.ts`, `exposure-proof.ts`, `external-reducer.ts` (the bounded external lane), `external-accounting.ts` (E1-E11), `field-state.ts` (state machine, first-STOP latch,
+bounded ordered finalization), `field-monitor.ts`, `proc-net.ts`/`proc-sampler.ts` (Linux /proc, read-only), `field-thresholds.ts` (`ba0-field-v1` and the budget gates),
+`field-evidence.ts`/`field-selftest.ts`, `generator-report.ts`/`reconcile.ts`/`ba0-field-reconcile.ts` (G1-G6, the only producer of a final verdict) and the closed-loop generator `lab/load/closed-loop.ts`.
+
+## Continuous exposure proof (what it proves and does not)
+
+Before the plane binds, on every 1-second tick and again at finalization, the runner proves: the only non-loopback LISTEN socket owned by the topology (inode held by the runner or one of its
+three children, same network namespace) is the exact reviewed Plane IPv4:port; the Boundary, the App and the control origin are on loopback; no wildcard (IPv4 or IPv6, including the IPv4-mapped one)
+and no non-loopback IPv6 socket exists in the topology; no process outside the topology holds a topology listening inode; no stale listener sits on the plane's port; and nothing non-loopback listens on the old Field Lab port 3000.
+It proves **host listener state only**: nothing about the cloud firewall, NAT, forwarders on the host, or network isolation, and a process whose fds /proc forbids reading is counted, not assumed clean.
+
+## Claim vocabulary
+
+The server side concludes only `complete | invalid | aborted` (and `refused` at preflight). The final verdict `EXTERNAL-L7-QUALIFICATION-VALID | INVALID | ABORTED` exists only after the offline reconcile of the
+server evidence and the generator report, and VALID is scoped to the exact `{commit, campaignId, levelId, N, parameter fingerprint, workload fingerprint}`. A failure is classed **measurement** (the evidence cannot support a claim),
+**defense** (a sound measurement of a failure) or **operational** (the operator or environment ended the level). It does **not** claim DDoS resistance, capacity, bot detection, read-flood resistance (the open lane has no budget by design),
+per-user fairness, network/transport/TLS/origin isolation, protection of the real application (the protected app is the synthetic stand-in), multi-source traffic, any level above the tested one, or production readiness.
+
+```text
+npm run lab:ba0:field -- --target <id> --level ba0-l7-c1 --campaign <id> [--dry-run]    # on the disposable Linux host; takes no URL, host, port or path
+npm run lab:ba0:field -- --selftest                                                      # the evidence writer on a synthetic level, no network
+npm run lab:run -- --target <id> --workload ba0-l7-pressure-c1 --campaign <id>          # the closed-loop generator (the other host); writes generator-report.json
+npm run lab:ba0:field:reconcile -- --server <server evidence id> --report <generator-report.json>
+```

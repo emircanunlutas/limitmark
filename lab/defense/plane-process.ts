@@ -16,8 +16,11 @@ const PLANE_ENTRY = path.join(REPOSITORY_ROOT, "defense", "plane", "main.ts");
 /** The Slice-3 production entry (L2 always present, no injected dependency). */
 export const PLANE_L2_ENTRY = path.join(REPOSITORY_ROOT, "defense", "plane", "main-l2.ts");
 
-/** `l2` is meaningful only to an entry whose composition has L2. */
-export type PlaneStartOptions = Omit<PlaneInit, "type"> & { l2?: L2Params };
+/**
+ * `l2` is meaningful only to an entry whose composition has L2. `ingress` (the one reviewed fixed public bind) and `telemetry` (one tick per
+ * interval) are field-qualification options: absent, the plane binds 127.0.0.1 on an ephemeral port and emits no ticks, exactly as before.
+ */
+export type PlaneStartOptions = Omit<PlaneInit, "type"> & { l2?: L2Params; ingress?: { ip: string; port: number }; telemetry?: { tickMs: number } };
 
 export class PlaneProcess {
   private exited = false;
@@ -80,6 +83,9 @@ export class PlaneProcess {
   }
 
   get hasExited(): boolean { return this.exited; }
+
+  /** The child process id (the exposure proof and the /proc sampler need it). */
+  get pid(): number | undefined { return this.child.pid; }
 
   /** Test/lab control: arms an L1 fault on the next `remaining` evaluations. Only reachable through this IPC pipe. */
   injectFault(kind: "throw" | "hang" | "sign", remaining: number): void { this.send({ type: "fault", kind, remaining }); }

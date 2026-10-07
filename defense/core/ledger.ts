@@ -57,6 +57,11 @@ export type PlaneEvent = {
   stripped?: number;
   /** INGRESS_ACCEPTED: the request carried no usable nonce, so the front minted one. Always an anomaly for a harness run. */
   uncorrelated?: boolean;
+  /**
+   * INGRESS_ACCEPTED (field qualification): the peer was REMOTE, so the front minted the nonce itself (a remote client can never choose
+   * one) and the request belongs to the external lane. Absent on every harness-correlated request, so a Slice-1/2/3 stream is unchanged.
+   */
+  ingress?: "external";
   /** PARSER_REJECTED: the HTTP parser's error code (closed list in the front). */
   code?: string;
   /** PROOF_ISSUED (Slice 2): the 16-character tag of the Plane-to-Boundary proof's jti (never the jti or the proof). */
@@ -186,6 +191,8 @@ export type HarnessEvent = {
 
 export type ExpectedLane =
   | "protected" | "control" | "pre_ingress"
+  // Field qualification: a request from a REMOTE peer. The plane minted its nonce; there is no harness SENT or CLIENT_COMPLETED for it.
+  | "external"
   // Slice 2: known-address direct attempts that must be refused, and the labelled positive controls. A positive control never
   // satisfies a protected-lane identity (it has no plane lineage by construction).
   | "direct_boundary_rejected" | "direct_app_rejected" | "positive_control_boundary" | "positive_control_app";
@@ -213,6 +220,8 @@ export const ANOMALY_CODES = [
   "layer_skipped", "l2_decision_invalid", "l2_refused_but_egressed", "l2_enrollment_invalid", "enrollment_after_decision",
   "l2_counter_mismatch", "l2_bucket_replay_mismatch", "l2_state_violation", "simulated_in_normal_runtime", "unconsumed_override_arm",
   "override_applied_without_arm", "l2_decision_untraced",
+  // Field qualification: the bounded external-request state, and downstream events that no plane ingress ever claimed.
+  "external_state_overflow", "external_unresolved", "external_unclaimed_downstream", "external_late_event", "external_duplicate_nonce",
 ] as const;
 export type AnomalyCode = (typeof ANOMALY_CODES)[number];
 export type Anomaly = { code: AnomalyCode; nonce: string | null; detail: string };
@@ -348,15 +357,21 @@ export function validateLifecycle(view: LifecycleView, final: boolean): Anomaly[
   const found: Anomaly[] = [];
   const add = (code: AnomalyCode, detail: string) => found.push({ code, nonce: view.nonce, detail });
 
+  // An external request is judged like a protected one in every respect except the harness's own SENT / CLIENT_COMPLETED, which it never has.
+  const external = view.expected === "external";
+  const protectedLike = view.expected === "protected" || external;
+
   // --- harness stream: SENT first, at most one CLIENT_COMPLETED after it
   const sent = view.harness.filter((event) => event.kind === "SENT").length;
   const completed = view.harness.filter((event) => event.kind === "CLIENT_COMPLETED");
-  if (sent !== 1 || view.harness[0]?.kind !== "SENT") add("duplicate_event", "SENT");
-  if (completed.length > 1) add("duplicate_terminal", "CLIENT_COMPLETED");
-  if (final && completed.length === 0) add("sent_without_completion", "CLIENT_COMPLETED");
+  if (!external) {
+    if (sent !== 1 || view.harness[0]?.kind !== "SENT") add("duplicate_event", "SENT");
+    if (completed.length > 1) add("duplicate_terminal", "CLIENT_COMPLETED");
+    if (final && completed.length === 0) add("sent_without_completion", "CLIENT_COMPLETED");
+  } else if (view.harness.length > 0) add("plane_event_on_unexpected_lane", "harness event on an external request");
 
   // --- plane stream: legal transitions in sequence order
-  if (view.expected !== "protected") {
+  if (!protectedLike) {
     if (view.plane.length > 0) add("plane_event_on_unexpected_lane", view.expected);
   } else {
     let previous: PlaneEventKind | "START" = "START";
@@ -377,7 +392,8 @@ export function validateLifecycle(view: LifecycleView, final: boolean): Anomaly[
         add("unresolved_at_finalization", previous);
       }
     }
-    if (view.plane.some((event) => event.uncorrelated)) add("uncorrelated_ingress", "minted nonce");
+    if (!external && view.plane.some((event) => event.uncorrelated)) add("uncorrelated_ingress", "minted nonce");
+    if (external && !view.plane.some((event) => event.ingress === "external")) add("external_unclaimed_downstream", "external lane without an external ingress marker");
     // The plane may report one verdict only.
     if (view.plane.filter((event) => LAYER_VERDICT_KINDS.includes(event.kind as PlaneEventKind)).length > 1) add("duplicate_terminal", "layer verdict");
   }
@@ -388,7 +404,7 @@ export function validateLifecycle(view: LifecycleView, final: boolean): Anomaly[
   if (received.length > 1) add("duplicate_origin_processing", "ORIGIN_RECEIVED");
   if (finished.length > 1) add("duplicate_terminal", "origin completion");
   if (view.origin.length > 0 && view.origin[0].kind !== "ORIGIN_RECEIVED") add("impossible_order", "origin completion before receipt");
-  const wantedInstance: Lane | null = view.expected === "protected" || view.expected === "positive_control_boundary" || view.expected === "positive_control_app"
+  const wantedInstance: Lane | null = protectedLike || view.expected === "positive_control_boundary" || view.expected === "positive_control_app"
     ? "protected" : view.expected === "control" ? "control" : null;
   for (const event of view.origin) if (wantedInstance !== event.instance) { add("origin_lane_mismatch", event.instance); break; }
   if (view.origin.some((event) => (event.spoofed ?? 0) > 0)) add("origin_spoofed_header_seen", "proxied");
@@ -397,7 +413,7 @@ export function validateLifecycle(view: LifecycleView, final: boolean): Anomaly[
 
   // --- cross-source reconciliation (final only)
   const attempted = view.plane.find((event) => event.kind === "EGRESS_ATTEMPTED");
-  if (received.length > 0 && view.expected === "protected") {
+  if (received.length > 0 && protectedLike) {
     if (!attempted) add("origin_without_l1_pass", "origin received without EGRESS_ATTEMPTED");
     else if (received[0].hop !== attempted.seq) add("origin_hop_mismatch", `${received[0].hop}`);
   }
@@ -406,7 +422,7 @@ export function validateLifecycle(view: LifecycleView, final: boolean): Anomaly[
     if (received.length === 0) add("missing_transition", "ORIGIN_RECEIVED");
     else if (finished.length === 0) add("missing_transition", "ORIGIN_COMPLETED");
   }
-  if (view.expected === "protected") {
+  if (protectedLike) {
     const responded = view.plane.find((event) => event.kind === "EGRESS_RESPONDED");
     if (responded) {
       if (received.length === 0) add("missing_transition", "ORIGIN_RECEIVED");

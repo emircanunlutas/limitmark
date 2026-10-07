@@ -9,6 +9,8 @@ import type { ChannelStats } from "../core/ledger";
 import type { LanesSnapshot } from "../core/lanes";
 import type { ComposerStats } from "../core/composer";
 import type { PlaneAdvisory, PlaneHopInit, PlaneInit } from "./protocol";
+import type { ConnectionStats, ExternalStats, FrontStats, HopStats } from "./front";
+import type { Tick } from "../core/telemetry";
 
 export type L2Params = {
   /** Bits per Bloom generation (a power of two) and hash count. */
@@ -25,7 +27,35 @@ export type L2Params = {
   stage?: { timeoutMs?: number; maxConcurrent?: number };
 };
 
-export type PlaneL2Init = PlaneInit & { hop: PlaneHopInit; l2: L2Params };
+export type PlaneL2Init = PlaneInit & {
+  hop: PlaneHopInit;
+  l2: L2Params;
+  /**
+   * Field qualification: the ONE reviewed fixed public bind. Absent in every Slice-3 composition (127.0.0.1, ephemeral port). The harness
+   * decides whether to pass it; nothing a request carries can.
+   */
+  ingress?: { ip: string; port: number };
+  /** Field qualification: emit one small observation-only tick per interval. Absent means no ticks and no timer. */
+  telemetry?: { tickMs: number };
+};
+
+/** One 1-second plane tick: exact monotonic counters and bounded gauges. Observation only; no layer or lane ever reads any of it. */
+export type PlaneTickData = {
+  ingressOpen: boolean;
+  front: FrontStats;
+  /** In-flight maxima since the previous tick (all peers / remote peers only). */
+  inFlightMax: number;
+  inFlightExternalMax: number;
+  external: ExternalStats;
+  connections: ConnectionStats;
+  l1Composer: ComposerStats;
+  l1Occupancy: number;
+  l1: { evaluated: number; grammarParses: number };
+  hop: HopStats;
+  l2: { composer: ComposerStats; occupancy: number; lanes: LanesSnapshot };
+  channel: ChannelStats;
+};
+export type PlaneTick = Tick<PlaneTickData>;
 
 export type PlaneL2Advisory = PlaneAdvisory & {
   l2: { composer: ComposerStats; occupancy: number; lanes: LanesSnapshot };

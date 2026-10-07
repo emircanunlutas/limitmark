@@ -186,3 +186,11 @@ drivers run on the host (recorded as `httpDriverRuntime`).
 
 `lab/bootstrap/` is reviewable, idempotent and provider-free, and has **not** been run. See
 `lab/bootstrap/README.md`.
+
+## BA0 field level (first external L7 qualification, N = 1)
+
+`lab/load/closed-loop.ts` is a SEPARATE closed-loop engine (the open-loop engine above is untouched): N workers, each sending its next request only after the previous one settled, at most N logical requests in flight,
+no automatic retries, no pipelining, exact `inFlight` / `maxInFlightObserved`, connection reuse counted separately, and the first transport failure stops an N = 1 generator. A response status is an HTTP observation,
+never a failure and never proof of what the server did. The reviewed workload `ba0-l7-pressure-c1` is remote-only and takes no limit override (its verdict is scoped to the exact reviewed level).
+It writes `generator-report.json` (evidence about the generator only; nothing in it feeds any enforcement decision). The server side is `npm run lab:ba0:field` on the disposable Linux host, and the final verdict
+comes only from `npm run lab:ba0:field:reconcile`. See `defense/README.md` (BA0 field qualification readiness) for the claim vocabulary and the continuous exposure proof, and `lab/bootstrap/README.md` for `--ba0-field`.

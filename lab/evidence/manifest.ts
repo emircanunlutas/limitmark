@@ -22,7 +22,12 @@ export const EVIDENCE_ROOT = path.join(REPOSITORY_ROOT, "artifacts", "lab", "evi
  * run may; LAYER-DIVERSITY-VALID / INVALID the only ones a Slice 3 run may. None is PASS: no defense qualification is claimed, and
  * APP-NON-BYPASS-VALID says nothing about network or transport isolation.
  */
-export type EvidenceResult = "PASS" | "FAIL" | "STOP" | "REFUSED" | "ERROR" | "BASELINE-VALID" | "APP-NON-BYPASS-VALID" | "LAYER-DIVERSITY-VALID" | "INVALID";
+export type EvidenceResult =
+  | "PASS" | "FAIL" | "STOP" | "REFUSED" | "ERROR" | "BASELINE-VALID" | "APP-NON-BYPASS-VALID" | "LAYER-DIVERSITY-VALID" | "INVALID"
+  // Field qualification: a generator run and a server-side level conclude only these. Neither is a verdict: the final
+  // EXTERNAL-L7-QUALIFICATION-VALID | INVALID | ABORTED exists only after the offline reconcile of both.
+  | "GENERATOR-COMPLETE" | "SERVER-COMPLETE" | "ABORTED"
+  | "EXTERNAL-L7-QUALIFICATION-VALID";
 
 export type EvidenceEnvironment = {
   os: string;

@@ -72,8 +72,16 @@ test("the plane never spawns or reaches other processes and has no network contr
   assert.doesNotMatch(main, /createServer|node:http|node:net/, "main.ts only wires IPC to the front; the front owns the single loopback listener");
 });
 
-test("every listener binds 127.0.0.1 only", () => {
-  for (const file of defenseFiles) for (const match of code(file).matchAll(/\.listen\(([^)]+)\)/g)) assert.match(match[1], /127\.0\.0\.1/, `${rel(file)}: listen(${match[1]})`);
+test("every listener binds 127.0.0.1 only, except the Defense Plane's ONE reviewed ingress (a validated fixed IPv4, never a wildcard)", () => {
+  for (const file of defenseFiles) {
+    for (const match of code(file).matchAll(/\.listen\(([^)]+)\)/g)) {
+      if (rel(file) === "defense/plane/front.ts") assert.match(match[1], /^bind\.port, bind\.ip, /, `${rel(file)}: listen(${match[1]})`);
+      else assert.match(match[1], /127\.0\.0\.1/, `${rel(file)}: listen(${match[1]})`);
+    }
+  }
+  const front = code(path.join(root, "defense", "plane", "front.ts"));
+  assert.match(front, /const bind: IngressBind = options\.ingress === undefined \? \{ ip: "127\.0\.0\.1", port: 0 \} : validateIngressBind\(options\.ingress\);/, "the bind is the loopback default or the validated ingress, nothing else");
+  assert.equal([...front.matchAll(/\.listen\(/g)].length, 1, "the plane's front has exactly one listener");
 });
 
 test("the front forwards only to a loopback upstream chosen at construction (no request-derived host)", () => {
