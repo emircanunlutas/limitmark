@@ -6,13 +6,13 @@ import { workloadFingerprint } from "./generator-report";
 import { BA0_FIELD_C2_SALVO_V1, ba0FieldFingerprint } from "./field-thresholds";
 import { WORKLOADS } from "../policy/workloads";
 import type { ServerLevelEvidence } from "./reconcile";
-import { derivePairs, pairFixtureLatencies, pairSummaries, SALVO_SPEC, sourceExercised, type PairDerivation } from "./salvo-spec";
+import { derivePairs, jointExercised, jointMaterial, pairFixtureLatencies, pairSummaries, SALVO_SPEC, sourceExercised, type JointDerivation, type PairDerivation } from "./salvo-spec";
 import { canonicalJson } from "../policy/thresholds";
 
 type Checks = Record<string, boolean>;
 export type SalvoDiagnostics = {
   completion: { ok: boolean; failed: string[] }; phase: { ok: boolean; failed: string[] };
-  generator: PairDerivation; server: PairDerivation; matchingMaterialIndices: boolean;
+  generator: PairDerivation; server: PairDerivation; joint: JointDerivation;
 };
 
 export function reconcileSalvo(server: ServerLevelEvidence, report: GeneratorReport): {
@@ -70,10 +70,10 @@ export function reconcileSalvo(server: ServerLevelEvidence, report: GeneratorRep
       && g.lastSettlementMs === gd.settlementMs,
     drained: gd.settlementMs !== null && finite(g?.elapsedMs) && gd.settlementMs <= g.elapsedMs && report.concurrency.inFlightNow === 0,
   }, "generator_report_mismatch");
-  const matching = gd.valid && sd.valid && gd.materialIndices.length === sd.materialIndices.length
-    && gd.materialIndices.every((index, i) => sd.materialIndices[i] === index);
+  // Each source must independently pass; the pairs both sources prove material form the joint set. Differing small miss sets are allowed.
+  const joint = jointMaterial(gd, sd);
   gate("g5.salvo_exercised", {
-    records: gd.valid && sd.valid, generator: sourceExercised(gd), server: sourceExercised(sd), matching,
+    records: gd.valid && sd.valid, generator: sourceExercised(gd), server: sourceExercised(sd), joint: jointExercised(joint),
     maxima: gd.maxInFlight === 2 && sd.maxInFlight === 2 && report.concurrency.maxInFlightObserved === 2 && input.externalInFlightMax === 2,
   });
   const a = s?.armed; const c = s?.closed; const w = server.window;
@@ -115,5 +115,5 @@ export function reconcileSalvo(server: ServerLevelEvidence, report: GeneratorRep
     generatorWindow: w != null && start >= Date.parse(w.openedAt) - 2000 && end <= Date.parse(w.closedAt) + 2000,
     windowClose: w != null && c != null && near(Date.parse(w.closedAt), Date.parse(c.wallAt)),
   });
-  return { identities, reasons, diagnostics: { completion, phase, generator: gd, server: sd, matchingMaterialIndices: matching } };
+  return { identities, reasons, diagnostics: { completion, phase, generator: gd, server: sd, joint } };
 }

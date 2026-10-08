@@ -17,7 +17,7 @@ import { DEFAULT_EXTERNAL_LIMITS } from "../lab/defense/external-reducer";
 import { decideFinal } from "../lab/defense/field-verdict";
 import { EXPOSURE_STATEMENT } from "../lab/defense/exposure-proof";
 import * as policyThresholds from "../lab/policy/thresholds";
-import { derivePairs, plannedPairCounts, SALVO_SPEC, type SalvoPair } from "../lab/defense/salvo-spec";
+import { derivePairs, dispatchSkewAdmissible, jointExercised, jointMaterial, plannedPairCounts, SALVO_SPEC, sourceExercised, type SalvoPair } from "../lab/defense/salvo-spec";
 import { assertEvidenceSafe } from "../lab/evidence/redact";
 import { EvidenceRun, collectEnvironment } from "../lab/evidence/manifest";
 import { buildSelftestBundle } from "../lab/defense/field-selftest";
@@ -66,10 +66,11 @@ test("743 matching material pairs are accepted; 742 or one deficient planned bin
   invalid(deficient, "g5.salvo_exercised");
 });
 
-test("positive but negligible overlap and dispatch separation over 0.5 ms fail material exposure", () => {
+test("positive but negligible overlap and dispatch skew above the normalized bound fail generator material exposure", () => {
   for (const change of [
     (p: SalvoPair) => { p.settledMs[0] = p.startsMs[1]! + 0.001; },
-    (p: SalvoPair) => { p.startsMs[1] = p.startsMs[0]! + 0.500001; },
+    // Normalized bound: skew may use at most 25 percent of the pair opportunity (6 ms here), exactly 1.5 ms.
+    (p: SalvoPair) => { p.startsMs[1] = p.startsMs[0]! + 1.500001; p.settledMs[1] = p.startsMs[1] + 6; },
   ]) {
     const c = salvoFixture(); c.report.salvo!.pairs.forEach(change); refreshFixture(c);
     invalid(c, "g5.salvo_exercised");
@@ -96,15 +97,84 @@ test("independent actual source-clock coverage cannot be replaced by planned-bin
   invalid(c, "g5.salvo_exercised");
 });
 
-test("generator/server material pair-index sets must agree, even when each has sufficient totals", () => {
-  for (const side of ["generator", "server", "different"] as const) {
-    const c = salvoFixture();
-    serialPair(c.report.salvo!.pairs[0]);
-    if (side === "server") { c.report.salvo!.pairs = pairRecords(1); serialPair(c.server.salvo!.pairs[0]); }
-    if (side === "different") serialPair(c.server.salvo!.pairs[25]);
-    refreshFixture(c); const result = invalid(c, "g5.salvo_exercised");
-    assert.equal(result.result.salvo!.matchingMaterialIndices, false);
+const miss = (c: ReturnType<typeof salvoFixture>, generator: number[], server: number[]) => {
+  for (const i of generator) serialPair(c.report.salvo!.pairs[i]);
+  for (const i of server) serialPair(c.server.salvo!.pairs[i]);
+  refreshFixture(c);
+  return c;
+};
+const joint = (c: ReturnType<typeof salvoFixture>) => evaluate(c).result.salvo!.joint;
+
+test("different small miss sets are accepted when the joint intersection and every planned bin remain sufficient", () => {
+  // 749 + 749 with different missed indices: the old exact-set rule failed this; joint is 748.
+  const c = miss(salvoFixture(), [0], [300]);
+  assert.equal(derivePairs(c.report.salvo!.pairs, true).materialIndices.length, 749);
+  assert.equal(derivePairs(c.server.salvo!.pairs, false).materialIndices.length, 749);
+  const result = evaluate(c); assert.equal(result.decision.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
+  assert.equal(result.result.salvo!.joint.materialIndices.length, 748); assert.deepEqual(result.result.salvo!.joint.missingIndices, [0, 300]);
+  // The measured 2.163 ms cold-pair skew with realistic 40 ms lifetimes is material on both sources.
+  const cold = salvoFixture(); const p = cold.report.salvo!.pairs[0]; p.startsMs = [1, 3.163]; p.settledMs = [41, 43.163]; refreshFixture(cold);
+  assert.equal(evaluate(cold).decision.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
+  assert.equal(derivePairs(cold.report.salvo!.pairs, true).materialIndices.length, 750);
+});
+
+test("joint boundary: exactly 743 qualifies with disjoint or identical misses; 742 does not, even though each source still has 743 or more", () => {
+  const disjoint = miss(salvoFixture(), [0, 50, 100, 150], [25, 75, 125]);
+  assert.equal(joint(disjoint).materialIndices.length, 743); assert.equal(evaluate(disjoint).decision.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
+  const identical = miss(salvoFixture(), [0, 25, 50, 75, 100, 125, 150], [0, 25, 50, 75, 100, 125, 150]);
+  assert.equal(joint(identical).materialIndices.length, 743); assert.equal(evaluate(identical).decision.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
+  const below = miss(salvoFixture(), [0, 50, 100, 150], [25, 75, 125, 175]);
+  assert.equal(joint(below).materialIndices.length, 742);
+  assert.ok(sourceExercised(derivePairs(below.report.salvo!.pairs, true)) && sourceExercised(derivePairs(below.server.salvo!.pairs, false)), "each source alone is sufficient");
+  invalid(below, "g5.salvo_exercised"); assert.equal(jointExercised(joint(below)), false);
+});
+
+test("two joint misses in one planned bin fail, whether from one source, both sources, or the same pair index", () => {
+  assert.deepEqual(plannedPairCounts().slice(0, 2), [13, 12]);
+  for (const [g, s] of [[[1, 2], []], [[], [1, 2]], [[1], [2]], [[13], [14]], [[0, 1], [0, 1]]] as [number[], number[]][]) {
+    const c = miss(salvoFixture(), g, s); invalid(c, "g5.salvo_exercised");
+    assert.ok(joint(c).materialIndices.length >= 743, "the total budget alone is not what fails");
   }
+  // One joint miss in a 12-pair bin and in a 13-pair bin is the permitted budget.
+  const ok = miss(salvoFixture(), [1], [14]); assert.equal(evaluate(ok).decision.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
+});
+
+test("a pair is jointly material only when both sources prove it: one-sided exercise is INVALID", () => {
+  for (const unexercised of ["server", "generator"] as const) {
+    const c = salvoFixture();
+    for (const p of (unexercised === "server" ? c.server.salvo!.pairs : c.report.salvo!.pairs)) serialPair(p);
+    refreshFixture(c); const result = invalid(c, "g5.salvo_exercised");
+    const d = result.result.salvo!;
+    assert.equal(d.joint.materialIndices.length, 0);
+    assert.equal((unexercised === "server" ? d.generator : d.server).materialIndices.length, 750);
+  }
+  const g = derivePairs(salvoFixture().report.salvo!.pairs, true);
+  assert.deepEqual(jointMaterial(g, { ...g, valid: false }), { valid: false, materialIndices: [], missingIndices: [], plannedMaterial: Array(60).fill(0) });
+  assert.equal(jointExercised(jointMaterial({ ...g, valid: false }, g)), false);
+});
+
+test("inconsistent pair-derived summaries cannot qualify even with sufficient joint exercise", () => {
+  for (const change of [
+    (c: ReturnType<typeof salvoFixture>) => { c.report.latencyMs.p50 += 1; },
+    (c: ReturnType<typeof salvoFixture>) => { c.report.schedule.lagMs.max += 1; },
+    (c: ReturnType<typeof salvoFixture>) => { c.report.salvo!.fixtureLatencyMs.post_inquiry.p95 += 1; },
+    (c: ReturnType<typeof salvoFixture>) => { c.report.schedule.paced = 749; },
+  ]) { const c = salvoFixture(); change(c); invalid(c, "g1.salvo_fates"); }
+});
+
+test("dispatch skew rule: exact records retained; normalized and absolute bounds reject staggering; serial dispatch has no overlap", () => {
+  assert.equal(SALVO_SPEC.dispatchSeparationCapMs, 10);
+  assert.equal(dispatchSkewAdmissible(2.163, 40), true, "measured cold-pair skew is admissible at realistic lifetimes");
+  assert.equal(dispatchSkewAdmissible(1.5, 6), true); assert.equal(dispatchSkewAdmissible(1.500001, 6), false);
+  assert.equal(dispatchSkewAdmissible(10, 1000), true); assert.equal(dispatchSkewAdmissible(10.000001, 1000), false);
+  const nested = salvoFixture(); const p = nested.report.salvo!.pairs[5];
+  // A 5 ms request fully nested 40 ms inside a 50 ms request has overlap ratio 1, but is not a salvo.
+  p.startsMs = [401, 441]; p.settledMs = [451, 446]; refreshFixture(nested);
+  const d = derivePairs(nested.report.salvo!.pairs, true); assert.equal(d.valid, true); assert.equal(d.materialIndices.includes(5), false);
+  const serial = salvoFixture(); serialPair(serial.report.salvo!.pairs[5]); serialPair(serial.server.salvo!.pairs[5]); refreshFixture(serial);
+  assert.equal(derivePairs(serial.report.salvo!.pairs, true).materialIndices.includes(5), false);
+  assert.equal(derivePairs(serial.server.salvo!.pairs, false).materialIndices.includes(5), false, "the server rule has no skew test, so overlap alone excludes serial dispatch");
+  assert.deepEqual(salvoFixture().report.salvo!.pairs[5].startsMs, [401, 401.25], "records keep exact observed timestamps");
 });
 
 test("missing, duplicate, malformed, non-finite and unbounded pair records cannot qualify", () => {
@@ -225,7 +295,7 @@ test("all salvo capacity and recovery gates pass without resizing; inherited def
   assert.match(gates.find(g => g.id === "hop.replay_with_canary_and_burst")!.detail, /vs 832$/);
   for (const key of ["l2", "composer", "hop", "plane", "channel", "collector", "external", "allowedShed", "window", "canary", "recovery", "exposure", "telemetry", "ceilings"] as const) assert.deepEqual(t[key], BA0_FIELD_C2_V1[key], key);
   assert.equal(t.recovery.quietMs, 135000); assert.equal(t.canary.jcrMinimum, 1);
-  assert.equal(ba0FieldFingerprint(t).sha256, "231a5ccd8574f3bb21d61ff160e424636076090bb451c7b43ef5651700ac400f");
+  assert.equal(ba0FieldFingerprint(t).sha256, "eda312909c18c7a7cd9c4525f2071b474f10b1b27c3b181e9e1a12ea27208f46");
   assert.equal(workloadFingerprint(WORKLOADS["ba0-l7-pressure-c2-salvo"]), "43ee3f7c0aaacea44384cc7e614eb58fe126bb042698417cf6c65f8f138d4264");
   for (const change of [
     (x: typeof t) => { x.channel.queueCap = 13727; }, (x: typeof t) => { x.hop.replayCapacity = 831; },
@@ -242,7 +312,7 @@ test("all salvo capacity and recovery gates pass without resizing; inherited def
   }, null, 2));
 });
 
-test("exact 0.5-ms separation and 0.75 residency boundaries pass; values below residency do not round into a pass", () => {
+test("exact skew-share and 0.75 residency boundaries pass; values below residency do not round into a pass", () => {
   const c = salvoFixture();
   for (const pairs of [c.report.salvo!.pairs, c.server.salvo!.pairs]) for (const p of pairs) {
     p.startsMs[1] = p.startsMs[0]! + .5; p.settledMs = [p.startsMs[0]! + 2, p.startsMs[1]! + 2];
@@ -270,7 +340,7 @@ test("real writer, checksums, offline parser and final artifact carry bounded ev
     assert.equal(outcome.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
     const final = JSON.parse(readFileSync(path.join(directory, outcome.evidenceId!, "final.json"), "utf8"));
     assert.equal(final.salvo.completion.ok, true); assert.equal(final.salvo.phase.ok, true);
-    assert.equal(final.salvo.generator.materialIndices.length, 750); assert.equal(final.salvo.matchingMaterialIndices, true);
+    assert.equal(final.salvo.generator.materialIndices.length, 750); assert.equal(final.salvo.joint.materialIndices.length, 750); assert.deepEqual(final.salvo.joint.missingIndices, []);
   } finally {
     const resolved = path.resolve(directory);
     assert.ok(resolved.startsWith(path.resolve(root, "artifacts", "lab") + path.sep));

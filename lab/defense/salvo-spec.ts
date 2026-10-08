@@ -2,7 +2,7 @@
 import { summarizeLatencies } from "../policy/thresholds";
 export const SALVO_SPEC = Object.freeze({
   pairs: 750, requestsPerPair: 2, periodMs: 80, durationMs: 60_000, binMs: 1_000, bins: 60,
-  dispatchLatenessExclusiveMs: 40, materialSeparationMs: 0.5, materialRatio: 0.75,
+  dispatchLatenessExclusiveMs: 40, dispatchSeparationCapMs: 10, materialRatio: 0.75,
   jointMaterialPairs: 743, missingPerPlannedBin: 1, materialStartsPerActualBin: 11,
   maxElapsedMs: 64_000,
   rateInterpretation: "25 per second campaign average; burst two; nominal one-second bins alternate 26 and 24",
@@ -15,6 +15,17 @@ export const plannedPairCounts = (): number[] => {
   for (let index = 0; index < SALVO_SPEC.pairs; index++) counts[plannedPairBin(index)]++;
   return counts;
 };
+
+/**
+ * Generator-only skew rule. Exact dispatch timestamps are always retained; skew is never rounded or smoothed.
+ * Normalized bound: for equal lifetimes d, overlap is d - skew, so the 0.75 rule is exactly skew <= 0.25 d. Using the
+ * pair's own opportunity P generalizes that to unequal lifetimes and rejects a short request nested inside a long one.
+ * Absolute cap: a salvo is issued in one synchronous scheduler turn, so skew only measures setup cost or a stall inside
+ * that turn. The cap excludes staggered dispatch regardless of how long the lifetimes are. Serial dispatch already fails
+ * overlap, because its overlap is zero.
+ */
+export const dispatchSkewAdmissible = (skewMs: number, opportunityMs: number): boolean =>
+  skewMs <= SALVO_SPEC.dispatchSeparationCapMs && skewMs <= (1 - SALVO_SPEC.materialRatio) * opportunityMs;
 
 export type PairDerivation = {
   valid: boolean; scheduleValid: boolean; materialIndices: number[]; plannedMaterial: number[];
@@ -53,7 +64,7 @@ export function derivePairs(value: unknown, generator: boolean): PairDerivation 
     result.opportunityMs[bin] += p; result.overlapMs[bin] += o;
     // Cross multiplication avoids division at the qualification boundary. No upward rounding.
     if (p > 0 && o > 0 && o >= SALVO_SPEC.materialRatio * p
-      && (!generator || Math.abs(a - b) <= SALVO_SPEC.materialSeparationMs)) {
+      && (!generator || dispatchSkewAdmissible(Math.abs(a - b), p))) {
       result.materialIndices.push(i); result.plannedMaterial[bin]++;
       const actualBin = Math.floor(last / SALVO_SPEC.binMs);
       if (actualBin >= 0 && actualBin < SALVO_SPEC.bins) result.actualMaterial[actualBin]++;
@@ -69,6 +80,29 @@ export function sourceExercised(d: PairDerivation): boolean {
     && d.plannedMaterial.every((n, i) => n >= expected[i] - SALVO_SPEC.missingPerPlannedBin)
     && d.actualMaterial.every((n) => n >= SALVO_SPEC.materialStartsPerActualBin)
     && d.opportunityMs.every((p, i) => p > 0 && d.overlapMs[i] >= SALVO_SPEC.materialRatio * p);
+}
+
+export type JointDerivation = { valid: boolean; materialIndices: number[]; missingIndices: number[]; plannedMaterial: number[] };
+
+/** A pair is jointly material only when BOTH independently valid sources prove it. Never derived from an aggregate. */
+export function jointMaterial(generator: PairDerivation, server: PairDerivation): JointDerivation {
+  const result: JointDerivation = { valid: false, materialIndices: [], missingIndices: [], plannedMaterial: Array<number>(SALVO_SPEC.bins).fill(0) };
+  if (!generator.valid || !server.valid) return result;
+  const serverMaterial = new Set(server.materialIndices);
+  const generatorMaterial = new Set(generator.materialIndices);
+  for (let index = 0; index < SALVO_SPEC.pairs; index++) {
+    if (generatorMaterial.has(index) && serverMaterial.has(index)) { result.materialIndices.push(index); result.plannedMaterial[plannedPairBin(index)]++; }
+    else result.missingIndices.push(index);
+  }
+  result.valid = true;
+  return result;
+}
+
+/** At least 743 joint pairs, and every planned one-second bin misses at most one jointly material pair. */
+export function jointExercised(joint: JointDerivation): boolean {
+  const expected = plannedPairCounts();
+  return joint.valid && joint.materialIndices.length >= SALVO_SPEC.jointMaterialPairs
+    && joint.plannedMaterial.every((n, i) => n >= expected[i] - SALVO_SPEC.missingPerPlannedBin);
 }
 
 export function pairFixtureLatencies(pairs: readonly SalvoPair[]) {

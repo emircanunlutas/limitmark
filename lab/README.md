@@ -366,7 +366,7 @@ completion-dependent historical phase identity fail. The new level does not rein
 | Level | `ba0-l7-c2-salvo` |
 | Workload | `ba0-l7-pressure-c2-salvo` |
 | Parameters | `ba0-field-c2-salvo-v1` |
-| Parameter SHA-256 | `231a5ccd8574f3bb21d61ff160e424636076090bb451c7b43ef5651700ac400f` |
+| Parameter SHA-256 | `eda312909c18c7a7cd9c4525f2071b474f10b1b27c3b181e9e1a12ea27208f46` (remediated; the pre-review value `231a5ccd8574f3bb21d61ff160e424636076090bb451c7b43ef5651700ac400f` was never run in the field) |
 | Workload SHA-256 | `43ee3f7c0aaacea44384cc7e614eb58fe126bb042698417cf6c65f8f138d4264` |
 
 The isolated scheduler releases 750 pairs at `80 * index` ms, indices 0 through 749, over a full 60-second monotonic phase. The final release is
@@ -391,19 +391,31 @@ association. Arrival order within a pair can reverse. Existing source events are
 Only two active nonce associations are retained. Missing, duplicate, malformed, overflowing or temporally inconsistent records cannot qualify.
 
 For each source and pair, opportunity is `P = min(endA-startA, endB-startB)` and actual overlap is
-`O = max(0, min(endA,endB)-max(startA,startB))`. A material pair has positive opportunity and `O >= 0.75 * P`; the generator additionally proves
-start separation at most 0.5 ms. Source lifetimes are independent measurements, not counterfactual service-time estimates.
+`O = max(0, min(endA,endB)-max(startA,startB))`. A material pair has positive opportunity and `O >= 0.75 * P`. Normalized overlap is the primary
+physical-exercise evidence on both sources. The generator additionally bounds its own dispatch skew `s = |startA-startB|`; exact observed timestamps are
+retained and never rounded. Source lifetimes are independent measurements, not counterfactual service-time estimates.
 
-Qualification requires matching material pair-index sets containing at least 743 pairs. Every planned one-second bin admits at most one missed
-material pair: 12/13 or 11/12. On both sources, the opportunity-weighted ratio including **all** pairs in every planned bin is at least 0.75;
+Dispatch skew rule (replaces the pre-review absolute 0.5 ms gate): `s <= min(10 ms, 0.25 * P)`. The normalized term is derived, not chosen: for equal
+lifetimes `d`, `O = d - s`, so `O >= 0.75 d` is exactly `s <= 0.25 d`; using the pair's own `P` generalizes that to unequal lifetimes and rejects a short
+request nested inside a long one (overlap ratio 1, but not a salvo). Serial dispatch needs `s >= d`, hence zero overlap, and is already excluded by the
+overlap rule. The 10 ms absolute cap is an engineering bound, not a derived one: both sends are issued in one synchronous scheduler turn, so skew only
+measures setup cost (or a stall inside that turn); 10 ms is one eighth of the 80 ms period and a quarter of the 40 ms lateness allowance, 4.6 times the
+2.163 ms cold first pair measured on loopback, and bounds staggered dispatch regardless of how long lifetimes are. The old 0.5 ms value was an
+implementation-timing proxy: steady-state loopback skew is 0.10 to 0.34 ms but the cold first pair measured 2.163 ms, and the server has no equivalent
+measurement. The server rule has no skew term; overlap alone applies.
+
+Qualification requires each source to pass independently and a **joint** set of at least 743 pairs. A pair is jointly material only when both
+independently valid sources prove it material (the intersection of the two material index sets). The two sources may miss different pairs. Every
+planned one-second bin admits at most one jointly missed pair: 12/13 or 11/12 jointly material. On both sources, the opportunity-weighted ratio including **all** pairs in every planned bin is at least 0.75;
 every actual source-clock second has at least 11 material overlap starts. Planned bins group whole pairs by reviewed release index; actual bins
 use the later start on each emitting source clock. Residency includes each pair's bounded settlement, including any final drain.
 All summaries are derived offline from the bounded records; claimed aggregates cannot override them. Boundaries are evaluated without rounding
 up. The 743 threshold is a preregistered seven-opportunity loss budget, not a statistical confidence level.
 
-Successful pair sets must agree exactly. Thus differing local success sets, including a cold-start phase miss seen only by the generator, can
-invalidate qualification even when each source separately passes aggregate thresholds. This is reported honestly; requests are never held to
-manufacture overlap. Fast requests can qualify with much less than the old 9.6-second absolute residency requirement.
+The pre-review rule required the two material index sets to be identical. That made one pair seen as non-material by only one source (for example a
+cold first pair, or a few milliseconds of arrival skew on the server) fatal even with 749 jointly material pairs, so it was replaced by the joint
+intersection above. `final.json` persists the joint material indices, the missing indices and the joint planned-bin counts. Requests are never
+held to manufacture overlap. Fast requests can qualify with much less than the old 9.6-second absolute residency requirement.
 
 The new completion and phase-only predicates are independent diagnostics and both are mandatory. `final.json` persists their failed subconditions
 and both derived exposure summaries. Phase binding verifies source barriers, zero pre-arm/post-close ingress, complete ingress/settlement counts,
@@ -441,3 +453,20 @@ test described above, with the same pending-promise/event-loop message. Database
 `artifacts/lab/salvo-focused-final.tap`, `artifacts/lab/salvo-full-final.tap`, `artifacts/lab/salvo-typecheck.log` and `artifacts/lab/salvo-lint.log`.
 All 34 applicable capacity gates pass with 3,600 seconds of target lifetime, recorded in `artifacts/lab/salvo-capacity.json`.
 No commit, push, deployment, external host contact, external traffic or cloud/firewall configuration change was performed.
+
+#### Salvo review remediation
+
+An independent review found that exact generator/server material-set equality could return INVALID with 749 of 750 jointly material pairs: a cold
+first pair measured 2.163 ms of generator dispatch skew against a 0.5 ms gate, and the server has no equivalent measurement. The remediation replaces
+set equality with the joint intersection and replaces the absolute 0.5 ms gate with the normalized-plus-cap skew rule above. Only
+`lab/defense/salvo-spec.ts`, `lab/defense/salvo-reconcile.ts`, their tests and this document changed. The `ba0-field-c2-salvo-v1` parameter
+fingerprint changed because the reviewed salvo specification changed; the salvo workload fingerprint and every C1/C2 parameter and workload
+fingerprint are unchanged. Defense, lane, credit, canary, recovery, exposure and accounting parameters are untouched and still asserted equal.
+
+| Check | Result |
+| --- | --- |
+| Salvo, scheduler, workload, field-run and field-threshold suites | 74 passed; zero failed, cancelled or skipped |
+| All `tests/lab-*.test.ts` | 512 passed, 0 failed, 8 skipped (one earlier run immediately after a local `git stash` round trip reported 2 failures that did not reproduce in three later runs) |
+| Typecheck, repository lint, `git diff --check` | Pass |
+| Full suite, `npm test` | 1,529 tests: 1,487 passed, 0 failed, 0 cancelled, 42 skipped |
+| Historical C1/C2 and `first-gcp-n2` | Immutability and original three failed identities and INVALID result tests pass unchanged |
