@@ -46,7 +46,10 @@ const BASELINE_SHA256: Readonly<Record<string, string>> = {
   "lab/defense/thresholds.ts": "6142556b7a05fbeb8bdf629c8d5c8866e6947b14aa73ac44bfcfe22736ebc5ae",
   "lab/defense/origin-thresholds.ts": "cb61dfdb3a770efc0096181ba521f9715369a77d07f927cd1c2eb7e316a78621",
   "lab/defense/hostile-corpus.ts": "8d92e01911b77661d2e7bb0e596caffe5f84b1041ffc2b28fea10b63cdd54791",
-  "lab/defense/direct-corpus.ts": "379fac4d783f9f4dfd6ba1c1384ead27b4a1cb0ed9e66848edb8845086376d54",
+  // Intentional, reviewed revision (previous SHA-256 379fac4d783f9f4dfd6ba1c1384ead27b4a1cb0ed9e66848edb8845086376d54): tm_expired minted iat and exp with two
+  // clock reads, so a millisecond tick between them pushed its exactly-maximum 5000 ms lifetime over PB_MAX_LIFETIME_MS (ob.lifetime_invalid instead of ob.expired).
+  // The proofs now take one clock read. Case ids, families, order, expected reasons and the fixed count (110) are unchanged.
+  "lab/defense/direct-corpus.ts": "1370439dd1924149c15bbafe9085596c9e1c488f3f3a0f023594e1f3ac66a744",
   "lab/defense/semantic-corpus.ts": "5de980ff9c8e087d4878047c9431803b947411c1ee91fcc839c9bfeef2b2c9d8",
   "lab/defense/hop-keys.ts": "12377c240cfa2fd201e606972608338da6eeb29df5e6108ddd76874b3d0e90d4",
   "lab/defense/origin-processes.ts": "55a251f1c5a41813bf3373be0b740a5c52688931fedbf9c0a23fbda951760236",

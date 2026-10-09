@@ -196,3 +196,50 @@ test("key material is canonical base64url DER and an invalid key refuses to impo
   assert.throws(() => importPublicKey("not a key"));
   assert.throws(() => importPrivateKey("AAAA"));
 });
+
+// ------------------------------------------------------------------------------------------------ CI flake: the tm_expired fixture sat exactly at the maximum lifetime
+// Root cause: the corpus minted `{ iat: now() - 20_000, exp: now() - 15_000 }` with TWO clock reads. The lifetime is 5_000 + (elapsed ms between the reads), and
+// 5_000 is exactly PB_MAX_LIFETIME_MS, so a tick between the reads turned a well-formed expired proof into ob.lifetime_invalid. The validator is correct.
+test("lifetime vs expiry are distinct predicates: lifetime shape is judged first, from the claims alone, never from the clock", () => {
+  const { pb } = issuePair();
+  const decoded = decodeProof(pb.header, "pb");
+  assert.ok(decoded.ok);
+  const claims = decoded.value.claims as PbClaims;
+  const base = { keys: new Map<string, KeyObject>([["pb-test", P.publicKey]]), aud: ID_BOUNDARY, nowMs: NOW, fenceMs: NOW - 100_000 };
+  const old = { ...claims, iat: NOW - 20_000 };
+  // Valid lifetime (exactly the maximum), long expired: expired. One millisecond longer: lifetime_invalid, however far in the past it is.
+  assert.equal(checkProofWindow({ ...old, exp: old.iat + PB_MAX_LIFETIME_MS }, base), "ob.expired");
+  assert.equal(checkProofWindow({ ...old, exp: old.iat + PB_MAX_LIFETIME_MS + 1 }, base), "ob.lifetime_invalid");
+  assert.equal(checkProofWindow({ ...old, exp: old.iat }, base), "ob.lifetime_invalid", "zero lifetime");
+  assert.equal(checkProofWindow({ ...old, exp: old.iat - 1 }, base), "ob.lifetime_invalid", "inverted timestamps");
+  // The verdict does not move with the verifier's clock for a given lifetime shape (fixed clock vs a clock that moved during evaluation).
+  for (const skew of [0, 1, 7, 250]) {
+    assert.equal(checkProofWindow({ ...old, exp: old.iat + PB_MAX_LIFETIME_MS }, { ...base, nowMs: NOW + skew }), "ob.expired", `expired at +${skew}`);
+    assert.equal(checkProofWindow({ ...old, exp: old.iat + PB_MAX_LIFETIME_MS + 1 }, { ...base, nowMs: NOW + skew }), "ob.lifetime_invalid", `invalid at +${skew}`);
+  }
+  // Valid signed lifetime and the exact expiry boundary.
+  assert.equal(checkProofWindow(claims, base), null);
+  assert.equal(checkProofWindow(claims, { ...base, nowMs: claims.exp + HOP_SKEW_MS }), null);
+  assert.equal(checkProofWindow(claims, { ...base, nowMs: claims.exp + HOP_SKEW_MS + 1 }), "ob.expired");
+});
+
+test("the old two-read fixture shape is demonstrably clock-dependent; the single-read shape is not (the corpus uses the latter)", async () => {
+  const { pb } = issuePair();
+  const decoded = decodeProof(pb.header, "pb");
+  assert.ok(decoded.ok);
+  const claims = decoded.value.claims as PbClaims;
+  const base = { keys: new Map<string, KeyObject>([["pb-test", P.publicKey]]), aud: ID_BOUNDARY, nowMs: NOW, fenceMs: NOW - 100_000 };
+  const ticking = (ticks: number[]) => { let i = 0; return () => NOW + (ticks[Math.min(i++, ticks.length - 1)] ?? 0); };
+  const twoReads = (now: () => number) => ({ iat: now() - 20_000, exp: now() - 15_000 });
+  assert.equal(checkProofWindow({ ...claims, ...twoReads(ticking([0, 0])) }, base), "ob.expired", "no tick: passes by luck");
+  assert.equal(checkProofWindow({ ...claims, ...twoReads(ticking([0, 1])) }, base), "ob.lifetime_invalid", "one millisecond between the reads: the defect");
+  const oneRead = (now: () => number) => { const t = now(); return { iat: t - 20_000, exp: t - 20_000 + PB_MAX_LIFETIME_MS }; };
+  for (const ticks of [[0], [0, 1], [3, 900]]) assert.equal(checkProofWindow({ ...claims, ...oneRead(ticking(ticks)) }, base), "ob.expired");
+  const { readFileSync } = await import("node:fs");
+  const path = await import("node:path");
+  const source = readFileSync(path.join(__dirname, "..", "lab", "defense", "direct-corpus.ts"), "utf8");
+  for (const id of ["tm_expired", "tm_future", "tm_lifetime_long"]) {
+    const line = source.split("\n").find((entry) => entry.includes(`"${id}"`)) ?? "";
+    assert.equal((line.match(/now\(\)/g) ?? []).length, 1, `${id} reads the clock exactly once per proof`);
+  }
+});
