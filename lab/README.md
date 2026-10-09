@@ -470,3 +470,63 @@ fingerprint are unchanged. Defense, lane, credit, canary, recovery, exposure and
 | Typecheck, repository lint, `git diff --check` | Pass |
 | Full suite, `npm test` | 1,529 tests: 1,487 passed, 0 failed, 0 cancelled, 42 skipped |
 | Historical C1/C2 and `first-gcp-n2` | Immutability and original three failed identities and INVALID result tests pass unchanged |
+
+### Salvo per-request diagnostics (instrumentation only, schema `ba0-salvo-diagnostics-v1`)
+
+Baseline `dcf10af8229a5738b1852721fe12de86a488d07d`. R2 (`first-gcp-n2-salvo-r2`) is INVALID at `g5.salvo_exercised` (generator 750/750, server 727/750,
+joint 727/750 against a 743 minimum) and stays so. This change adds observation, not a remedy: no admission, rejection, pacing, qualification threshold,
+parameter or fingerprint changed (`ba0-field-c2-salvo-v1` is still `eda31290…8f46`, the salvo workload still `43ee3f7c…d4264`), and no diagnostic value is an
+input to any identity or verdict. The raw R2 evidence is not in this repository, so it was **not** revalidated; R2-shaped synthetic fixtures were used.
+
+| Where | What |
+| --- | --- |
+| Server evidence run, `salvo-diagnostics.json` | `ServerSalvoDiagnostics`: one record per external request, written last and in isolation (a scanner refusal costs only this artifact). Not part of `server-level.json`. |
+| Generator report, `salvoDiagnostics` | `GeneratorSalvoDiagnostics`, a sibling key of `salvo`. `salvo.pairs`, `SALVO_SPEC` and every existing key set are unchanged. |
+| Final reconcile run, `salvo-diagnostic-check.json` | `evaluateSalvoDiagnostics` (check schema `ba0-salvo-diagnostic-check-v2`), computed after the decision. Written only when diagnostics were supplied, so historical inputs produce exactly the artifacts they always did. `influencesVerdict` is the literal `false`. |
+
+**Server record** (at most 1,500; the 1,501st external ingress is counted in `counters.overflow` and not stored). Fields are bounded enums, small integers and
+plane-clock numbers: `rid` (`x` + ordinal + 1), `ord` (arrival ordinal), `pair` (`floor(ord/2)`), `slot` (`ord % 2`, the **arrival** slot), `cls` (`open|mutation|unknown`
+from `L2_DECIDED`), `l1` (`passed|rejected|shed|error|none`), `l2` (`admitted|shed|error|degraded|none`), `lane` (`open|credited|unverified|none`), `shed`
+(`lane_budget|evaluator_saturation|none`), `egress` (an `EGRESS_ATTEMPTED` was seen), `fin` (`responded|aborted|pending`), `status` (HTTP status or null), `inSeq`/`outSeq`
+(the plane's global event sequence numbers of `INGRESS_ACCEPTED` and the terminal event), `inMs`/`outMs`, `flags` (`dup_id|dup_event|seq_order|time_order|late_event`).
+The recorder reads only existing plane events. It records no body, header, cookie, token, address, URL, origin, personal datum or nonce.
+
+**Generator record** (at most 1,500): `pair`, `slot` (the scheduler's **dispatch** slot; slot 1 of an odd pair is the mutation), `startMs`, `handoffMs`, `settledMs`, `status`.
+
+**Provenance.** Server times are the plane's monotonic clock, relative to the first external `INGRESS_ACCEPTED` (the same zero as `salvo.pairs`; `inMs`/`outMs` are
+bit-identical to `startsMs[slot]`/`settledMs[slot]`, and the check verifies it). Generator times are the generator's monotonic clock relative to the scheduler start. `startMs` is taken
+immediately before the sender is invoked (before socket assignment); `settledMs` is when the scheduler observed the sender's promise settle, not the instant the last response byte arrived. The two clocks are never compared except through the existing 2,000 ms agreement.
+
+**What write handoff proves.** `handoffMs` is the Node `ClientRequest` `finish` event: the last bytes of the request were handed to the operating system. It is not network
+arrival and not server receipt. Probe on the Windows development host (loopback, one process, one clock): `finish` preceded the server's ingress callback in 1,200 of 1,200 requests (warm and cold sockets,
+gap 0.03–1.45 ms), and it still fired (4.9 ms) against a peer that accepted the TCP connection and never read. A test pins the second fact. It is recorded only while the request is unsettled, at most once, and is `null`
+when unobserved (including every injected test sender). The callback is attached only when requested, so the N=1/N=2 senders are unchanged.
+
+**Three questions, kept apart.** The offline check reports three independent axes and none is proof of the next.
+**A. `integrity`**: are the supplied records well-formed, complete, free of causality violations and in agreement with the authoritative pair records they were derived alongside?
+**B. `composition`**: are the server-observed classes and statuses compatible with the expected workload (even pair: two `open`; odd pair: one `open` and one `mutation`, in either arrival order; statuses 200 or 503)?
+**C. `binding`**: is a given server request provably the same physical request as a given generator request? **This is never established.** No end-to-end identifier travels with a request (adding one would change the traffic), so the generator pair index and the server arrival ordinal are related only by an assumed ordinal mapping.
+`binding.status` is `inferred` (the ordinal and composition assumptions held and the class/status signatures were compatible), `unverified` (it cannot be established for some pair, or there is no generator evidence), or `contradicted` (a pair's composition or signature contradicts the mapping). `verified` is reserved for direct end-to-end identity evidence and is unreachable: its count is typed as `0` and `identityEvidence` as `"none"`, and a test pins that no code assigns it.
+`signature` is agreement of observable class/status signatures under that assumed mapping, nothing more. The workload is periodic, so a shifted ordinal sequence, a dropped request replaced by an extra one, and a permutation of equivalent pairs (even/even or odd/odd with the same statuses) produce records that are identical to a correct campaign's in every recorded field; a test asserts exactly that. A swap that changes an observable status is detected (`contradicted`). Anything else needs an identifier that is not there. A timing-residual detector between the two hosts could be built from the recorded `inMs`/`startMs`, but it would rest on an unmeasured clock offset and jitter bound, so none is claimed.
+
+**Severity and missing data.** `integrity` and `composition` use one reporting precedence, implemented once in `worstOf`: `malformed > inconsistent > unknown > consistent`. It orders what is reported, not how confident anyone should be, and it is unrelated to `binding`. A later, weaker finding can never lower an earlier, stronger one. `integrity.findings` lists each reason once (closed vocabulary) with its severity.
+`malformed`: input that is not exactly the schema (never partially trusted). `inconsistent`, a proven contradiction: a diagnostic timestamp that differs from the authoritative pair record, `handoffMs < startMs`, `handoffMs > settledMs` or `settledMs < startMs` (the sender reports a handoff only while the request is unsettled and Node's `finish` follows the start, so neither can occur in genuine data; equality is allowed), a settled pair-record slot with no diagnostic row, a server terminal event that precedes its ingress, a sequence or time regression within a request, or incompatible signatures.
+`unknown`: incomplete data that proves nothing wrong: fewer than 1,500 records, a pending or aborted request, overflow, a recorder fault, a reused key (both requests flagged, nothing attached to either), a repeated or late event, a missing handoff, an unsettled or missing generator row. A missing handoff is never invalid by itself. An undecided class is `unknown` composition and `unverified` binding; it is not an integrity failure.
+`absent`: nothing supplied. A request without a response event is `pending` with null response fields. Note the existing pair observer keeps two pending nonces, so one lost response also corrupts later pair records; once those records are supplied the divergence is a proven `server_pair_mismatch`, not merely unknown.
+
+**Reading a zero-overlap pair.** Pair overlap is `O = max(0, min(end) - max(start))`. `zeroOverlap.detail[]` names, per pair, the cause from the first-arrived request. `fast_shed_first_arrival`: it was an L2 shed with no egress and status 503, a decision that needs no downstream
+I/O, and it settled before the second request was stamped. `short_first_arrival_not_shed`: a short non-shed response. This explains a pair; it does not make it material, and it does not generalize: the retained R2 trace proves fast shedding for pair 63 only.
+`partialOverlap` lists pairs with `0 < O < 0.75 P` (R2 pair 164 had 0.7348).
+
+**Server observation is not network arrival.** `INGRESS_ACCEPTED` is the plane's HTTP layer accepting a parsed request; the SYN, the TCP handshake, kernel queueing and header receipt all precede it. A server separation of about 0.6–1.2 ms between two requests says nothing about
+how far apart they were on the wire.
+
+**Capacity** (all three new gates are additive; the 34 historical gate results are unchanged, 37 in total, all pass). Server and generator, three representations (live, snapshot, serialized) at 512 B per record plus 128 B per nonce-index entry:
+`2 × 3 × 1500 × 512 + 1500 × 128 = 4.6 MiB` against 18.0 MiB of remaining modeled headroom (238.0 to 242.6 MiB of 256 MiB; headroom 18.0 to 13.4 MiB; the generator share is charged to the same budget conservatively). Evidence: modeled journal 4.4 MiB + pair artifacts 0.7 MiB + diagnostics `1500 × (640 + 300) B = 1.3 MiB` = **6.5 MiB**
+of the 24 MiB allowance (was 5.1). Measured: server artifact 419 B per record on average (at most about 540 B with every flag set), generator 182 B; live heap about 115 B per record. The recorder adds no plane event, journal line, trace, queue entry, hop proof or disk write, so the channel, replay, trace, decision and journal-growth gates and the 20,000-decision, 4,096-replay and 16,384-queue capacities are untouched.
+Cost: about 0.4 µs per event, about 5 ms for a whole campaign (12,000 plane events), in the collector and not in the Defense Plane.
+
+**Known limitations.** Physical request identity across the two sources is unprovable without an end-to-end identifier; shifts and swaps of equivalent pairs are undetectable (above). Server `slot` is arrival order. `cls` is unknown for a request that never reached L2. A simulated (collapse-harness) decision is counted, not distinguished per record. Timestamps are only as good as the 2,000 ms clock assumption across hosts, and only same-process comparisons are sub-millisecond.
+`rid` equals the external reducer's trace id only while no duplicate or overflow occurred. A recorder exception is swallowed into `counters.faults` (and makes the result `unknown`) rather than reaching the collector. The real-plane loopback test (real front, boundary and app; 200 pairs, 97 genuine fast sheds) validates the recorder against the client's ground truth, but did not reproduce R2's symptom (no reversed arrival and no zero-overlap pair on single-process loopback), so it neither supports nor refutes the R2 fast-shed hypothesis for the 21 pairs whose traces were not retained.
+
+**Proposed, not implemented.** If diagnostic `inconsistent` results (or `ambiguousEvents`, `faults`) should invalidate a future run, that is a qualification-policy revision with its own preregistration: a new identity (for example `g5.salvo_diagnostic_integrity`) that requires `integrity: consistent` and `binding` not `contradicted`, evaluated only for campaigns recorded after the change. It cannot require `verified` binding until an end-to-end identifier exists. It must not be applied to R2 or any run without diagnostics.

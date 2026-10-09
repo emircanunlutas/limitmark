@@ -11,6 +11,7 @@ import { canonicalJson, type LatencySummary } from "../policy/thresholds";
 import type { WorkloadSpec } from "../policy/workloads";
 import type { GeneratorN2Measurement } from "./n2-measurement";
 import type { GeneratorSalvoMeasurement } from "./salvo-measurement";
+import type { GeneratorSalvoDiagnostics } from "./salvo-diagnostics";
 
 export const GENERATOR_REPORT_SCHEMA = "ba0-generator-report-v1" as const;
 
@@ -47,6 +48,8 @@ export type GeneratorReport = {
   /** Required to qualify N=2; absent from historical N=1 reports. */
   n2?: GeneratorN2Measurement;
   salvo?: GeneratorSalvoMeasurement;
+  /** Salvo only: a versioned sibling of `salvo`. Evidence about the generator; never read by the qualification verdict. */
+  salvoDiagnostics?: GeneratorSalvoDiagnostics;
 };
 
 export const campaignIdPattern = /^[a-z0-9][a-z0-9-]{5,40}$/;
@@ -80,6 +83,7 @@ export function buildGeneratorReport(input: {
     schedule: result.schedule, generatorHealth: result.generatorHealth, stop: { kind: result.stop.kind, detail: result.stop.detail }, retries: 0, pipelining: false,
     ...(input.levelId === "ba0-l7-c2" && result.n2 ? { n2: result.n2 } : {}),
     ...(input.levelId === "ba0-l7-c2-salvo" && result.salvo ? { salvo: result.salvo } : {}),
+    ...(input.levelId === "ba0-l7-c2-salvo" && result.salvoDiagnostics ? { salvoDiagnostics: result.salvoDiagnostics } : {}),
   };
 }
 

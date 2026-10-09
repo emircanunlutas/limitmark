@@ -26,6 +26,7 @@ import { BA0_FIELD_C2_V1 } from "../defense/field-thresholds";
 import { n2ExerciseSpec, OverlapMeter, type GeneratorN2Measurement } from "../defense/n2-measurement";
 import { executeSalvo, type SalvoClock } from "./salvo";
 import type { GeneratorSalvoMeasurement } from "../defense/salvo-measurement";
+import type { GeneratorSalvoDiagnostics } from "../defense/salvo-diagnostics";
 
 export const CLOSED_LOOP_SETUP_ALLOWANCE_MS = 2_000;
 export const CLOSED_LOOP_DRAIN_GRACE_MS = 2_000;
@@ -44,7 +45,15 @@ export type ClosedLoopSend = {
   reusedSocket: boolean | null;
 };
 
-export type ClosedLoopSendOptions = { timeoutMs: number; body?: string; agent: http.Agent; signal?: AbortSignal };
+export type ClosedLoopSendOptions = {
+  timeoutMs: number; body?: string; agent: http.Agent; signal?: AbortSignal;
+  /**
+   * Salvo diagnostics only. Called at most once, from the request's Node `finish` event: the last bytes of the request were handed to the operating
+   * system for transmission. It does NOT mean the server received anything, and it can fire after or before the server's own ingress event. Never
+   * called for a request destroyed first. Must be synchronous and cheap; an exception it throws is swallowed and cannot change the send.
+   */
+  onWriteHandoff?: () => void;
+};
 
 function classifyError(error: NodeJS.ErrnoException): Outcome {
   switch (error.code) {
@@ -117,6 +126,8 @@ export function sendClosedLoop(request: AuthorizedRequest, run: AuthorizedRun, o
     const onAbort = () => { req.destroy(); finish("aborted", null); };
     if (options.signal?.aborted) onAbort(); else options.signal?.addEventListener("abort", onAbort, { once: true });
     req.on("error", (error: NodeJS.ErrnoException) => finish(classifyError(error), null));
+    const onHandoff = options.onWriteHandoff;
+    if (onHandoff) req.once("finish", () => { if (settled) return; try { onHandoff(); } catch { /* observation only */ } });
     if (body !== undefined) req.write(body);
     req.end();
   });
@@ -149,6 +160,8 @@ export type ClosedLoopResult = {
   pipelining: false;
   n2?: GeneratorN2Measurement;
   salvo?: GeneratorSalvoMeasurement;
+  /** Salvo only: a sibling of `salvo`, never part of it. */
+  salvoDiagnostics?: GeneratorSalvoDiagnostics;
 };
 
 export type ClosedLoopOptions = {

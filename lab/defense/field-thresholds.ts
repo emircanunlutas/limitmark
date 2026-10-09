@@ -15,6 +15,7 @@ import type { L2Params } from "../../defense/plane/l2-protocol";
 import { canonicalJson } from "../policy/thresholds";
 import { BA0_ORIGIN_LOCAL_V1 } from "./origin-thresholds";
 import { DEFAULT_EXTERNAL_LIMITS, type AllowedShed, type ExternalLimits } from "./external-reducer";
+import { SALVO_DIAGNOSTIC_LIMITS } from "./salvo-diagnostics";
 import { SALVO_SPEC } from "./salvo-spec";
 
 const EPOCH_MS = 60_000;
@@ -274,6 +275,16 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
       const pairArtifactBytes = 2 * SALVO_SPEC.pairs * 512;
       gate("salvo.evidence_with_pairs", journalWithOrigin + pairArtifactBytes <= set.collector.maxJournalBytes / 2,
         `modeled journal plus both pair artifacts ${mib(journalWithOrigin + pairArtifactBytes)} vs half of ${mib(set.collector.maxJournalBytes)}`);
+      // Per-request diagnostics (sibling artifacts). Additive gates only: the gates above are unchanged and still charge exactly what they always did.
+      // The recorder adds no plane event, journal line, trace, queue entry or hop proof, so every channel, replay, trace and journal gate above is unaffected.
+      const d = SALVO_DIAGNOSTIC_LIMITS; const requests = SALVO_SPEC.pairs * SALVO_SPEC.requestsPerPair;
+      gate("salvo.diagnostic_cap_covers_level", d.maxRequests >= set.level.maxTotalRequests && d.maxRequests === requests, `diagnostic cap ${d.maxRequests} vs ${set.level.maxTotalRequests} requests`);
+      // Server and generator, three representations each (live, snapshot copy, serialized text) at the per-record accounting estimate, plus the nonce index.
+      const diagnosticMemory = 2 * 3 * requests * d.recordMemoryBytes + requests * d.nonceIndexBytes;
+      gate("salvo.diagnostic_memory", diagnosticMemory <= k.memoryBudgetBytes - total, `modeled diagnostic records ${mib(diagnosticMemory)} within remaining modeled budget ${mib(k.memoryBudgetBytes - total)}`);
+      const diagnosticArtifactBytes = requests * (d.serverRecordJsonBytes + d.generatorRecordJsonBytes);
+      gate("salvo.evidence_with_diagnostics", journalWithOrigin + pairArtifactBytes + diagnosticArtifactBytes <= set.collector.maxJournalBytes / 2,
+        `modeled journal, pair artifacts and diagnostic artifacts ${mib(journalWithOrigin + pairArtifactBytes + diagnosticArtifactBytes)} vs half of ${mib(set.collector.maxJournalBytes)}`);
     }
   }
 

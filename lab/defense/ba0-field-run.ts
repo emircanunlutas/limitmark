@@ -500,6 +500,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       collector: { anomalyTotal, anomalies, records: records.length, journal }, recovery, reconcileInput, anonymousRefusals: reducer.anonymousRefusals(),
       ...(args.levelId === "ba0-l7-c2" && n2 ? { n2: n2.snapshot() } : {}),
       ...(salvo ? { salvo: salvo.snapshotSalvo() } : {}),
+      ...(salvo ? { salvoDiagnostics: salvo.snapshotDiagnostics() } : {}),
     };
     const write = writeFieldEvidence(evidence, bundle);
     const status = serverSide.status;

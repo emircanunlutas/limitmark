@@ -1,6 +1,7 @@
 import type { PlaneEvent } from "../../defense/core/ledger";
 import type { LatencySummary } from "../policy/thresholds";
 import { N2ServerObserver, type ExerciseSpec, type ServerN2Measurement } from "./n2-measurement";
+import { SalvoRequestRecorder, type ServerSalvoDiagnostics } from "./salvo-diagnostics";
 import { SALVO_SPEC, type SalvoPair } from "./salvo-spec";
 
 export type GeneratorSalvoMeasurement = {
@@ -16,8 +17,11 @@ export class SalvoServerObserver extends N2ServerObserver {
   private origin: number | null = null;
   private ordinal = 0;
   private pairFaults = 0;
+  /** Sibling per-request diagnostics. Observation only: it shares this event stream, never feeds a pair record or a verdict, and never throws. */
+  private readonly requests = new SalvoRequestRecorder();
   constructor(spec: ExerciseSpec) { super(spec); }
   override observe(event: PlaneEvent): void {
+    this.requests.observe(event);
     super.observe(event);
     if (event.kind === "INGRESS_ACCEPTED" && event.ingress === "external" && event.nonce !== null) {
       if (this.origin === null) this.origin = event.t;
@@ -39,6 +43,7 @@ export class SalvoServerObserver extends N2ServerObserver {
       }
     }
   }
+  snapshotDiagnostics(): ServerSalvoDiagnostics { return this.requests.snapshot(); }
   snapshotSalvo(): ServerSalvoMeasurement {
     const phase = super.snapshot();
     phase.faults += this.pairFaults + this.pending.size;

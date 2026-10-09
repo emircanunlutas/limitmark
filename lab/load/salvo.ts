@@ -2,6 +2,7 @@
 import http from "node:http";
 import https from "node:https";
 import { LagMonitor } from "../../defense/core/telemetry";
+import { SALVO_DIAGNOSTICS_SCHEMA, SALVO_DIAGNOSTIC_LIMITS, GENERATOR_PROVENANCE, type GeneratorSalvoDiagnostics, type GeneratorSalvoObservation } from "../defense/salvo-diagnostics";
 import { SALVO_SPEC, pairFixtureLatencies, pairSummaries, type SalvoPair } from "../defense/salvo-spec";
 import { syntheticSubmissionBody } from "./engine";
 import { sendClosedLoop, TRANSPORT_FAILURES, type ClosedLoopOptions, type ClosedLoopResult, type ClosedLoopStopKind } from "./closed-loop";
@@ -43,6 +44,8 @@ export async function executeSalvo(options: ClosedLoopOptions): Promise<ClosedLo
   const deadline = until(spec.maxElapsedMs, watchdog.signal).then(() => { if (!watchdog.signal.aborted) stopWith("deadline"); });
   const lag = new LagMonitor(); const cpuStart = process.cpuUsage();
   const pairs: SalvoPair[] = [];
+  // Sibling observation rows (one per attempted request). They reuse the timestamps below; no extra clock read happens unless the sender reports a write handoff.
+  const observations: GeneratorSalvoObservation[] = [];
   const perFixture = Object.fromEntries(fixtures.map((f) => [f.id, { attempted: 0, responses: 0, transportFailures: 0 }]));
   const outcomes: Record<string, number> = {}; const statuses: Record<string, number> = {};
   let attempted = 0; let responses = 0; let transportFailures = 0; let inFlight = 0; let maxInFlight = 0;
@@ -57,13 +60,17 @@ export async function executeSalvo(options: ClosedLoopOptions): Promise<ClosedLo
     if (at < planned || at >= planned + spec.dispatchLatenessExclusiveMs || at >= spec.durationMs) { stopWith("schedule_incomplete", "dispatch_lateness"); return; }
     if (attempted >= run.limits.maxTotalRequests) { stopWith("total_ceiling"); return; }
     pair.startsMs[slot] = at; firstDispatchMs ??= at; lastDispatchMs = at;
+    const row: GeneratorSalvoObservation = { pair: pair.index, slot, startMs: at, handoffMs: null, settledMs: null, status: null };
+    if (observations.length < SALVO_DIAGNOSTIC_LIMITS.maxRequests) observations.push(row);
     attempted++; perFixture[fixture.id].attempted++; inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
     try {
       const result = await send(fixture.request, run, {
         timeoutMs: phase.timeoutMs, body,
         agent: fixture.request.scheme === "https" ? tlsAgent as unknown as http.Agent : agent, signal: abort.signal,
+        onWriteHandoff: () => { if (row.handoffMs === null && row.settledMs === null) row.handoffMs = elapsed(); },
       });
       pair.settledMs[slot] = elapsed(); lastSettlementMs = Math.max(lastSettlementMs ?? 0, pair.settledMs[slot]!);
+      row.settledMs = pair.settledMs[slot]; row.status = result.status;
       wireSent += result.wireBytesSent; wireReceived += result.wireBytesReceived; contentReceived += result.bodyBytesReceived;
       if (result.reusedSocket === true) reusedSockets++; else if (result.reusedSocket === false) newSockets++;
       outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
@@ -71,6 +78,7 @@ export async function executeSalvo(options: ClosedLoopOptions): Promise<ClosedLo
       if (TRANSPORT_FAILURES.has(result.outcome)) { transportFailures++; perFixture[fixture.id].transportFailures++; stopWith("transport_failure", result.outcome); }
     } catch {
       attempted--; perFixture[fixture.id].attempted--; stopWith("authorization_expired");
+      const rowAt = observations.indexOf(row); if (rowAt >= 0) observations.splice(rowAt, 1);
     } finally { inFlight--; }
   }
 
@@ -121,5 +129,7 @@ export async function executeSalvo(options: ClosedLoopOptions): Promise<ClosedLo
     stop, retries: 0, pipelining: false,
     salvo: { elapsedMs: ms, firstDispatchMs, lastDispatchMs, lastSettlementMs, stopLatchedMs, pairs,
       fixtureLatencyMs: pairFixtureLatencies(pairs) },
+    salvoDiagnostics: { schema: SALVO_DIAGNOSTICS_SCHEMA, side: "generator", provenance: GENERATOR_PROVENANCE,
+      capacity: { maxRequests: SALVO_DIAGNOSTIC_LIMITS.maxRequests }, requests: observations } satisfies GeneratorSalvoDiagnostics,
   };
 }
