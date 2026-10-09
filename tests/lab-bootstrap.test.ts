@@ -394,8 +394,19 @@ test("F6 round 2 regression: an unreachable Docker daemon is a FAILURE (recovery
   // docker_cli_state distinguishes the three worlds.
   withFakeDocker("down", (environment) => assert.equal(spawnSync("bash", ["-c", `. "${lib}"; docker_cli_state`], { encoding: "utf8", env: environment }).stdout.trim(), "down"));
   withFakeDocker("empty", (environment) => assert.equal(spawnSync("bash", ["-c", `. "${lib}"; docker_cli_state`], { encoding: "utf8", env: environment }).stdout.trim(), "up"));
-  const bare = spawnSync("bash", ["-c", `PATH=/usr/bin:/bin; . "${lib}"; docker_cli_state`], { encoding: "utf8" });
-  assert.equal(bare.stdout.trim(), "no-cli");
+  // Deterministic "no docker CLI" world: PATH is an empty directory we own (bash builtins are all docker_cli_state needs), so a docker installed
+  // in /usr/bin (GitHub runners) cannot leak in. The same isolated PATH with a docker executable added must flip the answer, proving the isolation is real.
+  const isolated = mkdtempSync(path.join(os.tmpdir(), "no-docker-path-"));
+  try {
+    const stateWithPath = (searchPath: string) => spawnSync("bash", ["-c", `PATH="$(cygpath -u "${searchPath}" 2>/dev/null || echo "${searchPath}")"; . "${lib}"; docker_cli_state`], { encoding: "utf8" }).stdout.trim();
+    assert.equal(stateWithPath(toBashPath(isolated)), "no-cli");
+    const bashPath = spawnSync("bash", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim();
+    writeText(path.join(isolated, "docker"), `#!${bashPath}
+exit 0
+`); // absolute shebang: the isolated PATH needs no env/bash lookup
+    try { chmodSync(path.join(isolated, "docker"), 0o755); } catch { /* best effort on Windows */ }
+    assert.equal(stateWithPath(toBashPath(isolated)), "up");
+  } finally { removeTree(isolated, { recursive: true, force: true }); }
 });
 
 test("F6 round 2 regression: a daemon that dies mid-teardown (listing fails) is UNKNOWN per object and a failure, not absence", { skip: bashSkip }, () => {

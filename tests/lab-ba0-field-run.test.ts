@@ -399,7 +399,7 @@ test("the field command line accepts exactly --target, --level and --campaign (p
     ["--target", "sut-test", "--level", "ba0-l7-c1", "--campaign", "first-campaign", "--target", "other"], ["--target=sut-test", "--level", "ba0-l7-c1", "--campaign", "first-campaign"], ["--target", "sut-test", "--level", "ba0-l7-c1", "--campaign", "x"]]) {
     assert.throws(() => parseFieldArguments(argv), Error, JSON.stringify(argv));
   }
-  assert.deepEqual(Object.keys(FIELD_LEVELS), ["ba0-l7-c1", "ba0-l7-c2"], "only the two reviewed levels exist");
+  assert.deepEqual(Object.keys(FIELD_LEVELS), ["ba0-l7-c1", "ba0-l7-c2", "ba0-l7-c2-salvo"], "only the three reviewed identities exist");
 });
 
 void NOT_LISTENING;

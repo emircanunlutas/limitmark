@@ -354,3 +354,179 @@ Database URLs and Next telemetry were disabled; no ambient Docker context was se
 and `artifacts/lab/n2-remediation-full.tap`. The sandbox's TSX user lookup failed with `uv_os_get_passwd ENOMEM`; local tests were rerun outside that sandbox.
 No external campaign was run, and no commit, push, deployment or cloud/firewall change was performed. Under fast N=1-like latency,
 the unchanged offered workload is expected to remain unexercised; the remediation makes that result fail qualification instead of manufacturing overlap.
+
+### Separately reviewed N=2 salvo
+
+The field specimen lineage is `aff793e4968cd5615e25665c5437e20d268d744f`. Historical `ba0-l7-c1` and `ba0-l7-c2` retain their parameters,
+workloads, report shapes and reconciliation interpretation. The real `first-gcp-n2` result remains INVALID: completion, exercise and the
+completion-dependent historical phase identity fail. The new level does not reinterpret that evidence.
+
+| Identity | Value |
+| --- | --- |
+| Level | `ba0-l7-c2-salvo` |
+| Workload | `ba0-l7-pressure-c2-salvo` |
+| Parameters | `ba0-field-c2-salvo-v1` |
+| Parameter SHA-256 | `eda312909c18c7a7cd9c4525f2071b474f10b1b27c3b181e9e1a12ea27208f46` (remediated; the pre-review value `231a5ccd8574f3bb21d61ff160e424636076090bb451c7b43ef5651700ac400f` was never run in the field) |
+| Workload SHA-256 | `43ee3f7c0aaacea44384cc7e614eb58fe126bb042698417cf6c65f8f138d4264` |
+
+The isolated scheduler releases 750 pairs at `80 * index` ms, indices 0 through 749, over a full 60-second monotonic phase. The final release is
+59,920 ms. Even pairs send home + privacy; odd pairs send form + inquiry. Both sends begin before either response is awaited. Counts remain
+375 per fixture, 1,125 reads, 375 mutations and a hard maximum of 1,500 requests. No HTTP warm-up is added.
+
+This is 25 requests/second **campaign average**, with burst two and nominal one-second bins alternating 26/24. It changes temporal clustering
+as well as actual concurrency compared with historical C1/C2. A claim isolating concurrency causally needs a fresh separately identified N=1
+control with the same paired release opportunities; historical N=1 is a reference observation. No defense, lane, credit or canary value changes.
+
+Timer wakes always recheck the monotonic not-before time. Every dispatch must be less than 40 ms late. An active pair at the next release,
+excessive lateness, expiry, transport failure or operator abort stops dispatch and latches a non-completion reason. Missed pairs never catch up.
+Only finite schedule exhaustion, all clean fates, full phase duration and bounded drain qualify as `completed`. A hard watchdog acts at 64,000 ms;
+elapsed above 64,000 ms cannot qualify. `total_ceiling` is a safety stop, never normal completion. No request 1501 slot is reserved.
+Authorization is checked at each dispatch and again after the full-duration wait and final drain; expiry after the last response still cannot qualify.
+
+Generator `salvo` evidence records monotonic stop-latch time, per-pair starts/settlements and fixture latency summaries derived from those records.
+Salvo latency summaries measure logical dispatch-to-settlement lifetimes; historical C1/C2 sender latency summaries are unchanged.
+Server `salvo` evidence records the existing source ARMED/CLOSED phase counters/barriers and 750 bounded pair records. Pair association uses
+consecutive external-ingress ordinals; generator waiting for both responses before the next release and zero-ambiguity accounting support that
+association. Arrival order within a pair can reverse. Existing source events are observed; no new defense events or client identity headers are added.
+Only two active nonce associations are retained. Missing, duplicate, malformed, overflowing or temporally inconsistent records cannot qualify.
+
+For each source and pair, opportunity is `P = min(endA-startA, endB-startB)` and actual overlap is
+`O = max(0, min(endA,endB)-max(startA,startB))`. A material pair has positive opportunity and `O >= 0.75 * P`. Normalized overlap is the primary
+physical-exercise evidence on both sources. The generator additionally bounds its own dispatch skew `s = |startA-startB|`; exact observed timestamps are
+retained and never rounded. Source lifetimes are independent measurements, not counterfactual service-time estimates.
+
+Dispatch skew rule (replaces the pre-review absolute 0.5 ms gate): `s <= min(10 ms, 0.25 * P)`. The normalized term is derived, not chosen: for equal
+lifetimes `d`, `O = d - s`, so `O >= 0.75 d` is exactly `s <= 0.25 d`; using the pair's own `P` generalizes that to unequal lifetimes and rejects a short
+request nested inside a long one (overlap ratio 1, but not a salvo). Serial dispatch needs `s >= d`, hence zero overlap, and is already excluded by the
+overlap rule. The 10 ms absolute cap is an engineering bound, not a derived one: both sends are issued in one synchronous scheduler turn, so skew only
+measures setup cost (or a stall inside that turn); 10 ms is one eighth of the 80 ms period and a quarter of the 40 ms lateness allowance, 4.6 times the
+2.163 ms cold first pair measured on loopback, and bounds staggered dispatch regardless of how long lifetimes are. The old 0.5 ms value was an
+implementation-timing proxy: steady-state loopback skew is 0.10 to 0.34 ms but the cold first pair measured 2.163 ms, and the server has no equivalent
+measurement. The server rule has no skew term; overlap alone applies.
+
+Qualification requires each source to pass independently and a **joint** set of at least 743 pairs. A pair is jointly material only when both
+independently valid sources prove it material (the intersection of the two material index sets). The two sources may miss different pairs. Every
+planned one-second bin admits at most one jointly missed pair: 12/13 or 11/12 jointly material. On both sources, the opportunity-weighted ratio including **all** pairs in every planned bin is at least 0.75;
+every actual source-clock second has at least 11 material overlap starts. Planned bins group whole pairs by reviewed release index; actual bins
+use the later start on each emitting source clock. Residency includes each pair's bounded settlement, including any final drain.
+All summaries are derived offline from the bounded records; claimed aggregates cannot override them. Boundaries are evaluated without rounding
+up. The 743 threshold is a preregistered seven-opportunity loss budget, not a statistical confidence level.
+
+The pre-review rule required the two material index sets to be identical. That made one pair seen as non-material by only one source (for example a
+cold first pair, or a few milliseconds of arrival skew on the server) fatal even with 749 jointly material pairs, so it was replaced by the joint
+intersection above. `final.json` persists the joint material indices, the missing indices and the joint planned-bin counts. Requests are never
+held to manufacture overlap. Fast requests can qualify with much less than the old 9.6-second absolute residency requirement.
+
+The new completion and phase-only predicates are independent diagnostics and both are mandatory. `final.json` persists their failed subconditions
+and both derived exposure summaries. Phase binding verifies source barriers, zero pre-arm/post-close ingress, complete ingress/settlement counts,
+clean close, every pair's clock bounds and the runner window. The existing 2,000 ms clock agreement is assumed, not measured. Transport ambiguity,
+unexplained 429/5xx, unaccounted 503, retries, pipelining, saturation, server evidence failures and existing legitimate-user/recovery failures remain fatal.
+
+No capacity is resized. Source ingress allows network jitter using `2 * (1 + ceil(intervalMs / 80))` arrivals: consecutive pairs can bunch even
+though the generator releases remain spaced. Normal pairs must settle before the next release; the final pair can only arrive later. Bounds are
+402 active / 528 orphan records, 1,820 decisions, 1,500 traces/recent nonces, 320 canary records,
+12/7/5 events per request per stream, 13,728 queued events for a 10-second stall plus all canaries, and 832 hop replay entries. Existing capacities
+are respectively 1,024 / 1,024, 20,000, 2,000 / 4,096, 4,000, 32 per stream, 16,384 queue entries and 4,096 replay entries. Collector window remains
+8,192. L2 use ledger remains 251 required / 512 available; worst Bloom inserts remain 1,564, with 0.1305% fill and FPR estimate 6.45e-21.
+
+Pair memory conservatively charges both participants and three representations at 512 bytes per pair: `2 * 3 * 750 * 512 = 2,304,000` bytes.
+Modeled external/channel/pair accounting becomes **238.0 MiB / 256 MiB**. Modeled journal including origin events plus both pair JSON artifacts
+is `4,587,520 + 2 * 750 * 512 = 5,355,520` bytes, within half of the enforced 48 MiB journal budget. Pair records are separate JSON evidence,
+not journal lines; this additional charge is conservative. Neither 512 bytes per record/event nor the legacy 256-byte journal value is a runtime
+maximum. Runtime resource ceilings and evidence-loss invalidation remain mandatory. Recovery remains `2 * 60,000 + 15,000 = 135,000` ms.
+
+The synthetic scheduler tests run the exact full schedule on a deterministic clock. The short real HTTP test uses loopback only and intentionally
+aborts after eight responses to verify two keep-alive connections and no pipelining. Neither test qualifies an external field campaign.
+
+Validation against the working tree based on `aff793e4968cd5615e25665c5437e20d268d744f`:
+
+| Check | Result |
+| --- | --- |
+| Focused salvo scheduler, qualification, historical, field, workload and defense static suites | 138 passed; zero failed, cancelled or skipped |
+| Exact historical comparisons | C1/C2 parameters, fingerprints, workload objects, budget gates, reports, all 13 writer artifacts and reconcile scenarios match the field specimen; historical scheduler body is unchanged |
+| Real `first-gcp-n2` evidence reproduction | Exactly the original three failed identities and INVALID result |
+| Typecheck, repository lint, diff check | Pass |
+| Full suite, serialized | 1,524 tests: 1,464 passed, zero failed, one cancelled, 59 skipped; exit 1 |
+
+The full suite includes the final authorization-expiry and delayed-watchdog regressions. Its cancellation is the unchanged notification HTTPS
+test described above, with the same pending-promise/event-loop message. Database and platform skips remain skips. Logs are
+`artifacts/lab/salvo-focused-final.tap`, `artifacts/lab/salvo-full-final.tap`, `artifacts/lab/salvo-typecheck.log` and `artifacts/lab/salvo-lint.log`.
+All 34 applicable capacity gates pass with 3,600 seconds of target lifetime, recorded in `artifacts/lab/salvo-capacity.json`.
+No commit, push, deployment, external host contact, external traffic or cloud/firewall configuration change was performed.
+
+#### Salvo review remediation
+
+An independent review found that exact generator/server material-set equality could return INVALID with 749 of 750 jointly material pairs: a cold
+first pair measured 2.163 ms of generator dispatch skew against a 0.5 ms gate, and the server has no equivalent measurement. The remediation replaces
+set equality with the joint intersection and replaces the absolute 0.5 ms gate with the normalized-plus-cap skew rule above. Only
+`lab/defense/salvo-spec.ts`, `lab/defense/salvo-reconcile.ts`, their tests and this document changed. The `ba0-field-c2-salvo-v1` parameter
+fingerprint changed because the reviewed salvo specification changed; the salvo workload fingerprint and every C1/C2 parameter and workload
+fingerprint are unchanged. Defense, lane, credit, canary, recovery, exposure and accounting parameters are untouched and still asserted equal.
+
+| Check | Result |
+| --- | --- |
+| Salvo, scheduler, workload, field-run and field-threshold suites | 74 passed; zero failed, cancelled or skipped |
+| All `tests/lab-*.test.ts` | 512 passed, 0 failed, 8 skipped (one earlier run immediately after a local `git stash` round trip reported 2 failures that did not reproduce in three later runs) |
+| Typecheck, repository lint, `git diff --check` | Pass |
+| Full suite, `npm test` | 1,529 tests: 1,487 passed, 0 failed, 0 cancelled, 42 skipped |
+| Historical C1/C2 and `first-gcp-n2` | Immutability and original three failed identities and INVALID result tests pass unchanged |
+
+### Salvo per-request diagnostics (instrumentation only, schema `ba0-salvo-diagnostics-v1`)
+
+Baseline `dcf10af8229a5738b1852721fe12de86a488d07d`. R2 (`first-gcp-n2-salvo-r2`) is INVALID at `g5.salvo_exercised` (generator 750/750, server 727/750,
+joint 727/750 against a 743 minimum) and stays so. This change adds observation, not a remedy: no admission, rejection, pacing, qualification threshold,
+parameter or fingerprint changed (`ba0-field-c2-salvo-v1` is still `eda31290…8f46`, the salvo workload still `43ee3f7c…d4264`), and no diagnostic value is an
+input to any identity or verdict. The raw R2 evidence is not in this repository, so it was **not** revalidated; R2-shaped synthetic fixtures were used.
+
+| Where | What |
+| --- | --- |
+| Server evidence run, `salvo-diagnostics.json` | `ServerSalvoDiagnostics`: one record per external request, written last and in isolation (a scanner refusal costs only this artifact). Not part of `server-level.json`. |
+| Generator report, `salvoDiagnostics` | `GeneratorSalvoDiagnostics`, a sibling key of `salvo`. `salvo.pairs`, `SALVO_SPEC` and every existing key set are unchanged. |
+| Final reconcile run, `salvo-diagnostic-check.json` | `evaluateSalvoDiagnostics` (check schema `ba0-salvo-diagnostic-check-v2`), computed after the decision. Written only when diagnostics were supplied, so historical inputs produce exactly the artifacts they always did. `influencesVerdict` is the literal `false`. |
+
+**Server record** (at most 1,500; the 1,501st external ingress is counted in `counters.overflow` and not stored). Fields are bounded enums, small integers and
+plane-clock numbers: `rid` (`x` + ordinal + 1), `ord` (arrival ordinal), `pair` (`floor(ord/2)`), `slot` (`ord % 2`, the **arrival** slot), `cls` (`open|mutation|unknown`
+from `L2_DECIDED`), `l1` (`passed|rejected|shed|error|none`), `l2` (`admitted|shed|error|degraded|none`), `lane` (`open|credited|unverified|none`), `shed`
+(`lane_budget|evaluator_saturation|none`), `egress` (an `EGRESS_ATTEMPTED` was seen), `fin` (`responded|aborted|pending`), `status` (HTTP status or null), `inSeq`/`outSeq`
+(the plane's global event sequence numbers of `INGRESS_ACCEPTED` and the terminal event), `inMs`/`outMs`, `flags` (`dup_id|dup_event|seq_order|time_order|late_event`).
+The recorder reads only existing plane events. It records no body, header, cookie, token, address, URL, origin, personal datum or nonce.
+
+**Generator record** (at most 1,500): `pair`, `slot` (the scheduler's **dispatch** slot; slot 1 of an odd pair is the mutation), `startMs`, `handoffMs`, `settledMs`, `status`.
+
+**Provenance.** Server times are the plane's monotonic clock, relative to the first external `INGRESS_ACCEPTED` (the same zero as `salvo.pairs`; `inMs`/`outMs` are
+bit-identical to `startsMs[slot]`/`settledMs[slot]`, and the check verifies it). Generator times are the generator's monotonic clock relative to the scheduler start. `startMs` is taken
+immediately before the sender is invoked (before socket assignment); `settledMs` is when the scheduler observed the sender's promise settle, not the instant the last response byte arrived. The two clocks are never compared except through the existing 2,000 ms agreement.
+
+**What write handoff proves.** `handoffMs` is the Node `ClientRequest` `finish` event: the last bytes of the request were handed to the operating system. It is not network
+arrival and not server receipt. Probe on the Windows development host (loopback, one process, one clock): `finish` preceded the server's ingress callback in 1,200 of 1,200 requests (warm and cold sockets,
+gap 0.03–1.45 ms), and it still fired (4.9 ms) against a peer that accepted the TCP connection and never read. A test pins the second fact. It is recorded only while the request is unsettled, at most once, and is `null`
+when unobserved (including every injected test sender). The callback is attached only when requested, so the N=1/N=2 senders are unchanged.
+
+**Three questions, kept apart.** The offline check reports three independent axes and none is proof of the next.
+**A. `integrity`**: are the supplied records well-formed, complete, free of causality violations and in agreement with the authoritative pair records they were derived alongside?
+**B. `composition`**: are the server-observed classes and statuses compatible with the expected workload (even pair: two `open`; odd pair: one `open` and one `mutation`, in either arrival order; statuses 200 or 503)?
+**C. `binding`**: is a given server request provably the same physical request as a given generator request? **This is never established.** No end-to-end identifier travels with a request (adding one would change the traffic), so the generator pair index and the server arrival ordinal are related only by an assumed ordinal mapping.
+`binding.status` is `inferred` (the ordinal and composition assumptions held and the class/status signatures were compatible), `unverified` (it cannot be established for some pair, or there is no generator evidence), or `contradicted` (a pair's composition or signature contradicts the mapping). `verified` is reserved for direct end-to-end identity evidence and is unreachable: its count is typed as `0` and `identityEvidence` as `"none"`, and a test pins that no code assigns it.
+`signature` is agreement of observable class/status signatures under that assumed mapping, nothing more. The workload is periodic, so a shifted ordinal sequence, a dropped request replaced by an extra one, and a permutation of equivalent pairs (even/even or odd/odd with the same statuses) produce records that are identical to a correct campaign's in every recorded field; a test asserts exactly that. A swap that changes an observable status is detected (`contradicted`). Anything else needs an identifier that is not there. A timing-residual detector between the two hosts could be built from the recorded `inMs`/`startMs`, but it would rest on an unmeasured clock offset and jitter bound, so none is claimed.
+
+**Severity and missing data.** `integrity` and `composition` use one reporting precedence, implemented once in `worstOf`: `malformed > inconsistent > unknown > consistent`. It orders what is reported, not how confident anyone should be, and it is unrelated to `binding`. A later, weaker finding can never lower an earlier, stronger one. `integrity.findings` lists each reason once (closed vocabulary) with its severity.
+`malformed`: input that is not exactly the schema (never partially trusted). `inconsistent`, a proven contradiction: a diagnostic timestamp that differs from the authoritative pair record, `handoffMs < startMs`, `handoffMs > settledMs` or `settledMs < startMs` (the sender reports a handoff only while the request is unsettled and Node's `finish` follows the start, so neither can occur in genuine data; equality is allowed), a settled pair-record slot with no diagnostic row, a server terminal event that precedes its ingress, a sequence or time regression within a request, or incompatible signatures.
+`unknown`: incomplete data that proves nothing wrong: fewer than 1,500 records, a pending or aborted request, overflow, a recorder fault, a reused key (both requests flagged, nothing attached to either), a repeated or late event, a missing handoff, an unsettled or missing generator row. A missing handoff is never invalid by itself. An undecided class is `unknown` composition and `unverified` binding; it is not an integrity failure.
+`absent`: nothing supplied. A request without a response event is `pending` with null response fields. Note the existing pair observer keeps two pending nonces, so one lost response also corrupts later pair records; once those records are supplied the divergence is a proven `server_pair_mismatch`, not merely unknown.
+
+**Reading a zero-overlap pair.** Pair overlap is `O = max(0, min(end) - max(start))`. `zeroOverlap.detail[]` names, per pair, the cause from the first-arrived request. `fast_shed_first_arrival`: it was an L2 shed with no egress and status 503, a decision that needs no downstream
+I/O, and it settled before the second request was stamped. `short_first_arrival_not_shed`: a short non-shed response. This explains a pair; it does not make it material, and it does not generalize: the retained R2 trace proves fast shedding for pair 63 only.
+`partialOverlap` lists pairs with `0 < O < 0.75 P` (R2 pair 164 had 0.7348).
+
+**Server observation is not network arrival.** `INGRESS_ACCEPTED` is the plane's HTTP layer accepting a parsed request; the SYN, the TCP handshake, kernel queueing and header receipt all precede it. A server separation of about 0.6–1.2 ms between two requests says nothing about
+how far apart they were on the wire.
+
+**Capacity** (all three new gates are additive; the 34 historical gate results are unchanged, 37 in total, all pass). Server and generator, three representations (live, snapshot, serialized) at 512 B per record plus 128 B per nonce-index entry:
+`2 × 3 × 1500 × 512 + 1500 × 128 = 4.6 MiB` against 18.0 MiB of remaining modeled headroom (238.0 to 242.6 MiB of 256 MiB; headroom 18.0 to 13.4 MiB; the generator share is charged to the same budget conservatively). Evidence: modeled journal 4.4 MiB + pair artifacts 0.7 MiB + diagnostics `1500 × (640 + 300) B = 1.3 MiB` = **6.5 MiB**
+of the 24 MiB allowance (was 5.1). Measured: server artifact 419 B per record on average (at most about 540 B with every flag set), generator 182 B; live heap about 115 B per record. The recorder adds no plane event, journal line, trace, queue entry, hop proof or disk write, so the channel, replay, trace, decision and journal-growth gates and the 20,000-decision, 4,096-replay and 16,384-queue capacities are untouched.
+Cost: about 0.4 µs per event, about 5 ms for a whole campaign (12,000 plane events), in the collector and not in the Defense Plane.
+
+**Known limitations.** Physical request identity across the two sources is unprovable without an end-to-end identifier; shifts and swaps of equivalent pairs are undetectable (above). Server `slot` is arrival order. `cls` is unknown for a request that never reached L2. A simulated (collapse-harness) decision is counted, not distinguished per record. Timestamps are only as good as the 2,000 ms clock assumption across hosts, and only same-process comparisons are sub-millisecond.
+`rid` equals the external reducer's trace id only while no duplicate or overflow occurred. A recorder exception is swallowed into `counters.faults` (and makes the result `unknown`) rather than reaching the collector. The real-plane loopback test (real front, boundary and app; 200 pairs, 97 genuine fast sheds) validates the recorder against the client's ground truth, but did not reproduce R2's symptom (no reversed arrival and no zero-overlap pair on single-process loopback), so it neither supports nor refutes the R2 fast-shed hypothesis for the 21 pairs whose traces were not retained.
+
+**Proposed, not implemented.** If diagnostic `inconsistent` results (or `ambiguousEvents`, `faults`) should invalidate a future run, that is a qualification-policy revision with its own preregistration: a new identity (for example `g5.salvo_diagnostic_integrity`) that requires `integrity: consistent` and `binding` not `contradicted`, evaluated only for campaigns recorded after the change. It cannot require `verified` binding until an end-to-end identifier exists. It must not be applied to R2 or any run without diagnostics.

@@ -205,12 +205,15 @@ function bindingCases(): DirectScenario[] {
 function hopCases(): DirectScenario[] {
   const c = (id: string, family: string, reason: ObReason) => bnd(id, family, "GET", rejectedAt(reason));
   const now = () => Date.now();
+  // ONE clock read per proof: reading it separately for iat and exp makes the lifetime drift by the elapsed milliseconds, and a case that sits exactly
+  // at the maximum lifetime (tm_expired) would flip from ob.expired to ob.lifetime_invalid when the clock ticks between the reads.
+  const issuedAt = (base: number, offsetMs: number, lifetimeMs: number) => ({ iat: base + offsetMs, exp: base + offsetMs + lifetimeMs });
   return [
     proofCase(c("hp_wrong_audience", "hop", "ob.audience_mismatch"), { signed: S_GET, mint: (context) => ({ aud: context.root.appId }) }),
     proofCase(c("hp_ba_role_in_pb_slot", "hop", "ob.wrong_hop"), { signed: S_GET, mint: () => ({ role: "ba0-ba-v2" }) }),
-    proofCase(c("tm_expired", "time", "ob.expired"), { signed: S_GET, mint: () => ({ iat: now() - 20_000, exp: now() - 15_000 }) }),
-    proofCase(c("tm_future", "time", "ob.not_yet_valid"), { signed: S_GET, mint: () => ({ iat: now() + 30_000, exp: now() + 34_000 }) }),
-    proofCase(c("tm_lifetime_long", "time", "ob.lifetime_invalid"), { signed: S_GET, mint: () => ({ iat: now(), exp: now() + 60_000 }) }),
+    proofCase(c("tm_expired", "time", "ob.expired"), { signed: S_GET, mint: () => issuedAt(now(), -20_000, 5_000) }),
+    proofCase(c("tm_future", "time", "ob.not_yet_valid"), { signed: S_GET, mint: () => issuedAt(now(), 30_000, 4_000) }),
+    proofCase(c("tm_lifetime_long", "time", "ob.lifetime_invalid"), { signed: S_GET, mint: () => issuedAt(now(), 0, 60_000) }),
     // Issued before the verifier started but not yet expired: only possible in the first seconds, so it runs at startup.
     proofCase(c("tm_before_fence", "time", "ob.before_fence"), { signed: S_GET, mint: (context) => ({ iat: context.boundarySpawnedAtMs - 50, exp: context.boundarySpawnedAtMs + 4_850 }) }, "startup"),
     proofCase(c("fg_attacker_same_kid", "forged", "ob.signature_invalid"), { signed: S_GET, mint: () => ({ key: "attacker" }) }),

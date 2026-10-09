@@ -15,18 +15,20 @@ import type { L2Params } from "../../defense/plane/l2-protocol";
 import { canonicalJson } from "../policy/thresholds";
 import { BA0_ORIGIN_LOCAL_V1 } from "./origin-thresholds";
 import { DEFAULT_EXTERNAL_LIMITS, type AllowedShed, type ExternalLimits } from "./external-reducer";
+import { SALVO_DIAGNOSTIC_LIMITS } from "./salvo-diagnostics";
+import { SALVO_SPEC } from "./salvo-spec";
 
 const EPOCH_MS = 60_000;
 const SETTLE_MARGIN_MS = 15_000;
 
 export type Ba0FieldThresholds = {
-  id: "ba0-field-v1" | "ba0-field-c2-v1";
+  id: "ba0-field-v1" | "ba0-field-c2-v1" | "ba0-field-c2-salvo-v1";
   version: 1;
   description: string;
   calibration: "provisional-uncalibrated";
   status: "first level qualification parameters; not production defaults" | "second level qualification parameters; not production defaults";
   level: {
-    id: "ba0-l7-c1" | "ba0-l7-c2";
+    id: "ba0-l7-c1" | "ba0-l7-c2" | "ba0-l7-c2-salvo";
     workers: 1 | 2;
     durationSeconds: number;
     maxRequestsPerSecond: number;
@@ -58,7 +60,8 @@ export type Ba0FieldThresholds = {
   stop: { closeIngressMs: number; drainMs: number; finalTelemetryMs: number; snapshotMs: number; finalizeMs: number; terminateMs: number; hardCapMs: number };
   targetMinRemainingMs: number;
   /** Present only for N=2: qualification rules, never enforcement inputs. */
-  qualification?: { version: 1; exercise: "cycle-per-tick"; completion: "duration-completed"; clockAgreementMs: number };
+  qualification?: { version: 1; exercise: "cycle-per-tick" | "salvo-pairs"; completion: "duration-completed" | "finite-schedule-duration"; clockAgreementMs: number };
+  salvo?: typeof SALVO_SPEC;
 };
 
 export const BA0_FIELD_V1: Ba0FieldThresholds = Object.freeze({
@@ -107,10 +110,20 @@ export const BA0_FIELD_C2_V1: Ba0FieldThresholds = Object.freeze({
   qualification: Object.freeze({ version: 1, exercise: "cycle-per-tick", completion: "duration-completed", clockAgreementMs: 2_000 }),
 });
 
+/** New arrival waveform; historical C1/C2 parameter objects remain byte-for-byte canonical equivalents. */
+export const BA0_FIELD_C2_SALVO_V1: Ba0FieldThresholds = Object.freeze({
+  ...BA0_FIELD_C2_V1, id: "ba0-field-c2-salvo-v1",
+  description: "BA0 concurrency two salvo: 750 finite paired releases at 80 ms; unchanged defense; 25 requests per second campaign average with burst two.",
+  level: Object.freeze({ ...BA0_FIELD_C2_V1.level, id: "ba0-l7-c2-salvo" }),
+  qualification: Object.freeze({ version: 1, exercise: "salvo-pairs", completion: "finite-schedule-duration", clockAgreementMs: 2_000 }),
+  salvo: SALVO_SPEC,
+});
+
 /** Shared selection only: both participants independently select the exact reviewed set before running. */
 export const FIELD_LEVELS = Object.freeze({
   "ba0-l7-c1": Object.freeze({ workload: "ba0-l7-pressure-c1" as const, thresholds: BA0_FIELD_V1 }),
   "ba0-l7-c2": Object.freeze({ workload: "ba0-l7-pressure-c2" as const, thresholds: BA0_FIELD_C2_V1 }),
+  "ba0-l7-c2-salvo": Object.freeze({ workload: "ba0-l7-pressure-c2-salvo" as const, thresholds: BA0_FIELD_C2_SALVO_V1 }),
 });
 
 export function fieldLevel(id: string): (typeof FIELD_LEVELS)[keyof typeof FIELD_LEVELS] | undefined {
@@ -169,7 +182,7 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
     `${set.level.maxTotalRequests} requests vs ${set.level.durationSeconds} s x ${set.level.maxRequestsPerSecond} per second`);
   // Preserve the historical N=1 gate (including its id); N=2 must bind to its distinct reviewed level.
   if (set.level.id === "ba0-l7-c1") gate("level.n_equals_one", set.level.workers === 1, `workers ${set.level.workers}`);
-  else gate("level.n_equals_two", set.level.id === "ba0-l7-c2" && set.level.workers === 2, `workers ${set.level.workers}`);
+  else gate("level.n_equals_two", (set.level.id === "ba0-l7-c2" || set.level.id === "ba0-l7-c2-salvo") && set.level.workers === 2, `workers ${set.level.workers}`);
   gate("level.window_covers_generator", set.window.hardDeadlineMs >= set.window.startSlackMs + set.level.durationSeconds * 1000 + set.window.setupAllowanceMs + set.window.drainAllowanceMs,
     `deadline ${set.window.hardDeadlineMs} ms vs slack ${set.window.startSlackMs} + generator ${set.level.durationSeconds * 1000} + allowances ${set.window.setupAllowanceMs + set.window.drainAllowanceMs}`);
   gate("level.request_timeout_within_boundary_chain", set.level.requestTimeoutMs >= set.plane.egressTimeoutMs, `generator timeout ${set.level.requestTimeoutMs} ms vs plane egress ${set.plane.egressTimeoutMs} ms`);
@@ -194,7 +207,8 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
 
   // ---- journal: what the collector writes live (the canary and harness events; external traces are written at finalization)
   const canaryEvents = canaryRequests * (eventsPerRequestForCanary() + k.maxHarnessEventsPerRequest);
-  const n2 = set.level.id === "ba0-l7-c2";
+  const salvo = set.level.id === "ba0-l7-c2-salvo";
+  const n2 = set.level.id === "ba0-l7-c2" || salvo;
   const journalBytes = canaryEvents * (n2 ? k.n2JournalBytesPerEventEstimate : k.journalBytesPerEventMax);
   gate("journal.budget", journalBytes <= set.collector.maxJournalBytes / 2, `${n2 ? "modeled" : "predicted"} ${mib(journalBytes)} vs half of ${mib(set.collector.maxJournalBytes)}`);
   gate("collector.records_budget", canaryRequests + set.external.maxTraces < set.collector.maxRequests + set.external.maxTraces && canaryRequests <= set.collector.maxRequests, `canary requests ${canaryRequests} vs maxRequests ${set.collector.maxRequests}`);
@@ -206,7 +220,9 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
   const decisionBytes = set.external.maxDecisions * k.memoryBytesPerEventMax;
   const recentBytes = set.external.recentRing * 64;
   const channelBytes = 3 * (set.channel.queueCap + set.channel.windowCap) * k.memoryBytesPerEventMax;
-  const total = stateBytes + traceBytes + decisionBytes + recentBytes + channelBytes;
+  // Conservative accounting: both participants, three representations, 512 bytes per bounded pair record.
+  const pairBytes = salvo ? 2 * 3 * SALVO_SPEC.pairs * 512 : 0;
+  const total = stateBytes + traceBytes + decisionBytes + recentBytes + channelBytes + pairBytes;
   gate("external.state_memory", stateBytes <= k.memoryBudgetBytes / 2, `active plus orphan state ${n2 ? "modeled" : "at most"} ${mib(stateBytes)}`);
   gate("external.trace_memory", traceBytes <= k.memoryBudgetBytes / 2, `retained traces ${n2 ? "modeled" : "at most"} ${mib(traceBytes)}`);
   gate("external.decisions_cover_level", set.external.maxDecisions >= hostileRequests + canaryRequests, `decision cap ${set.external.maxDecisions} vs ${hostileRequests} hostile plus ${canaryRequests} canary requests`);
@@ -225,10 +241,13 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
   // Additional N=2 proofs only: historical N=1 gate output and interpretation stay unchanged.
   // Healthy evidence delivery allows a 10 s collector stall and a full telemetry tick before sweeping.
   // Longer stalls/losses remain explicit runtime anomalies, never an assumption of lossless delivery.
-  if (set.level.id === "ba0-l7-c2") {
+  if (n2) {
     const stallMs = 10_000;
     const burst = set.level.workers;
-    const arrivals = (ms: number) => burst + Math.ceil(set.level.maxRequestsPerSecond * ms / 1000);
+    // Salvo source ingress can bunch two successive pairs when network delay changes. Each non-final pair must settle
+    // before the next release; the final pair can only arrive later. This whole-pair envelope includes that jitter.
+    const arrivals = (ms: number) => salvo ? 2 * (1 + Math.ceil(ms / SALVO_SPEC.periodMs))
+      : burst + Math.ceil(set.level.maxRequestsPerSecond * ms / 1000);
     const activeNeeded = arrivals(stallMs + set.external.downstreamGraceMs + set.telemetry.tickMs);
     const orphanNeeded = arrivals(stallMs + set.external.orphanGraceMs + set.telemetry.tickMs);
     gate("external.active_cover_stall", set.external.maxActive >= activeNeeded, `capacity ${set.external.maxActive} vs ${activeNeeded} including stall, grace, sweep and burst`);
@@ -241,11 +260,32 @@ export function evaluateBudgetGates(set: Ba0FieldThresholds, targetRemainingMs: 
     // Charge ALL campaign canary events to one stall, stronger than assuming a canary peak rate.
     const stallEvents = (arrivals(stallMs) + canaryRequests) * eventsPerRequest;
     gate("channel.stall_with_canary_and_burst", set.channel.queueCap >= stallEvents, `queue ${set.channel.queueCap} vs ${stallEvents} events for stall, all canaries and burst`);
-    const replayWithCanary = replayNeeded + canaryRequests + burst;
+    const replayWithCanary = salvo ? 4 * arrivals(set.hop.pbLifetimeMs) + canaryRequests : replayNeeded + canaryRequests + burst;
     gate("hop.replay_with_canary_and_burst", set.hop.replayCapacity >= replayWithCanary, `capacity ${set.hop.replayCapacity} vs ${replayWithCanary}`);
     // The collector also derives up to two legacy origin events for each protected request.
     const journalWithOrigin = (canaryEvents + 2 * canaryRequests) * k.n2JournalBytesPerEventEstimate;
     gate("journal.with_origin_events", journalWithOrigin <= set.collector.maxJournalBytes / 2, `modeled ${mib(journalWithOrigin)} vs half of ${mib(set.collector.maxJournalBytes)}`);
+    if (salvo) {
+      gate("salvo.reviewed_schedule", canonicalJson(set.salvo) === canonicalJson(SALVO_SPEC)
+        && set.level.durationSeconds * 1000 === SALVO_SPEC.durationMs
+        && set.level.maxTotalRequests === SALVO_SPEC.pairs * SALVO_SPEC.requestsPerPair,
+      `${SALVO_SPEC.pairs} pairs x 2 requests at ${SALVO_SPEC.periodMs} ms; full ${SALVO_SPEC.durationMs} ms phase`);
+      gate("salvo.pair_memory", pairBytes <= k.memoryBudgetBytes - (total - pairBytes), `modeled pair records ${mib(pairBytes)} within remaining modeled budget`);
+      // Pair records are JSON artifacts, not journal lines; charge them here as an additional conservative evidence allowance.
+      const pairArtifactBytes = 2 * SALVO_SPEC.pairs * 512;
+      gate("salvo.evidence_with_pairs", journalWithOrigin + pairArtifactBytes <= set.collector.maxJournalBytes / 2,
+        `modeled journal plus both pair artifacts ${mib(journalWithOrigin + pairArtifactBytes)} vs half of ${mib(set.collector.maxJournalBytes)}`);
+      // Per-request diagnostics (sibling artifacts). Additive gates only: the gates above are unchanged and still charge exactly what they always did.
+      // The recorder adds no plane event, journal line, trace, queue entry or hop proof, so every channel, replay, trace and journal gate above is unaffected.
+      const d = SALVO_DIAGNOSTIC_LIMITS; const requests = SALVO_SPEC.pairs * SALVO_SPEC.requestsPerPair;
+      gate("salvo.diagnostic_cap_covers_level", d.maxRequests >= set.level.maxTotalRequests && d.maxRequests === requests, `diagnostic cap ${d.maxRequests} vs ${set.level.maxTotalRequests} requests`);
+      // Server and generator, three representations each (live, snapshot copy, serialized text) at the per-record accounting estimate, plus the nonce index.
+      const diagnosticMemory = 2 * 3 * requests * d.recordMemoryBytes + requests * d.nonceIndexBytes;
+      gate("salvo.diagnostic_memory", diagnosticMemory <= k.memoryBudgetBytes - total, `modeled diagnostic records ${mib(diagnosticMemory)} within remaining modeled budget ${mib(k.memoryBudgetBytes - total)}`);
+      const diagnosticArtifactBytes = requests * (d.serverRecordJsonBytes + d.generatorRecordJsonBytes);
+      gate("salvo.evidence_with_diagnostics", journalWithOrigin + pairArtifactBytes + diagnosticArtifactBytes <= set.collector.maxJournalBytes / 2,
+        `modeled journal, pair artifacts and diagnostic artifacts ${mib(journalWithOrigin + pairArtifactBytes + diagnosticArtifactBytes)} vs half of ${mib(set.collector.maxJournalBytes)}`);
+    }
   }
 
   // ---- telemetry cadence

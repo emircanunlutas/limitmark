@@ -20,6 +20,8 @@ import type { ServerSideDecision } from "./field-verdict";
 import { SERVER_LEVEL_SCHEMA, type ServerLevelEvidence } from "./reconcile";
 import { EXPOSURE_STATEMENT } from "./exposure-proof";
 import type { ServerN2Measurement } from "./n2-measurement";
+import type { ServerSalvoMeasurement } from "./salvo-measurement";
+import type { ServerSalvoDiagnostics } from "./salvo-diagnostics";
 
 /** Exact strings the evidence carries about what is NOT claimed. A test pins that no other string over-claims. */
 export const NOT_CLAIMED_FIELD: readonly string[] = Object.freeze([
@@ -58,6 +60,9 @@ export type CanarySummary = {
 
 export type FieldEvidenceBundle = {
   n2?: ServerN2Measurement;
+  salvo?: ServerSalvoMeasurement;
+  /** Salvo only. A sibling artifact (`salvo-diagnostics.json`); never part of `server-level.json` and never read by any verdict. */
+  salvoDiagnostics?: ServerSalvoDiagnostics;
   level: { id: string; campaignId: string; workers: number };
   parameters: { id: string; version: number; sha256: string };
   workloadSha256: string;
@@ -132,6 +137,7 @@ export function writeFieldEvidence(evidence: EvidenceRun, bundle: FieldEvidenceB
     serverSide: { status: bundle.serverSide.status, failureClass: bundle.serverSide.failureClass, reasons: bundle.serverSide.reasons.map((reason) => ({ code: reason.code })) },
     window: bundle.window, reconcileInput: bundle.reconcileInput,
     ...(bundle.n2 ? { n2: bundle.n2 } : {}),
+    ...(bundle.salvo ? { salvo: bundle.salvo } : {}),
   });
   put("external.json", {
     scope: SCOPE_STATEMENT_FIELD, counters: bundle.external, anonymousRefusals: bundle.anonymousRefusals,
@@ -163,5 +169,7 @@ export function writeFieldEvidence(evidence: EvidenceRun, bundle: FieldEvidenceB
   });
   put("recovery.json", { quietMs: bundle.recovery.quietMs, derivation: "2 x epoch + settle margin, from the parameter set", checked: bundle.recovery.checked, ok: bundle.recovery.ok, detail: bundle.recovery.detail });
   put("parameters.json", { fingerprint: bundle.parameters, status: bundle.thresholds.status, calibration: bundle.thresholds.calibration, values: evidenceView(bundle.thresholds) });
+  // Written last and in isolation: a scanner refusal here is recorded in `failed` and can never cost the core or any historical artifact.
+  if (bundle.salvoDiagnostics) put("salvo-diagnostics.json", bundle.salvoDiagnostics);
   return result;
 }

@@ -55,7 +55,7 @@ export type ThresholdSet = {
   version: number;
   description: string;
   /** The closed-loop BA0 level has no open-loop threshold set: the server-side evidence decides, never the generator's status counts. */
-  http: Readonly<Record<Exclude<WorkloadId, "app-restart" | "postgres-outage" | "ba0-l7-pressure-c1" | "ba0-l7-pressure-c2">, HttpThresholds>>;
+  http: Readonly<Record<Exclude<WorkloadId, "app-restart" | "postgres-outage" | "ba0-l7-pressure-c1" | "ba0-l7-pressure-c2" | "ba0-l7-pressure-c2-salvo">, HttpThresholds>>;
   recovery: Readonly<Record<"app-restart" | "postgres-outage", RecoveryThresholds>>;
 };
 

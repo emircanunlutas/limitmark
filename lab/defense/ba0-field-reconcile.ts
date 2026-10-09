@@ -29,6 +29,7 @@ import { BA0_FIELD_V1, fieldLevel, ba0FieldFingerprint } from "./field-threshold
 import { FIELD_EXIT, type FinalVerdict } from "./field-verdict";
 import { parseGeneratorReport, type GeneratorReport } from "./generator-report";
 import { SERVER_LEVEL_SCHEMA, finalFrom, type ReconcileResult, type ServerLevelEvidence } from "./reconcile";
+import { evaluateSalvoDiagnostics, type SalvoDiagnosticConsistency } from "./salvo-diagnostic-check";
 
 const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 
@@ -38,6 +39,8 @@ export type ReconcileOutcome = {
   reasons: string[];
   evidenceId: string | null;
   result: ReconcileResult | null;
+  /** Salvo only, and only when diagnostics were supplied. Informational: computed after the decision and never an input to it. */
+  diagnostics?: SalvoDiagnosticConsistency;
 };
 
 export type ReconcileCli = { serverId: string; reportPath: string | null };
@@ -99,8 +102,12 @@ export function reconcileLevel(cli: ReconcileCli, root: string = EVIDENCE_ROOT, 
     inputs: { server: { runId: cli.serverId, levelSha256: sha256(readFileSync(serverFile)) }, generator: { reportSha256: reportSha ?? "not_supplied" } },
     serverSide: { status: server.serverSide.status, failureClass: server.serverSide.failureClass },
     identities: result.identities, informational: result.informational,
+    ...(result.salvo ? { salvo: result.salvo } : {}),
     claims: { defenseQualification: "not_claimed", networkNonBypass: "not_measured", originNetworkIsolation: "not_measured", notClaimed: [...NOT_CLAIMED_FIELD] },
   });
+  // Separate diagnostic consistency artifact. It is evaluated from the already-final decision's inputs, written beside final.json, and cannot alter the verdict, the exit code or the reasons.
+  let diagnostics = salvoDiagnosticCheck(server, report, directory);
+  if (diagnostics) { try { evidence.addJsonArtifact("salvo-diagnostic-check.json", diagnostics); } catch { diagnostics = null; } }
   evidence.finalize({
     git: collectGitState(), environment: collectEnvironment(), target: null, workload: null, ceilings: null, thresholds: ba0FieldFingerprint(field), engine: "offline-reconcile",
     result: decision.verdict === "EXTERNAL-L7-QUALIFICATION-VALID" ? "EXTERNAL-L7-QUALIFICATION-VALID" : decision.verdict === "INVALID" ? "INVALID" : "ABORTED",
@@ -108,7 +115,20 @@ export function reconcileLevel(cli: ReconcileCli, root: string = EVIDENCE_ROOT, 
     metrics: { finalVerdict: decision.verdict, failureClass: decision.failureClass, defenseQualification: "not_claimed", networkActivity: false },
   });
   const exit = decision.verdict === "EXTERNAL-L7-QUALIFICATION-VALID" ? FIELD_EXIT.complete : decision.verdict === "INVALID" ? FIELD_EXIT.invalid : FIELD_EXIT.aborted;
-  return { exit, verdict: decision.verdict, reasons, evidenceId: evidence.id, result };
+  return { exit, verdict: decision.verdict, reasons, evidenceId: evidence.id, result, ...(diagnostics ? { diagnostics } : {}) };
+}
+
+/** Null for every non-salvo level and whenever neither side supplied diagnostics (historical evidence is processed exactly as before). Never throws. */
+function salvoDiagnosticCheck(server: ServerLevelEvidence, report: GeneratorReport | null, directory: string): SalvoDiagnosticConsistency | null {
+  try {
+    if (server.levelId !== "ba0-l7-c2-salvo") return null;
+    const file = path.join(directory, "salvo-diagnostics.json");
+    let serverDiagnostics: unknown;
+    if (existsSync(file)) { try { serverDiagnostics = JSON.parse(readFileSync(file, "utf8")); } catch { serverDiagnostics = null; } }
+    const generatorDiagnostics = report?.salvoDiagnostics;
+    if (serverDiagnostics === undefined && generatorDiagnostics === undefined) return null;
+    return evaluateSalvoDiagnostics({ server: serverDiagnostics, generator: generatorDiagnostics, serverPairs: server.salvo?.pairs, generatorPairs: report?.salvo?.pairs });
+  } catch { return null; }
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -118,6 +138,7 @@ async function main(argv: readonly string[]): Promise<number> {
   console.log(`${outcome.verdict}  ba0 field level reconcile (DDoS resistance, capacity, network and origin isolation, and production readiness are NOT claimed; VALID is scoped to the exact level and campaign)`);
   for (const reason of outcome.reasons) console.log(`  - ${reason}`);
   for (const entry of outcome.result?.identities ?? []) console.log(`  ${entry.ok ? "ok  " : "FAIL"} ${entry.id}`);
+  if (outcome.diagnostics) console.log(`  info salvo diagnostics (never part of the verdict): integrity ${outcome.diagnostics.integrity}, composition ${outcome.diagnostics.composition}, pair binding ${outcome.diagnostics.binding.status} (no end-to-end identity evidence); zero overlap pairs ${outcome.diagnostics.zeroOverlap.pairs}, fast shed first ${outcome.diagnostics.zeroOverlap.fastShedFirst}`);
   console.log(`evidence=${outcome.evidenceId ?? "none"}`);
   return outcome.exit;
 }

@@ -30,7 +30,8 @@ export type WorkloadId =
   | "app-restart"
   | "postgres-outage"
   | "ba0-l7-pressure-c1"
-  | "ba0-l7-pressure-c2";
+  | "ba0-l7-pressure-c2"
+  | "ba0-l7-pressure-c2-salvo";
 
 export type PhaseSpec = {
   name: string;
@@ -147,6 +148,19 @@ const catalogue = [
   {
     id: "ba0-l7-pressure-c2",
     description: "BA0 second external L7 qualification level (N equals 2): two closed-loop workers sharing a 25 requests per second aggregate pacing ceiling, the same fixed four-request cycle, no retries, no pipelining. Reviewed target only.",
+    engine: "http-closed-loop", methods: ["GET", "POST"], paths: ["/", "/gizlilik", "/test-talep-et", "/api/public-inquiries"], localOnly: false, remoteOnly: true,
+    fixtures: [
+      { id: "get_home", method: "GET", path: "/" },
+      { id: "get_privacy", method: "GET", path: "/gizlilik" },
+      { id: "get_form", method: "GET", path: "/test-talep-et" },
+      { id: "post_inquiry", method: "POST", path: "/api/public-inquiries" },
+    ],
+    phases: [{ name: "pressure", durationSeconds: 60, ratePerSecond: 25, concurrency: 2, timeoutMs: 5_000 }],
+    ceilings: { requestsPerSecond: 25, concurrency: 2, durationSeconds: 60, totalRequests: 1_500 },
+  },
+  {
+    id: "ba0-l7-pressure-c2-salvo",
+    description: "BA0 concurrency two salvo: 750 paired releases every 80 ms for a full 60 seconds; 1500 requests, 25 per second campaign average, burst two and nominal 26/24 one-second bins. No retries or pipelining. Reviewed target only.",
     engine: "http-closed-loop", methods: ["GET", "POST"], paths: ["/", "/gizlilik", "/test-talep-et", "/api/public-inquiries"], localOnly: false, remoteOnly: true,
     fixtures: [
       { id: "get_home", method: "GET", path: "/" },

@@ -287,7 +287,7 @@ async function runClosedLoopLevel(run: AuthorizedRun, args: ParsedArguments, git
     });
     evidence.addJsonArtifact("generator-report.json", report);
     const ended = outcome.stop.kind;
-    if (ended === "completed" || ended === "total_ceiling") result = "GENERATOR-COMPLETE";
+    if (ended === "completed" || (field.level.id !== "ba0-l7-c2-salvo" && ended === "total_ceiling")) result = "GENERATOR-COMPLETE";
     else if (ended === "operator_abort") result = "ABORTED";
     else result = "STOP";
     if (ended !== "completed") reasons.push(`generator stop: ${ended}${outcome.stop.detail ? ` ${outcome.stop.detail}` : ""}`);

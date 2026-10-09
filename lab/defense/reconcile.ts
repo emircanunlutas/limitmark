@@ -22,11 +22,14 @@ import { workloadFingerprint } from "./generator-report";
 import { BA0_FIELD_C2_V1, FIELD_LEVELS, ba0FieldFingerprint } from "./field-thresholds";
 import { WORKLOADS } from "../policy/workloads";
 import { exercised, n2ExerciseSpec, type ServerN2Measurement } from "./n2-measurement";
+import type { ServerSalvoMeasurement } from "./salvo-measurement";
+import { reconcileSalvo, type SalvoDiagnostics } from "./salvo-reconcile";
 
 export const SERVER_LEVEL_SCHEMA = "ba0-server-level-v1" as const;
 
 export type ServerLevelEvidence = {
   n2?: ServerN2Measurement;
+  salvo?: ServerSalvoMeasurement;
   schema: typeof SERVER_LEVEL_SCHEMA;
   campaignId: string;
   levelId: string;
@@ -51,6 +54,7 @@ export type ServerLevelEvidence = {
 export type ReconcileLimits = { scheduleLagP99Ms: number; eldP99Ms: number };
 
 export type ReconcileResult = {
+  salvo?: SalvoDiagnostics;
   identities: Identity[];
   reasons: Reason[];
   /** Historical observation retained for N=1. N=2 also enforces source-bound timing identities; clock skew is assumed, not measured. */
@@ -75,6 +79,8 @@ export function reconcile(server: ServerLevelEvidence, report: GeneratorReport |
     return { identities, reasons, informational };
   }
   const input = server.reconcileInput;
+  const salvo = server.levelId === "ba0-l7-c2-salvo" || report.levelId === "ba0-l7-c2-salvo" ? reconcileSalvo(server, report) : undefined;
+  if (salvo) { identities.push(...salvo.identities); reasons.push(...salvo.reasons); }
 
   // ---- G6: binding
   const binding = [
@@ -223,7 +229,7 @@ export function reconcile(server: ServerLevelEvidence, report: GeneratorReport |
     const closed = Date.parse(server.window.closedAt);
     informational.windowConsistent = Date.parse(report.startedAt) >= opened - skew && Date.parse(report.endedAt) <= closed + skew;
   }
-  return { identities, reasons, informational };
+  return { identities, reasons, informational, ...(salvo ? { salvo: salvo.diagnostics } : {}) };
 }
 
 /** The final verdict: the server-side decision and the reconcile's reasons, and nothing else. */
