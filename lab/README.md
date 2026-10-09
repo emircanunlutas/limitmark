@@ -530,3 +530,43 @@ Cost: about 0.4 µs per event, about 5 ms for a whole campaign (12,000 plane eve
 `rid` equals the external reducer's trace id only while no duplicate or overflow occurred. A recorder exception is swallowed into `counters.faults` (and makes the result `unknown`) rather than reaching the collector. The real-plane loopback test (real front, boundary and app; 200 pairs, 97 genuine fast sheds) validates the recorder against the client's ground truth, but did not reproduce R2's symptom (no reversed arrival and no zero-overlap pair on single-process loopback), so it neither supports nor refutes the R2 fast-shed hypothesis for the 21 pairs whose traces were not retained.
 
 **Proposed, not implemented.** If diagnostic `inconsistent` results (or `ambiguousEvents`, `faults`) should invalidate a future run, that is a qualification-policy revision with its own preregistration: a new identity (for example `g5.salvo_diagnostic_integrity`) that requires `integrity: consistent` and `binding` not `contradicted`, evaluated only for campaigns recorded after the change. It cannot require `verified` binding until an end-to-end identifier exists. It must not be applied to R2 or any run without diagnostics.
+
+### Canary continuity diagnostics (informational only, schema `ba0-canary-continuity-v1`)
+
+Baseline: merge commit `64ccc9dabdde81fbc844807f8c104d707151de5e`. This adds one sibling evidence artifact, `canary-continuity.json`, written by the **salvo** level's field runner
+after the server-side decision, last and in isolation (a scanner refusal costs only this artifact). It is derived exclusively from the legitimate-user journey results the runner already
+holds: no request is generated, no clock is read, and nothing in the defense request path, the canary, the thresholds, the parameter or workload fingerprints, `server-level.json`, the
+generator report or any identity changes. `influencesVerdict` is the literal `false`; nothing reads the artifact back (a test pins that only the runner builds it and only the evidence writer
+consumes it). N=1 and N=2 C2 runs, and every historical input, produce exactly the artifacts they always did. Source: `lab/defense/canary-continuity.ts`.
+
+**Shape (fixed).** 4 phases (`baseline`, `window`, `residual`, `recovery`) x 2 lanes (`protected`, `control`) = 8 rows, each with the five journey steps (`homepage`, `privacy`, `form`,
+`valid_post`, `thank_you`). A row has `journeys` (valid, uninterrupted), `interrupted`, `completed`, `incomplete`, `firstFailureByStep` (how many journeys had step *n* as their first failing
+step), `unexplainedIncomplete`, `completionMismatch`, and per step `attempted`, `ok`, `failed`, `notAttempted`, `missingLatency`, `latencyMs` (all attempted steps), `okLatencyMs` (successful
+steps only) and `failures` (all ten categories, zero included). `totals` repeats the failure categories per lane. `input` counts records supplied, accepted and rejected by closed reason.
+
+**Percentiles.** Nearest rank, `ceil(p / 100 x n)` over the sorted samples (the same `percentile` the existing latency gates use), rounded to two decimals, with `samples`, `p50`, `p95`, `p99`
+and `max`. With zero samples every value is `null`, never 0.
+
+**Missing data.** A step after a failing step was not attempted: it is `notAttempted`, never `failed` and never `ok` (a journey stops at its first failure). A latency that is not a finite
+non-negative number is `missingLatency` and is left out of the percentiles. A phase/lane that did not run has `journeys` 0, which is unknown, not success. `completed` is recomputed from the
+step records (five steps, all ok); a journey whose flag disagrees counts in `completionMismatch` and is not counted as completed. A journey with no completed flag and no failing step on
+record is `unexplainedIncomplete`, its cause unobservable. A record that is not exactly the expected shape (identity, step sequence, outcome, status) is rejected whole and counted under one of
+five closed reasons. Journeys a STOP interrupted (protected lane) are counted in `interrupted` and excluded from the step statistics, exactly as the existing completion rates exclude them.
+
+**Failure classification (closed).** From the recorded failure and the step's own recorded status only (never an aggregate): `status_429`, `status_4xx_other`, `status_5xx`,
+`status_other`, `timeout`, `reset`, `client_error`, `content_mismatch` (the page, redirect or JSON was not what the journey expects), `anti_forgery_missing` (the form's submission-token field was
+absent from the form page; the word token is avoided in keys because the evidence scanner reserves it) and `unrecognized`.
+
+**Why 429 is separate.** A 429 is the one status that means the defense, not the application, told a legitimate user to slow down; folding it into other 4xx would hide the signal that matters
+most for the stated objective. **Why challenge outcomes are `UNAVAILABLE`.** Neither the canary nor the lab origin defines a challenge response, so none can be observed; a challenge would only
+show as an unexpected status or a content mismatch. No count is invented. **Recovery.** Journey results carry no timestamps, so `recovery.timeToRecovery` is `UNAVAILABLE`; the `recovery` and
+`residual` rows give completion and latency for those phases instead. These phase latencies are recorded, not gated (the existing window-versus-baseline p95 gate is unchanged).
+
+**Failure behavior.** `buildCanaryContinuity` never throws: an internal error or a result over the size ceiling becomes a small `{ status: "failed", failure: "aggregation_error" | "size_limit" }`
+artifact (no error text), and the server-side verdict is untouched either way.
+
+**Capacity.** The artifact has a fixed shape, so its size does not grow with the number of journeys: 8 rows, 40 step rows, 400 failure counters. Serialized (pretty-printed, as written) it is
+39,696 bytes with every counter small and 50,321 bytes with every number replaced by `99999999.99`; the ceiling is 64 KiB (65,536). At most 4,096 journeys are read (the reviewed level has about 64).
+Aggregation memory is bounded by the 320 reviewed canary step records, held twice (live and sorted copy) as numbers: a few KiB, in the collector's process; nothing is added to the Defense Plane
+(no event, queue entry, journal line, trace or hop proof). Evidence: the modeled 6.5 MiB (journal, pair artifacts, diagnostics) plus at most 0.0625 MiB stays far inside the 24 MiB allowance
+(a test recomputes it from the gate); the 37 budget gates, their results and every fingerprint are unchanged.
