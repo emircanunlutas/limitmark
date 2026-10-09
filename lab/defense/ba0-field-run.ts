@@ -36,6 +36,7 @@ import { evidenceSafeError } from "../evidence/redact";
 import { PolicyRefusal, authorizeRun, buildRegistry, type AuthorizedRun, type TargetRegistry } from "../policy/target-policy";
 import { WORKLOADS } from "../policy/workloads";
 import { summarizeLatencies } from "../policy/thresholds";
+import { buildCanaryContinuity } from "./canary-continuity";
 import { loadOperatorTargets } from "../run";
 import { compareParity, journeyCompletionRates, type JourneyResult } from "./canary";
 import { Collector, type AppFin, type BoundaryFin, type PlaneFin } from "./collector";
@@ -489,6 +490,8 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       connections: { acceptedRemote: connections?.acceptedRemote ?? 0, dropped: connections?.dropped ?? 0, clientErrorTotal: connections?.clientErrorTotal ?? 0, clientErrorNoRequest: connections?.clientErrorNoRequest ?? 0, parserRejected: connections?.parserRejected ?? 0, protocolRefused: connections?.protocolRefused ?? 0 },
       externalInFlightMax,
     };
+    // Informational sibling artifact, computed AFTER the server-side decision from journeys already collected. Nothing below reads it back.
+    const canaryContinuity = salvo ? buildCanaryContinuity(journeys, interruptedKeys) : undefined;
     const bundle: FieldEvidenceBundle = {
       level: { id: args.levelId, campaignId: args.campaignId, workers: t.level.workers }, parameters: fingerprint, workloadSha256: workloadHash, thresholds: t, git,
       serverSide, firstReason: machine.firstReason, reasons: machine.allReasons(), machine: { transitions: machine.transitions(), phasesCompleted }, sequence: sequenceResults,
@@ -501,6 +504,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       ...(args.levelId === "ba0-l7-c2" && n2 ? { n2: n2.snapshot() } : {}),
       ...(salvo ? { salvo: salvo.snapshotSalvo() } : {}),
       ...(salvo ? { salvoDiagnostics: salvo.snapshotDiagnostics() } : {}),
+      ...(canaryContinuity ? { canaryContinuity } : {}),
     };
     const write = writeFieldEvidence(evidence, bundle);
     const status = serverSide.status;

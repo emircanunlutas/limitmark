@@ -22,6 +22,7 @@ import { EXPOSURE_STATEMENT } from "./exposure-proof";
 import type { ServerN2Measurement } from "./n2-measurement";
 import type { ServerSalvoMeasurement } from "./salvo-measurement";
 import type { ServerSalvoDiagnostics } from "./salvo-diagnostics";
+import type { CanaryContinuity } from "./canary-continuity";
 
 /** Exact strings the evidence carries about what is NOT claimed. A test pins that no other string over-claims. */
 export const NOT_CLAIMED_FIELD: readonly string[] = Object.freeze([
@@ -63,6 +64,8 @@ export type FieldEvidenceBundle = {
   salvo?: ServerSalvoMeasurement;
   /** Salvo only. A sibling artifact (`salvo-diagnostics.json`); never part of `server-level.json` and never read by any verdict. */
   salvoDiagnostics?: ServerSalvoDiagnostics;
+  /** Salvo only. A sibling artifact (`canary-continuity.json`, schema ba0-canary-continuity-v1); derived from journeys already collected, informational, never read by any verdict. */
+  canaryContinuity?: CanaryContinuity;
   level: { id: string; campaignId: string; workers: number };
   parameters: { id: string; version: number; sha256: string };
   workloadSha256: string;
@@ -171,5 +174,6 @@ export function writeFieldEvidence(evidence: EvidenceRun, bundle: FieldEvidenceB
   put("parameters.json", { fingerprint: bundle.parameters, status: bundle.thresholds.status, calibration: bundle.thresholds.calibration, values: evidenceView(bundle.thresholds) });
   // Written last and in isolation: a scanner refusal here is recorded in `failed` and can never cost the core or any historical artifact.
   if (bundle.salvoDiagnostics) put("salvo-diagnostics.json", bundle.salvoDiagnostics);
+  if (bundle.canaryContinuity) put("canary-continuity.json", bundle.canaryContinuity);
   return result;
 }
