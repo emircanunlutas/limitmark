@@ -223,3 +223,67 @@ test("the FINAL verdict comes only from the server decision plus the reconcile's
   assert.equal(decideFinal(aborted, [{ code: "generator_report_missing" }]).verdict, "INVALID", "a measurement reason found at reconcile outranks the abort");
   assert.deepEqual({ ...FIELD_EXIT }, { complete: 0, invalid: 1, refused: 2, aborted: 3, error: 4 });
 });
+
+// ------------------------------------------------------------------------------------------------ hard cap, deterministic
+// Root cause of the CI flake: a hung non-essential step is cut by a REAL timer set to the remaining cap, but the cap was then re-checked against
+// performance.now(). A timer can fire a fraction of a millisecond before performance.now() has advanced that far, so `remaining` read as >0 and the
+// next non-essential steps ran after the cap was actually spent.
+const manual = () => { let now = 0; return { now: () => now, advance: (ms: number) => { now += ms; } }; };
+
+test("hard cap, manual clock: not yet exhausted runs, exactly reached skips, exceeded skips; essential steps always run", async () => {
+  for (const [spend, expectSecond] of [[99, true], [100, false], [101, false], [5_000, false]] as const) {
+    const t = manual();
+    const order: string[] = [];
+    const results = await runSequence([
+      step("first", async () => { order.push("first"); t.advance(spend); }, 1_000),
+      step("second", async () => { order.push("second"); }, 1_000),
+      step("finalize_evidence", async () => { order.push("finalize_evidence"); }, 1_000, true),
+      step("terminate", async () => { order.push("terminate"); }, 1_000, true),
+    ], 100, t.now);
+    assert.deepEqual(order, expectSecond ? ["first", "second", "finalize_evidence", "terminate"] : ["first", "finalize_evidence", "terminate"], `spend ${spend}`);
+    assert.equal(results[1].skippedByCap, !expectSecond, `spend ${spend}`);
+    assert.deepEqual(results.slice(2).map((entry) => [entry.ok, entry.skippedByCap]), [[true, false], [true, false]]);
+  }
+});
+
+test("hard cap, manual clock: the deadline expiring BETWEEN two non-essential steps skips the later ones, and essential cleanup still runs after expiry", async () => {
+  const t = manual();
+  const order: string[] = [];
+  const results = await runSequence([
+    step("a", async () => { order.push("a"); t.advance(60); }, 1_000),
+    step("b", async () => { order.push("b"); t.advance(60); }, 1_000),
+    step("c", async () => { order.push("c"); }, 1_000),
+    step("d", async () => { order.push("d"); }, 1_000),
+    step("finalize_evidence", async () => { order.push("finalize_evidence"); t.advance(500); }, 1_000, true),
+    step("terminate", async () => { order.push("terminate"); }, 1_000, true),
+  ], 100, t.now);
+  assert.deepEqual(order, ["a", "b", "finalize_evidence", "terminate"]);
+  assert.deepEqual(results.map((entry) => entry.skippedByCap), [false, false, true, true, false, false]);
+});
+
+test("hard cap, timer-vs-clock skew: a clock that lags or leads the real timer cannot let non-essential steps run after a hung step spent the cap", async () => {
+  for (const rate of [0.5, 0.9, 0.99, 0.999, 1, 1.5]) {
+    const order: string[] = [];
+    const results = await runSequence([
+      step("drain", async () => { await sleep(2_000); order.push("drain"); }, 1_000),
+      step("final_telemetry", async () => { order.push("final_telemetry"); }, 1_000),
+      step("snapshot", async () => { order.push("snapshot"); }, 1_000),
+      step("finalize_evidence", async () => { order.push("finalize_evidence"); }, 1_000, true),
+      step("terminate", async () => { order.push("terminate"); }, 1_000, true),
+    ], 100, () => performance.now() * rate);
+    assert.deepEqual(order, ["finalize_evidence", "terminate"], `clock rate ${rate}`);
+    assert.deepEqual(results.map((entry) => [entry.timedOut, entry.skippedByCap]), [[true, false], [false, true], [false, true], [false, false], [false, false]], `clock rate ${rate}`);
+  }
+});
+
+test("hard cap, repeated real-timer execution is stable", async () => {
+  for (let i = 0; i < 25; i += 1) {
+    const order: string[] = [];
+    await runSequence([
+      step("drain", async () => { await sleep(1_000); }, 500),
+      step("snapshot", async () => { order.push("snapshot"); }, 500),
+      step("terminate", async () => { order.push("terminate"); }, 500, true),
+    ], 20);
+    assert.deepEqual(order, ["terminate"], `iteration ${i}`);
+  }
+});
