@@ -40,15 +40,11 @@ The BA0 Salvo pull-request workflow runs these checks on Ubuntu with Node.js 22.
 
 **Current research boundary:** BA0 N2 Salvo instrumentation and Canary Continuity diagnostics have automated validation, but cross-process/full-length field behavior is not yet established. The historical R2 result remains **INVALID** and has not been revalidated.
 
-## Website application and historical implementation notes
+## Website application and implementation notes
 
-The sections below document the website/application track and its detailed implementation history. Their original introductory description predates the defense/lab work; it should not be read as a statement that the *repository as a whole* lacks tests or integrations.
+The sections below document the Turkish-language B2B website and request-intake application track. Its public-facing `Resilience Testing` label is provisional and does not replace the repository's LimitMark project name. The website describes manually scoped and authorized resilience-testing services; it is not a claim that the defense lab is deployed or that automated field testing is offered as a live service.
 
----
-
-# Resilience testing website
-
-Turkish B2B website for **manually scoped, manually executed** resilience testing. The neutral `Resilience Testing` label is not a finalized brand. No accounts, dashboard, automated tests, pricing, invented claims or external service integrations are included.
+The website has no public user-account or pricing feature. Its repository does include automated tests, CI, and optional provider integration boundaries; production integrations and persistent public intake remain explicitly gated.
 
 ## Local development
 
