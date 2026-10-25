@@ -32,9 +32,9 @@ The BA0 Salvo pull-request workflow runs these checks on Ubuntu with Node.js 22.
 
 | Document | Purpose |
 | --- | --- |
-| [Defense plane](defense/README.md) | Application-layer scope, trust boundaries and lifecycle accounting |
+| [Defense plane](defense/README.md) | Application-layer scope, trust boundaries and lifecycle accounting; opening Slice 1 status is historical, with later slices documented below |
 | [Lab tooling](lab/README.md) | Local/authorized-target constraints, evidence and test harnesses |
-| [Security policy](SECURITY.md) | Security reporting and project security guidance |
+| [Security policy](SECURITY.md) | Vulnerability reporting procedure |
 | [Phase 5A security report](PHASE5A_SECURITY_REPORT.md) | Edge and client-identity assumptions |
 | [Phase 5C security report](PHASE5C_SECURITY_REPORT.md) | Provider guarantees and fail-closed limitations |
 
@@ -42,7 +42,7 @@ The BA0 Salvo pull-request workflow runs these checks on Ubuntu with Node.js 22.
 
 ## Website application and implementation notes
 
-The sections below document the Turkish-language B2B website and request-intake application track. Its public-facing `Resilience Testing` label is provisional and does not replace the repository's LimitMark project name. The website describes manually scoped and authorized resilience-testing services; it is not a claim that the defense lab is deployed or that automated field testing is offered as a live service.
+The sections below document the Turkish-language B2B website and request-intake application track. They are chronological implementation notes: statements about earlier phases describe those phases at the time, and later phases supersede them. Its public-facing `Resilience Testing` label is provisional and does not replace the repository's LimitMark project name. The website describes manually scoped and authorized resilience-testing services; it is not a claim that the defense lab is deployed or that automated field testing is offered as a live service.
 
 The website has no public user-account or pricing feature. Its repository does include automated tests, CI, and optional provider integration boundaries; production integrations and persistent public intake remain explicitly gated.
 
@@ -378,7 +378,7 @@ npm run build
 npm run start
 ```
 
-The server binds to loopback by default, suitable for a reverse proxy. For a container or host requiring another binding: `npm run start -- --hostname 0.0.0.0 --port 3000`. Use HTTPS at the proxy and configure the correct public origin/forwarded host handling for Next Server Actions. No provider-specific hosting manifest or cloud dependency is used.
+The server binds to loopback by default, suitable for a reverse proxy. For a container or host requiring another binding: `npm run start -- --hostname 0.0.0.0 --port 3000`. Use HTTPS at the proxy and configure the correct public origin/forwarded host handling for Next Server Actions. A conventional Node deployment does not require a provider-specific hosting manifest; other documented deployment paths and optional, gated integrations involve providers such as Vercel, Cloudflare and Resend.
 
 Before public launch:
 
