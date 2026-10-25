@@ -4,9 +4,10 @@ import net from "node:net";
 import path from "node:path";
 import { test } from "node:test";
 import { ba0FieldFingerprint, BA0_FIELD_V1, type Ba0FieldThresholds } from "../lab/defense/field-thresholds";
-import { FIELD_LEVELS, parseFieldArguments, runFieldLevel, type AuthorizationLike, type FieldRunOutcome, type FieldRunSeams } from "../lab/defense/ba0-field-run";
+import { FIELD_LEVELS, canaryScheduleLagP99, parseFieldArguments, runFieldLevel, type AuthorizationLike, type FieldRunOutcome, type FieldRunSeams } from "../lab/defense/ba0-field-run";
 import { DISPOSABLE_MARKER_CONTENT, type FieldEnvironment } from "../lab/defense/field-preflight";
 import { REPOSITORY_ROOT } from "../lab/evidence/manifest";
+import { summarizeLatencies } from "../lab/policy/thresholds";
 import { FakeProc, SSHD } from "./support/fake-proc";
 import { workloadFingerprint } from "../lab/defense/generator-report";
 import { WORKLOADS } from "../lab/policy/workloads";
@@ -339,8 +340,20 @@ test("a host CPU ceiling held for the pinned number of ticks is a STOP of class 
   } finally { r.cleanup(); }
 });
 
+// The starvation gate is driven by an injected, deterministic lag sample (`scheduleLagSampleMs`), never by the incidental scheduler lag of the machine.
+test("canary starvation gate: the UNROUNDED p99 decides, so a positive lag below 0.005 ms is not rounded to zero; zero lag is not starvation", () => {
+  assert.equal(canaryScheduleLagP99([0.0003, 0, 0.004, 0, 0.0021, 0, 0.0008]), 0.004);
+  assert.equal(summarizeLatencies([0.0003, 0, 0.004, 0, 0.0021, 0, 0.0008]).p99, 0, "the REPORTED summary is rounded to two decimals, as before");
+  assert.ok(canaryScheduleLagP99([0.004]) > 0, "a positive sub-resolution lag exceeds a zero limit");
+  assert.equal(canaryScheduleLagP99([0, 0, 0]) > 0, false, "zero lag never exceeds a zero limit");
+  assert.equal(canaryScheduleLagP99([]) > 0, false, "no samples is not starvation");
+  assert.equal(canaryScheduleLagP99([1, 2, 3]) > 2, true);
+  assert.equal(canaryScheduleLagP99([1, 2, 2]) > 2, false, "equal to the limit is not above it");
+});
+
 test("canary starvation is a MEASUREMENT failure, told apart from a slow server: a canary whose scheduler lagged is not evidence about the defense", { timeout: 120_000 }, async () => {
-  const r = await rig({ thresholds: fast((t) => { t.canary.scheduleLagP99Ms = 0; }) });
+  // 0.001 ms is below the two-decimal rounding of the reported summary: only the unrounded gate can see it.
+  const r = await rig({ thresholds: fast((t) => { t.canary.scheduleLagP99Ms = 0; }), seams: { scheduleLagSampleMs: () => 0.001 } });
   try {
     const outcome = await run(r);
     assert.equal(outcome.status, "invalid");
@@ -348,8 +361,28 @@ test("canary starvation is a MEASUREMENT failure, told apart from a slow server:
     assert.ok(codes(outcome).includes("canary_starved"), codes(outcome).join(","));
     assert.equal(outcome.bundle!.machine.phasesCompleted, true, "the level itself ran to the end");
     assert.ok(outcome.bundle!.canary.scheduleLagMs.count > 0);
+    assert.equal(outcome.bundle!.canary.scheduleLagMs.p99, 0, "the evidence summary keeps its two-decimal rounding");
     await assertTornDown(r);
   } finally { r.cleanup(); }
+});
+
+test("canary starvation: lag exceeding the configured limit is canary_starved (measurement); lag at or below it, including zero at a zero limit, is not", { timeout: 240_000 }, async () => {
+  const over = await rig({ thresholds: fast((t) => { t.canary.scheduleLagP99Ms = 2; }), seams: { scheduleLagSampleMs: () => 5 } });
+  try {
+    const outcome = await run(over);
+    assert.equal(outcome.status, "invalid");
+    assert.equal(outcome.serverSide?.failureClass, "measurement");
+    assert.ok(codes(outcome).includes("canary_starved"), codes(outcome).join(","));
+    await assertTornDown(over);
+  } finally { over.cleanup(); }
+  const zero = await rig({ thresholds: fast((t) => { t.canary.scheduleLagP99Ms = 0; }), seams: { scheduleLagSampleMs: () => 0 } });
+  try {
+    const outcome = await run(zero);
+    assert.equal(outcome.status, "complete", JSON.stringify(outcome.serverSide?.reasons));
+    assert.ok(!codes(outcome).includes("canary_starved"), codes(outcome).join(","));
+    assert.ok(outcome.bundle!.canary.scheduleLagMs.count > 0);
+    await assertTornDown(zero);
+  } finally { zero.cleanup(); }
 });
 
 // ------------------------------------------------------------------------------------------------ preflight refusals bind nothing
