@@ -1,6 +1,8 @@
 # defense/ — BA0 Defense Plane (application plane only)
 
-**Documentation scope:** The opening sections describe the historical BA0 Slice 1 baseline (skeleton, L1 `a7.shape-gate`, and its measurement path). Later sections document subsequent slices, diagnostics and field-readiness work. The defense plane remains isolated from the application and is not a production deployment. Slice 1's **BASELINE-VALID** or **INVALID** result is not a defense-qualification PASS.
+Status: **BA0 Slice 1** = skeleton + L1 (`a7.shape-gate`) + the complete measurement path. Local, loopback-only, fixed counts. Nothing
+here is deployed, wired into the application, or reachable from a build. Slice 1 may conclude **BASELINE-VALID** or **INVALID**; it never
+claims a defense-qualification PASS.
 
 ## Trust boundary
 
