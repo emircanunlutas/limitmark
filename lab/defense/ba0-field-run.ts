@@ -35,7 +35,7 @@ import { EVIDENCE_ROOT, EvidenceRun, REPOSITORY_ROOT, collectEnvironment, collec
 import { evidenceSafeError } from "../evidence/redact";
 import { PolicyRefusal, authorizeRun, buildRegistry, type AuthorizedRun, type TargetRegistry } from "../policy/target-policy";
 import { WORKLOADS } from "../policy/workloads";
-import { summarizeLatencies } from "../policy/thresholds";
+import { percentile, summarizeLatencies } from "../policy/thresholds";
 import { loadOperatorTargets } from "../run";
 import { compareParity, journeyCompletionRates, type JourneyResult } from "./canary";
 import { Collector, type AppFin, type BoundaryFin, type PlaneFin } from "./collector";
@@ -93,6 +93,8 @@ export type FieldRunSeams = {
   onArmed?: (info: { ingress: IngressBind }) => void;
   /** Replaces waiting for a remote generator: opens and closes the window on a timer, so a loopback run can drive the whole machine. */
   manualWindow?: { openAfterMs: number; closeAfterMs: number };
+  /** Test-only: maps each MEASURED canary schedule-lag sample (ms, already clamped at 0) to the value that is recorded. Absent in every real run. */
+  scheduleLagSampleMs?: (measuredMs: number) => number;
 };
 
 export type FieldRunOutcome = {
@@ -138,6 +140,14 @@ function identityReason(id: string): Reason {
   if (id.startsWith("e9.") || id.startsWith("e1.") || id === "e3.egress_failed_is_zero") return { code: "unexplained_traffic", detail: id };
   if (id.startsWith("e10.")) return { code: "evidence_gap", detail: id };
   return { code: "identity_failed", detail: id };
+}
+
+/**
+ * The canary-starvation gate. It compares the UNROUNDED p99 of the measured schedule lags with the limit: the 2-decimal rounding of the reported
+ * summary must never decide a gate (a real lag below 0.005 ms would otherwise read as exactly 0). The reported summary is unchanged.
+ */
+export function canaryScheduleLagP99(lagsMs: readonly number[]): number {
+  return percentile([...lagsMs].sort((a, b) => a - b), 99);
 }
 
 export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams = {}): Promise<FieldRunOutcome> {
@@ -332,7 +342,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       const wait = next - clock();
       if (wait > 0) await sleep(wait);
       if (!machine.canStartWork() || (options.until?.() ?? false)) break;
-      scheduleLags.push(Math.max(0, clock() - next));
+      { const measured = Math.max(0, clock() - next); scheduleLags.push(seams.scheduleLagSampleMs ? Math.max(0, seams.scheduleLagSampleMs(measured)) : measured); }
       index++;
       if (options.withControl) journeys.push(await runFieldJourney(collector, { lane: "control", host: "127.0.0.1", port: controlPort, phase, journey: index, timeoutMs: t.canary.timeoutMs }));
       const journey = await runFieldJourney(collector, { lane: "protected", host: ingress.ip, port: ingress.port, phase, journey: index, timeoutMs: t.canary.timeoutMs });
@@ -429,7 +439,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
     }
     const lagSummary = summarizeLatencies(scheduleLags);
     const harnessEld = monitor.harnessEld();
-    if (lagSummary.p99 > t.canary.scheduleLagP99Ms || harnessEld.highTicks > 0) reasons.push({ code: "canary_starved", detail: `schedule lag p99 ${lagSummary.p99} ms, harness event-loop ticks over the limit ${harnessEld.highTicks}` });
+    if (canaryScheduleLagP99(scheduleLags) > t.canary.scheduleLagP99Ms || harnessEld.highTicks > 0) reasons.push({ code: "canary_starved", detail: `schedule lag p99 ${lagSummary.p99} ms, harness event-loop ticks over the limit ${harnessEld.highTicks}` });
     const clientObservedMutations = journeys.filter((journey) => journey.lane === "protected" && journey.steps[3]?.ok === true).length;
     const canary: CanarySummary = {
       jcr: rates, journeys: journeys.length, legitimateRefusals: Object.entries(stepFailures).filter(([key]) => /status_/.test(key)).reduce((total, [, value]) => total + value, 0), l1FalseRejects, l2NonAdmits,
