@@ -1,3 +1,51 @@
+# LimitMark
+
+**Status: active development · research and validation tooling · not production-qualified**
+
+LimitMark is an engineering project exploring **controlled resilience and application-layer defense validation**. It combines a Next.js-based service/request application with isolated defense-plane experiments, reproducible lab workloads, bounded diagnostics, and evidence-oriented verification.
+
+The project is intentionally conservative about claims: passing automated checks is not equivalent to production readiness or successful field validation. Historical invalid results remain invalid until supported by new evidence.
+
+## Engineering scope
+
+| Area | Implemented scope | Important limitation |
+| --- | --- | --- |
+| Application | Next.js / React / TypeScript interface, validated request handling, persistence and operational boundaries | Public persistent intake remains gated; this is not a live service claim |
+| Defense plane | Isolated application-layer request handling, lifecycle accounting and fail-closed validation | Does not establish network- or transport-layer protection |
+| Lab and diagnostics | Locally scoped harnesses, bounded Salvo diagnostics and Canary Continuity V1 evidence artifacts | Diagnostic observations do not alter verdicts; field readiness is not established |
+| Verification | ESLint, TypeScript checks, automated tests and PR CI | CI does not cover every integration suite or real-world field conditions |
+
+## Verify the repository
+
+Requires **Node.js 22+** and npm. From the repository root:
+
+```sh
+npm ci
+npm run lint
+npm run typecheck
+npm test
+```
+
+The BA0 Salvo pull-request workflow runs these checks on Ubuntu with Node.js 22. Additional database, worker and built-route integration suites have separate scripts and prerequisites; they are **not** covered by that workflow. Local test commands may regenerate ignored lab artifacts.
+
+## Documentation map
+
+| Document | Purpose |
+| --- | --- |
+| [Defense plane](defense/README.md) | Application-layer scope, trust boundaries and lifecycle accounting |
+| [Lab tooling](lab/README.md) | Local/authorized-target constraints, evidence and test harnesses |
+| [Security policy](SECURITY.md) | Security reporting and project security guidance |
+| [Phase 5A security report](PHASE5A_SECURITY_REPORT.md) | Edge and client-identity assumptions |
+| [Phase 5C security report](PHASE5C_SECURITY_REPORT.md) | Provider guarantees and fail-closed limitations |
+
+**Current research boundary:** BA0 N2 Salvo instrumentation and Canary Continuity diagnostics have automated validation, but cross-process/full-length field behavior is not yet established. The historical R2 result remains **INVALID** and has not been revalidated.
+
+## Website application and historical implementation notes
+
+The sections below document the website/application track and its detailed implementation history. Their original introductory description predates the defense/lab work; it should not be read as a statement that the *repository as a whole* lacks tests or integrations.
+
+---
+
 # Resilience testing website
 
 Turkish B2B website for **manually scoped, manually executed** resilience testing. The neutral `Resilience Testing` label is not a finalized brand. No accounts, dashboard, automated tests, pricing, invented claims or external service integrations are included.
