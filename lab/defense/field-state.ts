@@ -143,11 +143,16 @@ async function runBounded(step: SequenceStep, budgetMs: number, clock: () => num
  */
 export async function runSequence(steps: readonly SequenceStep[], hardCapMs: number, clock: () => number = () => performance.now(), results: StepResult[] = []): Promise<StepResult[]> {
   const begun = clock();
+  // A non-essential step that timed out while bounded by what was LEFT of the cap has, by construction, spent the cap: its timer fired at the cap. The clock
+  // may read a hair under it (timers and performance.now() are not the same instant, and a timer can fire up to ~1 ms early), so the cap is also latched here.
+  let capSpent = false;
   for (const step of steps) {
-    const spent = clock() - begun;
-    const remaining = hardCapMs - spent;
-    if (remaining <= 0 && !step.essential) { results.push({ name: step.name, ok: false, timedOut: false, skippedByCap: true, ms: 0, error: null }); continue; }
-    results.push(await runBounded(step, Math.min(step.budgetMs, step.essential ? step.budgetMs : Math.max(1, remaining)), clock));
+    const remaining = hardCapMs - (clock() - begun);
+    if ((capSpent || remaining <= 0) && !step.essential) { results.push({ name: step.name, ok: false, timedOut: false, skippedByCap: true, ms: 0, error: null }); continue; }
+    const capBound = !step.essential && Math.max(1, remaining) <= step.budgetMs;
+    const result = await runBounded(step, Math.min(step.budgetMs, step.essential ? step.budgetMs : Math.max(1, remaining)), clock);
+    if (capBound && result.timedOut) capSpent = true;
+    results.push(result);
   }
   return results;
 }
