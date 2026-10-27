@@ -141,6 +141,9 @@ function readBody(req: http.IncomingMessage, declared: number, deadlineMs: numbe
       done = true;
       clearTimeout(timer);
       req.off("data", onData); req.off("end", onEnd); req.off("close", onClose); req.off("error", onClose);
+      // Without a listener a flowing request would silently discard whatever the peer keeps sending until the response goes out.
+      // Pausing lets the socket's own backpressure stop the sender instead.
+      if (result.status !== "complete") req.pause();
       resolve(result);
     };
     const onData = (chunk: Buffer) => {
@@ -154,6 +157,33 @@ function readBody(req: http.IncomingMessage, declared: number, deadlineMs: numbe
     const timer = setTimeout(() => finish({ status: "timeout", body: null }), deadlineMs);
     req.on("data", onData); req.on("end", onEnd); req.on("close", onClose); req.on("error", onClose);
   });
+}
+
+/** After a response goes out while the request is still open, the most the socket may read before it is destroyed, and for how long. */
+const UNREAD_READ_CAP_BYTES = 65_536;
+const UNREAD_DEADLINE_MS = 1_000;
+const sealedSockets = new WeakSet<Socket>();
+
+/**
+ * Called immediately before ANY response is written. A request whose framing is not finished (`!req.complete`: a chunked or oversized
+ * body, a Content-Length the front did not read, a body on a GET...) still has bytes owed on the wire. Node would keep the connection
+ * alive and, once the response ends, dump those bytes without a limit, so the connection must not survive: the caller adds
+ * `Connection: close` when this returns true, and Node then destroys the socket after the response is flushed. This does not trust that:
+ * reading is paused, the socket is destroyed if it reads more than UNREAD_READ_CAP_BYTES from now, and a deadline destroys it regardless.
+ * A request that was fully received returns false and keeps its connection.
+ */
+function sealUnreadRequest(req: http.IncomingMessage): boolean {
+  if (req.complete) return false;
+  const socket = req.socket;
+  if (socket.destroyed || sealedSockets.has(socket)) return true;
+  sealedSockets.add(socket);
+  req.pause();
+  const ceiling = socket.bytesRead + UNREAD_READ_CAP_BYTES;
+  socket.on("data", () => { if (socket.bytesRead > ceiling) socket.destroy(); });
+  const timer = setTimeout(() => { if (!socket.destroyed) socket.destroy(); }, UNREAD_DEADLINE_MS);
+  timer.unref();
+  socket.once("close", () => clearTimeout(timer));
+  return true;
 }
 
 function egressErrorKind(error: unknown): EgressErrorKind {
@@ -306,7 +336,6 @@ export function createFront(options: FrontOptions): Front {
     options.emit({ nonce, kind: "INGRESS_ACCEPTED", stripped, ...(remote ? { ingress: "external" as const } : correlated ? {} : { uncorrelated: true }) });
 
     const closed = new Promise<void>((resolve) => res.once("close", () => resolve()));
-    let unreadBody = false;
     try {
       // --- bounded body read, decided from the declared length BEFORE reading anything
       const lengths = layerHeaders.filter(([name]) => name === "content-length").map(([, value]) => value);
@@ -314,12 +343,11 @@ export function createFront(options: FrontOptions): Front {
       let bodyStatus: BodyStatus = "none";
       let body: Uint8Array | null = null;
       if (req.method === "POST" && declared !== null) {
-        if (declared > L1_LIMITS.maxBodyBytes) { bodyStatus = "declared_oversize"; unreadBody = true; }
+        if (declared > L1_LIMITS.maxBodyBytes) bodyStatus = "declared_oversize";
         else if (declared === 0) { bodyStatus = "complete"; body = new Uint8Array(); }
         else {
           const result = await readBody(req, declared, bodyDeadlineMs);
           bodyStatus = result.status; body = result.body;
-          if (bodyStatus !== "complete") unreadBody = true;
         }
       }
 
@@ -356,9 +384,9 @@ export function createFront(options: FrontOptions): Front {
       let observation: EnrollmentObservation | null = null;
       if (outcome.kind !== "pass") {
         const [status, label] = refusal(outcome);
-        respondRefusal(res, status, label, unreadBody, remote);
+        respondRefusal(req, res, status, label, remote);
       } else if (l2Decision !== null && refusedByL2) {
-        respondRefusal(res, 503, l2Decision.outcome === "shed" ? "l2_shed" : "l2_error", unreadBody, remote);
+        respondRefusal(req, res, 503, l2Decision.outcome === "shed" ? "l2_shed" : "l2_error", remote);
       } else {
         const hop = options.emit({ nonce, kind: "EGRESS_ATTEMPTED" });
         stats.proxied++;
@@ -372,14 +400,12 @@ export function createFront(options: FrontOptions): Front {
       if (!res.destroyed) await closed;
       // Exactly one enrollment disposition per observed render, decided before the request's terminal event.
       try { observation?.finalize(); } catch { /* an observer fault never changes a response */ }
-      if (unreadBody) req.resume();
       if (res.writableFinished) { stats.completed++; options.emit({ nonce, kind: "INGRESS_RESPONDED", status: res.statusCode }); }
       else { stats.aborted++; options.emit({ nonce, kind: "INGRESS_ABORTED" }); }
     } finally {
       stats.inFlight--;
       if (served) served.active--;
       if (remote) external.inFlight--;
-      if (unreadBody) setTimeout(() => { if (!req.socket.destroyed) req.socket.destroy(); }, 1_000).unref();
     }
   }
 
@@ -408,13 +434,13 @@ export function createFront(options: FrontOptions): Front {
     return [503, outcome.kind === "shed" ? "shed" : "error"];
   }
 
-  function respondRefusal(res: http.ServerResponse, status: number, label: string, closeConnection: boolean, remote: boolean): void {
+  function respondRefusal(req: http.IncomingMessage, res: http.ServerResponse, status: number, label: string, remote: boolean): void {
     if (res.destroyed) return;
     res.writeHead(status, {
       "content-type": "application/json", "content-length": REFUSAL_BODY.length, "cache-control": "no-store",
       // The internal decision label is for the harness only; a remote client is never told which defense answered.
       ...(remote ? {} : { [OUTCOME_HEADER]: label }),
-      ...(closeConnection ? { connection: "close" } : {}),
+      ...(sealUnreadRequest(req) ? { connection: "close" } : {}),
     });
     res.end(REFUSAL_BODY);
   }
@@ -439,7 +465,7 @@ export function createFront(options: FrontOptions): Front {
     } catch {
       hopStats.signFailures++;
       options.emit({ nonce, kind: "EGRESS_FAILED", egressError: "error", ...(options.l2 ? { failStage } : {}) });
-      respondRefusal(res, 502, "egress_failed", false, remote);
+      respondRefusal(req, res, 502, "egress_failed", remote);
       return Promise.resolve();
     }
     return forward(req, res, [], body, nonce, hop, remote, prebuilt, observation);
@@ -460,7 +486,7 @@ export function createFront(options: FrontOptions): Front {
         settled = true;
         clearTimeout(timer);
         options.emit({ nonce, kind: "EGRESS_FAILED", egressError: kind });
-        respondRefusal(res, kind === "timeout" ? 504 : 502, "egress_failed", false, remote);
+        respondRefusal(req, res, kind === "timeout" ? 504 : 502, "egress_failed", remote);
         resolve();
       };
       const upstreamRequest = http.request({ host: upstream.host, port: upstream.port, method: prebuilt?.method ?? req.method, path: prebuilt?.path ?? req.url, headers: outbound, agent }, (upstreamResponse) => {
@@ -490,6 +516,7 @@ export function createFront(options: FrontOptions): Front {
           if (!res.destroyed) {
             // Enrollment happens only once the response was completely flushed to the client: `finish` never fires for an aborted response.
             if (observation) res.once("finish", () => { try { observation.onDelivered(); } catch { /* an observer fault never changes a response */ } });
+            if (sealUnreadRequest(req)) responseHeaders.connection = "close";
             res.writeHead(status, responseHeaders); res.end(payload);
           }
           resolve();
