@@ -33,7 +33,7 @@ The BA0 Salvo pull-request workflow runs these checks on Ubuntu with Node.js 22.
 | Document | Purpose |
 | --- | --- |
 | [Defense plane](defense/README.md) | Application-layer scope, trust boundaries and lifecycle accounting; opening Slice 1 status is historical, with later slices documented below |
-| [BA0 layer-diversity reference](defense/BA0_LAYER_DIVERSITY.md) | Slice 3 problem, scope, file/test map, reproduction commands and limitations |
+| [BA0 layer-diversity reference](docs/BA0_LAYER_DIVERSITY.md) | Slice 3 problem, scope, file/test map, reproduction commands and limitations |
 | [Lab tooling](lab/README.md) | Local/authorized-target constraints, evidence and test harnesses |
 | [Security policy](SECURITY.md) | Vulnerability reporting procedure |
 | [Phase 5A security report](PHASE5A_SECURITY_REPORT.md) | Edge and client-identity assumptions |

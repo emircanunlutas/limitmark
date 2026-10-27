@@ -1,7 +1,7 @@
 # BA0 layer-diversity defense: technical reference
 
 Status: **research and validation tooling, not production-qualified.** This page is an index into code and tests that already exist; the authoritative
-mechanism description is [Slice 3 in `README.md`](README.md#ba0-slice-3-layer-diversity-and-predecessor-collapse-application-plane-only). Nothing here has
+mechanism description is [Slice 3 in `defense/README.md`](../defense/README.md#ba0-slice-3-layer-diversity-and-predecessor-collapse-application-plane-only). Nothing here has
 been audited or certified by a third party, and no field validation of this mechanism is claimed.
 
 Original implementation: commit `d50aaf36247b2587146c6b872459e37f9ce930a9` (`feat: add BA0 layer-diversity defense`), merged as PR #25
@@ -32,23 +32,23 @@ sender identity of any kind (the mechanism never uses IP or connection identity)
 Requests are classed `open` / `mutation` / `unknown`. Mutations are placed in a `credited` or `unverified` lane by **journey provenance**: whether the submission token was
 delivered by this plane's own flushed form response (a keyed, fixed-memory, two-generation Bloom filter). Each lane has its own token bucket; the buckets are the bound,
 provenance only selects the lane. Invariants: no spill between lanes, use records purged only after the credit window, no refunds. L2 errors on mutation/unknown requests
-fail closed (503). See `README.md` for the full table.
+fail closed (503). See `defense/README.md` for the full table.
 
 ## Where things live
 
 | Concern | File |
 | --- | --- |
-| Lanes, token buckets, use ledger, decision vocabulary | `core/lanes.ts` |
-| Credit-provenance filter | `core/credit-filter.ts` |
-| Enrollment contract (what response may enroll a token) | `core/enrollment.ts` |
-| L2 as a composer `Layer` | `layers/a7-journey-lanes.ts` |
-| L2 stage (deadline, bulkhead, failure policy) | `plane/l2-stage.ts`, `plane/l2-protocol.ts`, `core/l2-port.ts` |
-| Plane composition; **production Slice-3 entry** (no override code in graph) | `plane/runtime.ts`, `plane/main-l2.ts` |
-| Per-request penetration depth / terminal explanation | `core/penetration.ts` |
-| L2 lifecycle rules | `core/l2-lifecycle.ts` |
-| Harness-only collapse override (must not exist outside `lab/`) | `core/override-port.ts` (interface only), `../lab/defense/collapse/` |
-| Runner, fixtures, thresholds (`ba0-collapse-local-v1`) | `../lab/defense/ba0-collapse-run.ts`, `collapse-corpus.ts`, `collapse-thresholds.ts` |
-| Accounting derived from lifecycle records | `../lab/defense/lane-accounting.ts` |
+| Lanes, token buckets, use ledger, decision vocabulary | `defense/core/lanes.ts` |
+| Credit-provenance filter | `defense/core/credit-filter.ts` |
+| Enrollment contract (what response may enroll a token) | `defense/core/enrollment.ts` |
+| L2 as a composer `Layer` | `defense/layers/a7-journey-lanes.ts` |
+| L2 stage (deadline, bulkhead, failure policy) | `defense/plane/l2-stage.ts`, `defense/plane/l2-protocol.ts`, `defense/core/l2-port.ts` |
+| Plane composition; **production Slice-3 entry** (no override code in graph) | `defense/plane/runtime.ts`, `defense/plane/main-l2.ts` |
+| Per-request penetration depth / terminal explanation | `defense/core/penetration.ts` |
+| L2 lifecycle rules | `defense/core/l2-lifecycle.ts` |
+| Harness-only collapse override (must not exist outside `lab/`) | `defense/core/override-port.ts` (interface only), `lab/defense/collapse/` |
+| Runner, fixtures, thresholds (`ba0-collapse-local-v1`) | `lab/defense/ba0-collapse-run.ts`, `collapse-corpus.ts`, `collapse-thresholds.ts` |
+| Accounting derived from lifecycle records | `lab/defense/lane-accounting.ts` |
 
 ## Implementation-to-test map
 
@@ -88,7 +88,7 @@ check reports, not a benchmark: counts are fixed and every threshold is provisio
 
 ## Known limitations and unverified assumptions
 
-* The verdict means only what the claim boundary in `README.md` says: local, fixed-count, reviewed fixtures. It is not a defense-qualification PASS.
+* The verdict means only what the claim boundary in `defense/README.md` says: local, fixed-count, reviewed fixtures. It is not a defense-qualification PASS.
 * The Bloom filter is scaled down (2^13 bits) and epochs compressed (seconds) in the lab; the production-sized parameters are untested at scale. Semantics are unit-tested on an injected clock only.
 * Thresholds (`ba0-collapse-local-v1`) are uncalibrated.
 * L1 and L2 share one process, so a plane-process fault takes out both.
