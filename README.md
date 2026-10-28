@@ -15,6 +15,12 @@ The project is intentionally conservative about claims: passing automated checks
 | Lab and diagnostics | Locally scoped harnesses, bounded Salvo diagnostics and Canary Continuity V1 evidence artifacts | Diagnostic observations do not alter verdicts; field readiness is not established |
 | Verification | ESLint, TypeScript checks, automated tests and PR CI | CI does not cover every integration suite or real-world field conditions |
 
+## External recognition
+
+LimitMark was selected for the [XERJ Corpus Hub](https://hub.xerj.org/contributors/emircanunlutas) as a pinned, source-grounded reference for AI-agent research, including the BA0 layer-diversity defense. This is an external corpus listing, **not** a security certification or a production-readiness claim.
+
+[Recognition and milestones](docs/recognition/README.md) · [XERJ selection record](docs/recognition/001-xerj-corpus-hub.md)
+
 ## Verify the repository
 
 Requires **Node.js 22+** and npm. From the repository root:
