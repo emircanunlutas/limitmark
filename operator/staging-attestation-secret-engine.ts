@@ -114,7 +114,7 @@ export function buildWranglerChildEnvironment(parent: Readonly<Record<string, st
 // B2: Wrangler searches UPWARD for its configuration
 // ---------------------------------------------------------------------------
 
-/** What Wrangler 4.143.1's find-up (`findWranglerConfig`) and deploy-redirect (`.wrangler/deploy/config.json`) can pick up. */
+/** What Wrangler 4.154.0's find-up (`findWranglerConfig`) and deploy-redirect (`.wrangler/deploy/config.json`) can pick up (re-reviewed; unchanged from 4.143.1). */
 const WRANGLER_CONFIG_ENTRIES = [["wrangler.json"], ["wrangler.jsonc"], ["wrangler.toml"], [".wrangler", "deploy", "config.json"]] as const;
 
 /** Refuses if any Wrangler configuration entry exists in `realRoot` or ANY ancestor up to the filesystem root. A config anywhere above the
@@ -145,7 +145,7 @@ export async function assertNoWranglerConfigInAncestry(realRoot: string): Promis
 export type WorkerConfirmation = { evidence: (typeof WORKER_CONFIRMATION_EVIDENCE)[number]; deployedVersionIdPrefix: string; confirmedAtMs: number };
 const confirmationKeys = ["version", "environment", "worker", "accountFingerprint", "confirmedAtMs", "evidence", "deployedVersionIdPrefix"];
 
-/** Reads the operator's Worker-existence confirmation from the protected key directory. Wrangler 4.143.1's non-interactive `secret put`
+/** Reads the operator's Worker-existence confirmation from the protected key directory. Wrangler 4.154.0's non-interactive `secret put` (re-reviewed; unchanged from 4.143.1)
  * answers its own "create a new Worker?" prompt with YES and uploads a stub Worker (`createDraftWorker`, default true outside a TTY), so
  * the wrapper can never rely on Wrangler to refuse. It refuses itself unless the staging Admission Worker is already known to exist.
  *
