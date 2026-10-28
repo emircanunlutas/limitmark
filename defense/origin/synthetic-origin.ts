@@ -215,7 +215,7 @@ export function createSyntheticOrigin(options: SyntheticOriginOptions): Syntheti
     counters.refusedByReason[reason] = (counters.refusedByReason[reason] ?? 0) + 1;
     onApp({ nonce, kind: "APP_REFUSED", reason });
     if (res.writableEnded || res.destroyed) return;
-    res.writeHead(reason === "ob.replay_cache_full" ? 503 : 403, { "content-length": 0, connection: "close", "x-ba0-outcome": "refused" });
+    res.writeHead(reason === "ob.replay_cache_full" || reason === "ob.expiry_horizon" ? 503 : 403, { "content-length": 0, connection: "close", "x-ba0-outcome": "refused" });
     res.end();
     const socket = res.socket;
     if (socket) setTimeout(() => { if (!socket.destroyed) socket.destroy(); }, 1_000).unref();

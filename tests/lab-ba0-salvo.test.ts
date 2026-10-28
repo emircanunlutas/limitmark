@@ -25,7 +25,7 @@ import { writeFieldEvidence } from "../lab/defense/field-evidence";
 import { reconcileLevel } from "../lab/defense/ba0-field-reconcile";
 import { WORKLOADS } from "../lab/policy/workloads";
 import { salvoFixture, pairRecords, refreshFixture, serialPair } from "./support/salvo-fixture";
-import { assertFrontPatchBoundary, withoutPatchedFront } from "./support/front-patch-boundary";
+import { assertReviewedPatchBoundary, withoutReviewedPatches } from "./support/reviewed-patches";
 
 const root = path.join(__dirname, "..");
 const base = "aff793e4968cd5615e25665c5437e20d268d744f";
@@ -416,8 +416,8 @@ test("exact aff793e historical C1/C2 parameters, workloads, budget outputs, repo
   const after = normalized(readFileSync(path.join(root, "lab/load/closed-loop.ts"), "utf8"))
     .replace('  if (options.run.workload.id === "ba0-l7-pressure-c2-salvo") return executeSalvo(options);\n', "");
   assert.equal(after.slice(after.indexOf("export async function executeClosedLoop")), before.slice(before.indexOf("export async function executeClosedLoop")));
-  assert.equal(execFileSync("git", ["diff", base, "--", ...withoutPatchedFront(["defense", "lab/defense/n2-measurement.ts"])], { cwd: root, encoding: "utf8" }), "");
-  assertFrontPatchBoundary(root, base); // the one reviewed P0-01 exemption: historical front.ts unchanged at base, working tree pinned to the patch
+  assert.equal(execFileSync("git", ["diff", base, "--", ...withoutReviewedPatches(["defense", "lab/defense/n2-measurement.ts"])], { cwd: root, encoding: "utf8" }), "");
+  assertReviewedPatchBoundary(root, base); // the reviewed-patch registry (P0-01, P0-02): each listed file is the unmodified historical blob at base and, in the working tree, exactly its pinned reviewed version
 });
 
 test("first-gcp-n2 authoritative values retain exactly the historical three failed identities and INVALID result", () => {

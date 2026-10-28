@@ -120,8 +120,8 @@ export function createBoundary(options: BoundaryOptions): Boundary {
     options.emit({ nonce: refused.nonce, kind: "BOUNDARY_REJECTED", reason: refused.reason as ObReason });
     track(res, refused.nonce);
     if (res.writableEnded || res.destroyed) return;
-    // Cache exhaustion is only reachable AFTER a proof verified, so a distinct status tells an unauthenticated sender nothing.
-    res.writeHead(refused.reason === "ob.replay_cache_full" ? 503 : 403, { "content-length": 0, connection: "close", "x-ba0-outcome": "refused" });
+    // Cache exhaustion and an expiry-horizon hold are only reachable AFTER a proof verified, so a distinct status tells an unauthenticated sender nothing.
+    res.writeHead(refused.reason === "ob.replay_cache_full" || refused.reason === "ob.expiry_horizon" ? 503 : 403, { "content-length": 0, connection: "close", "x-ba0-outcome": "refused" });
     res.end();
     const socket = res.socket;
     if (socket) setTimeout(() => { if (!socket.destroyed) socket.destroy(); }, 1_000).unref();

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { historicalSha256, reviewedPatchFor, workingSha256 } from "./support/reviewed-patches";
 
 /**
  * Slice 3 static rules: what did NOT change, what the production module graphs contain, and where the harness-only collapse
@@ -18,6 +19,8 @@ function tsFiles(directory: string): string[] {
     return entry.isDirectory() ? tsFiles(full) : entry.name.endsWith(".ts") ? [full] : [];
   });
 }
+
+const BASELINE_COMMIT = "7714fb3a509dc8765b461e6d4e2bcb995cd86d4c";
 
 /** SHA-256 of the BASELINE (7714fb3) text of every Slice-1/2 file Slice 3 must not touch, line endings normalised. */
 const BASELINE_SHA256: Readonly<Record<string, string>> = {
@@ -57,7 +60,12 @@ const BASELINE_SHA256: Readonly<Record<string, string>> = {
 
 test("the accepted Slice-1/2 files are byte-identical to the baseline: PB/BA, Boundary, App, replay, the legacy plane entry and its protocol, the Slice-1/2 runners and corpora", () => {
   for (const [file, expected] of Object.entries(BASELINE_SHA256)) {
-    assert.equal(createHash("sha256").update(read(file)).digest("hex"), expected, `${file} changed`);
+    const patch = reviewedPatchFor(file);
+    if (patch === undefined) { assert.equal(createHash("sha256").update(read(file)).digest("hex"), expected, `${file} changed`); continue; }
+    // A reviewed patch (tests/support/reviewed-patches.ts). The historical hash above is NOT replaced: it must still equal the baseline text as
+    // git has it, and the working tree is pinned separately to the reviewed version.
+    assert.equal(historicalSha256(root, BASELINE_COMMIT, file), expected, `${file}: the historical baseline text no longer matches the recorded hash`);
+    assert.equal(workingSha256(root, file), patch.patchedSha256, `${file}: not the reviewed ${patch.reviewedIn} implementation`);
   }
 });
 

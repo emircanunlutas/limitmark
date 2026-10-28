@@ -211,6 +211,6 @@ export const OB_REASONS = [
   "ob.key_unknown", "ob.audience_mismatch", "ob.lifetime_invalid", "ob.not_yet_valid", "ob.expired", "ob.before_fence",
   "ob.method_mismatch", "ob.target_mismatch", "ob.header_unbound", "ob.header_duplicate", "ob.header_value_invalid", "ob.header_mismatch",
   "ob.length_mismatch", "ob.framing_invalid", "ob.signature_invalid", "ob.lineage_missing", "ob.lineage_mismatch",
-  "ob.replayed", "ob.replay_cache_full", "ob.digest_mismatch", "ob.content_incomplete", "ob.expect_refused", "ob.canon_error",
+  "ob.replayed", "ob.replay_cache_full", "ob.expiry_horizon", "ob.digest_mismatch", "ob.content_incomplete", "ob.expect_refused", "ob.canon_error",
 ] as const;
 export type ObReason = (typeof OB_REASONS)[number];
