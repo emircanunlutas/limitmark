@@ -7,10 +7,10 @@
  *   1. proof header presence/duplication     (BA role also requires the PB lineage header)
  *   2. closed header-set scan                (unbound, duplicate, framing, value)
  *   3. strict proof decode                   (size, canonical encoding, role, shape)
- *   4. kid, audience, lifetime, freshness, verifier-start fence
+ *   4. kid, audience, lifetime, freshness, verifier-start fence   (one wall sample; a non-finite one is refused)
  *   5. method, exact target, canonical header pairs, declared length  == what the proof says
  *   6. Ed25519 signature                     (BA role then verifies the lineage PB: window, equality, signature)
- *   7. atomic replay reservation             (synchronous; RESERVED)
+ *   7. atomic replay reservation             (synchronous; RESERVED; the SAME wall sample must be after the expiry horizon)
  *   8. bounded body read, SHA-256 == proof   (the first asynchronous step; any failure BURNS the reservation)
  *   9. commit
  * No body byte is read and no replay entry exists before step 6 succeeded.
@@ -128,6 +128,8 @@ export async function admitHopRequest(config: AdmissionConfig, request: Admissio
 
     // 4. window
     const nowMs = config.now();
+    // One wall sample feeds the window checks AND the expiry-horizon gate. A non-finite reading would pass every ordered comparison.
+    if (!Number.isFinite(nowMs)) return refuse("ob.canon_error");
     const window = checkProofWindow(claims, { keys: new Map([[ownKid, ownKey]]), aud: ownAud, nowMs, fenceMs: config.fence.fenceMs });
     if (window !== null) return refuse(window);
 
@@ -165,10 +167,10 @@ export async function admitHopRequest(config: AdmissionConfig, request: Admissio
 
     // 7. atomic, synchronous reservation (no await since the signature check above)
     const wants: ReserveRequest[] = config.role === "pb"
-      ? [{ key: `pb:${pbClaims.jti}`, retainMs: RETAIN_PB_MS }]
-      : [{ key: `ba:${claims.jti}`, retainMs: RETAIN_BA_MS }, { key: `ln:${pbClaims.jti}`, retainMs: RETAIN_PB_MS }];
-    const reserved = config.guard.reserve(wants);
-    if (!reserved.ok) return refuse(reserved.reason === "full" ? "ob.replay_cache_full" : "ob.replayed", authNonce);
+      ? [{ key: `pb:${pbClaims.jti}`, retainMs: RETAIN_PB_MS, windowEndMs: pbClaims.exp + HOP_SKEW_MS }]
+      : [{ key: `ba:${claims.jti}`, retainMs: RETAIN_BA_MS, windowEndMs: claims.exp + HOP_SKEW_MS }, { key: `ln:${pbClaims.jti}`, retainMs: RETAIN_PB_MS, windowEndMs: pbClaims.exp + HOP_SKEW_MS }];
+    const reserved = config.guard.reserve(wants, nowMs);
+    if (!reserved.ok) return refuse(reserved.reason === "full" ? "ob.replay_cache_full" : reserved.reason === "horizon" ? "ob.expiry_horizon" : "ob.replayed", authNonce);
     const ticket = reserved.ticket;
     try {
       // 8. bounded body, digest

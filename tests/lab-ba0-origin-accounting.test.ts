@@ -283,7 +283,7 @@ function consistent(): MutableInput {
   for (const r of all) for (const event of r.boundary) if (event.kind === "BOUNDARY_REJECTED" && event.reason) reasons[event.reason]++;
   const appReasons = zeroByReason();
   for (const r of all) for (const event of r.app) if (event.kind === "APP_REFUSED" && event.reason) appReasons[event.reason]++;
-  const replay = (reserved: number, committed: number, burned = 0) => ({ reserved, committed, burned, replayRejected: 0, capacityRejected: 0, purged: 0, open: 0, size: reserved, highWater: reserved, stateViolations: 0 });
+  const replay = (reserved: number, committed: number, burned = 0) => ({ reserved, committed, burned, replayRejected: 0, capacityRejected: 0, horizonRejected: 0, purged: 0, open: 0, size: reserved, highWater: reserved, stateViolations: 0 });
   const boundary: BoundaryFin = {
     drained: true, channel: channel(1),
     stats: {
@@ -326,6 +326,33 @@ test("a fully consistent run: every o2 identity holds and the counts are derived
   assert.deepEqual(report.mutation, { clientObserved: 1, ledgerCorrelated: 1, appAuthoritative: 1, perRecordViolations: 0, controlClient: 0, controlApp: 0 });
   assert.deepEqual(report.positiveControls, { sent: 2, admitted: 2, executed: 2, mutated: 0 });
   assert.equal(report.direct.appExecutionsOnRejectedLanes, 0);
+});
+
+test("P0-02: an expiry-horizon refusal is reconciled per reason at both gates, and is NOT interchangeable with replay_cache_full or replayed", () => {
+  const withReason = (reason: (typeof OB_REASONS)[number]) => {
+    const input = consistent();
+    input.journeys = [journeyOf("protected", true)];
+    for (const event of input.records[2].boundary) if (event.kind === "BOUNDARY_REJECTED") event.reason = reason;
+    for (const event of input.records[3].app) if (event.kind === "APP_REFUSED") event.reason = reason;
+    input.boundary!.stats.rejectedByReason["ob.proof_missing"]--; input.boundary!.stats.rejectedByReason[reason]++;
+    input.app!.stats.counters.refusedByReason["ob.proof_missing"]--; input.app!.stats.counters.refusedByReason[reason]++;
+    return input;
+  };
+  const held = withReason("ob.expiry_horizon");
+  const report = deriveOriginAccounting(held);
+  assert.deepEqual(report.identities.filter((identity) => !identity.ok), [], "counters, ledger and replay-state identities all hold with the new reason");
+  assert.deepEqual(report.refusedByReason, { "ob.expiry_horizon": 1 });
+  // the counters must name the same reason the ledger carries: a hold counted as a capacity or replay refusal is a mismatch
+  for (const other of ["ob.replay_cache_full", "ob.replayed"] as const) {
+    const mislabelled = withReason("ob.expiry_horizon");
+    mislabelled.boundary!.stats.rejectedByReason["ob.expiry_horizon"]--; mislabelled.boundary!.stats.rejectedByReason[other]++;
+    assert.ok(failing(mislabelled).includes("o2.boundary_counters_equal_ledger"), other);
+    const appMislabelled = withReason("ob.expiry_horizon");
+    appMislabelled.app!.stats.counters.refusedByReason["ob.expiry_horizon"]--; appMislabelled.app!.stats.counters.refusedByReason[other]++;
+    assert.ok(failing(appMislabelled).includes("o2.app_counters_equal_ledger"), other);
+  }
+  // a hold reserves nothing, so the replay-state identities need no allowance for it
+  assert.deepEqual(failing(held).filter((id) => /replay_state|body_reads/.test(id)), []);
 });
 
 test("positive controls are accounted apart: dropping one from the expectation fails its own identity and no protected identity moves", () => {

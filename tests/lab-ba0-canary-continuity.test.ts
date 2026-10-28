@@ -8,7 +8,7 @@ import {
   aggregateCanaryContinuity, buildCanaryContinuity, classifyFailure, serializedBytes, type ContinuityOk, type ContinuityRow,
 } from "../lab/defense/canary-continuity";
 import { assertEvidenceSafe } from "../lab/evidence/redact";
-import { assertFrontPatchBoundary, withoutPatchedFront } from "./support/front-patch-boundary";
+import { assertReviewedPatchBoundary, withoutReviewedPatches } from "./support/reviewed-patches";
 import { writeFieldEvidence, type FieldEvidenceBundle } from "../lab/defense/field-evidence";
 import { BA0_FIELD_V1, BA0_FIELD_C2_V1, BA0_FIELD_C2_SALVO_V1, ba0FieldFingerprint, evaluateBudgetGates } from "../lab/defense/field-thresholds";
 import { WORKLOADS } from "../lab/policy/workloads";
@@ -290,8 +290,8 @@ test("historical qualification is immutable: verdict-path files are byte-identic
   const paths = ["defense", "src", "workers", "lab/policy", "lab/evidence", "lab/defense/canary.ts", "lab/defense/field-canary.ts", "lab/defense/field-verdict.ts", "lab/defense/field-state.ts", "lab/defense/field-thresholds.ts",
     "lab/defense/reconcile.ts", "lab/defense/salvo-spec.ts", "lab/defense/salvo-reconcile.ts", "lab/defense/salvo-diagnostics.ts", "lab/defense/salvo-diagnostic-check.ts", "lab/defense/salvo-measurement.ts",
     "lab/defense/n2-measurement.ts", "lab/defense/external-reducer.ts", "lab/defense/external-accounting.ts", "lab/defense/collector.ts", "lab/defense/generator-report.ts", "lab/defense/ba0-field-reconcile.ts"];
-  assert.equal(execFileSync("git", ["diff", BASE, "--", ...withoutPatchedFront(paths)], { cwd: root, encoding: "utf8" }), "");
-  assertFrontPatchBoundary(root, BASE); // the one reviewed P0-01 exemption: historical front.ts unchanged at BASE, working tree pinned to the patch
+  assert.equal(execFileSync("git", ["diff", BASE, "--", ...withoutReviewedPatches(paths)], { cwd: root, encoding: "utf8" }), "");
+  assertReviewedPatchBoundary(root, BASE); // the reviewed-patch registry (P0-01, P0-02): each listed file is the unmodified historical blob at BASE and, in the working tree, exactly its pinned reviewed version
   assert.equal(ba0FieldFingerprint(BA0_FIELD_V1).sha256, "5f7fbb865fcc8f44219a01af4cb02a48113a20fb75436a7f42f5ddd772b3e625");
   assert.equal(ba0FieldFingerprint(BA0_FIELD_C2_V1).sha256, "cf56f4e3272c9a4cd8257deacf153eaaf154501ceb3749e31179d756134917ab");
   assert.equal(ba0FieldFingerprint(BA0_FIELD_C2_SALVO_V1).sha256, "eda312909c18c7a7cd9c4525f2071b474f10b1b27c3b181e9e1a12ea27208f46");

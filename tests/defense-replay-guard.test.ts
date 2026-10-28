@@ -8,109 +8,111 @@ function rig(capacity = 4) {
   return { guard, advance: (ms: number) => { now += ms; }, now: () => now };
 }
 const key = (index: number) => `pb:${String(index).padStart(22, "x")}`;
-const want = (index: number, retainMs = 8_000) => ({ key: key(index), retainMs });
+// The pre-EH tests do not exercise the expiry horizon: windowEndMs 0 with wall sample 1 keeps the horizon strictly below the wall.
+const WALL = 1;
+const want = (index: number, retainMs = 8_000) => ({ key: key(index), retainMs, windowEndMs: 0 });
 
 test("an id moves UNSEEN -> RESERVED -> COMMITTED, and after commit it is a replay", () => {
   const { guard } = rig();
   assert.equal(guard.stateOf(key(1)), "UNSEEN");
-  const first = guard.reserve([want(1)]);
+  const first = guard.reserve([want(1)], WALL);
   assert.ok(first.ok);
   assert.equal(guard.stateOf(key(1)), "RESERVED");
   assert.equal(guard.stats().open, 1);
   first.ticket.commit();
   assert.equal(guard.stateOf(key(1)), "COMMITTED");
-  assert.deepEqual(guard.reserve([want(1)]), { ok: false, reason: "replayed" });
+  assert.deepEqual(guard.reserve([want(1)], WALL), { ok: false, reason: "replayed" });
   assert.deepEqual({ reserved: guard.stats().reserved, committed: guard.stats().committed, burned: guard.stats().burned, open: guard.stats().open }, { reserved: 1, committed: 1, burned: 0, open: 0 });
 });
 
 test("an id moves UNSEEN -> RESERVED -> BURNED, and a burned id is never reusable until its retention ends", () => {
   const { guard, advance } = rig();
-  const reserved = guard.reserve([want(1)]);
+  const reserved = guard.reserve([want(1)], WALL);
   assert.ok(reserved.ok);
   reserved.ticket.burn();
   assert.equal(guard.stateOf(key(1)), "BURNED");
-  assert.deepEqual(guard.reserve([want(1)]), { ok: false, reason: "replayed" });
+  assert.deepEqual(guard.reserve([want(1)], WALL), { ok: false, reason: "replayed" });
   advance(7_999);
-  assert.deepEqual(guard.reserve([want(1)]), { ok: false, reason: "replayed" }, "still burned just before retention ends");
+  assert.deepEqual(guard.reserve([want(1)], WALL), { ok: false, reason: "replayed" }, "still burned just before retention ends");
   advance(300); // past the retention AND past the 250 ms purge throttle
-  guard.reserve([want(99)]);
+  guard.reserve([want(99)], WALL);
   assert.equal(guard.stateOf(key(1)), "UNSEEN", "only after its retention elapsed is the entry purged");
 });
 
 test("while RESERVED the id is already a replay for every concurrent presenter (the reservation is the lock)", () => {
   const { guard } = rig();
-  const winner = guard.reserve([want(1)]);
+  const winner = guard.reserve([want(1)], WALL);
   assert.ok(winner.ok);
-  for (let index = 0; index < 8; index++) assert.deepEqual(guard.reserve([want(1)]), { ok: false, reason: "replayed" });
+  for (let index = 0; index < 8; index++) assert.deepEqual(guard.reserve([want(1)], WALL), { ok: false, reason: "replayed" });
   assert.equal(guard.stats().replayRejected, 8);
   assert.equal(guard.stats().reserved, 1);
 });
 
 test("reserve is synchronous: it returns a result, never a promise, so no await can separate the lookup from the insert", () => {
   const { guard } = rig();
-  const result = guard.reserve([want(1)]);
+  const result = guard.reserve([want(1)], WALL);
   assert.equal(result instanceof Promise, false);
   assert.notEqual(guard.reserve.constructor.name, "AsyncFunction");
 });
 
 test("a second transition on a ticket is a counted violation and never releases the id", () => {
   const { guard } = rig();
-  const reserved = guard.reserve([want(1)]);
+  const reserved = guard.reserve([want(1)], WALL);
   assert.ok(reserved.ok);
   reserved.ticket.commit();
   reserved.ticket.burn();
   assert.equal(guard.stats().stateViolations, 1);
   assert.equal(guard.stateOf(key(1)), "BURNED", "a double transition burns, it never frees");
-  assert.deepEqual(guard.reserve([want(1)]), { ok: false, reason: "replayed" });
+  assert.deepEqual(guard.reserve([want(1)], WALL), { ok: false, reason: "replayed" });
 });
 
 test("reserving several ids is all-or-nothing: a replayed member creates nothing for the others", () => {
   const { guard } = rig();
-  const first = guard.reserve([want(1)]);
+  const first = guard.reserve([want(1)], WALL);
   assert.ok(first.ok);
   first.ticket.commit();
-  const blocked = guard.reserve([want(2), want(1), want(3)]);
+  const blocked = guard.reserve([want(2), want(1), want(3)], WALL);
   assert.deepEqual(blocked, { ok: false, reason: "replayed" });
   assert.equal(guard.stateOf(key(2)), "UNSEEN");
   assert.equal(guard.stateOf(key(3)), "UNSEEN");
-  assert.deepEqual(guard.reserve([want(4), want(4)]), { ok: false, reason: "replayed" }, "the same id twice in one request is a replay too");
+  assert.deepEqual(guard.reserve([want(4), want(4)], WALL), { ok: false, reason: "replayed" }, "the same id twice in one request is a replay too");
   assert.equal(guard.stateOf(key(4)), "UNSEEN");
 });
 
 test("capacity fails closed and NO unexpired entry is ever evicted to make room", () => {
   const { guard, advance } = rig(3);
-  for (let index = 1; index <= 3; index++) { const reserved = guard.reserve([want(index)]); assert.ok(reserved.ok); reserved.ticket.commit(); }
+  for (let index = 1; index <= 3; index++) { const reserved = guard.reserve([want(index)], WALL); assert.ok(reserved.ok); reserved.ticket.commit(); }
   assert.equal(guard.stats().size, 3);
-  assert.deepEqual(guard.reserve([want(4)]), { ok: false, reason: "full" });
+  assert.deepEqual(guard.reserve([want(4)], WALL), { ok: false, reason: "full" });
   assert.equal(guard.stateOf(key(4)), "UNSEEN", "a full set creates nothing");
   assert.equal(guard.stats().capacityRejected, 1);
   for (let index = 1; index <= 3; index++) assert.equal(guard.stateOf(key(index)), "COMMITTED", `entry ${index} survived the exhaustion`);
-  assert.deepEqual(guard.reserve([want(1)]), { ok: false, reason: "replayed" }, "an earlier id is still a replay, not a free slot");
+  assert.deepEqual(guard.reserve([want(1)], WALL), { ok: false, reason: "replayed" }, "an earlier id is still a replay, not a free slot");
   // an in-flight RESERVED entry is never purged even past its retention
   advance(60_000);
-  const reservedAfter = guard.reserve([want(5)]);
+  const reservedAfter = guard.reserve([want(5)], WALL);
   assert.ok(reservedAfter.ok, "expired entries are purged and the set accepts again");
   assert.equal(guard.stateOf(key(1)), "UNSEEN");
 });
 
 test("a RESERVED entry is never purged, even after its retention, until it settles", () => {
   const { guard, advance } = rig(2);
-  const inFlight = guard.reserve([want(1, 100)]);
+  const inFlight = guard.reserve([want(1, 100)], WALL);
   assert.ok(inFlight.ok);
   advance(10_000);
-  guard.reserve([want(2)]);
+  guard.reserve([want(2)], WALL);
   assert.equal(guard.stateOf(key(1)), "RESERVED");
-  assert.deepEqual(guard.reserve([want(1)]), { ok: false, reason: "replayed" });
+  assert.deepEqual(guard.reserve([want(1)], WALL), { ok: false, reason: "replayed" });
 });
 
 test("entries with different retention coexist and purge independently of insertion order", () => {
   const { guard, advance } = rig(8);
-  const long = guard.reserve([{ key: "pb:long", retainMs: 8_000 }]);
-  const short = guard.reserve([{ key: "ba:short", retainMs: 5_000 }]);
+  const long = guard.reserve([{ key: "pb:long", retainMs: 8_000, windowEndMs: 0 }], WALL);
+  const short = guard.reserve([{ key: "ba:short", retainMs: 5_000, windowEndMs: 0 }], WALL);
   assert.ok(long.ok && short.ok);
   long.ticket.commit(); short.ticket.commit();
   advance(6_000);
-  guard.reserve([want(9)]);
+  guard.reserve([want(9)], WALL);
   assert.equal(guard.stateOf("ba:short"), "UNSEEN", "the shorter-lived entry expired even though it was inserted later");
   assert.equal(guard.stateOf("pb:long"), "COMMITTED", "the longer-lived one is untouched");
 });
