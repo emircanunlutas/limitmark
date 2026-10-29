@@ -8,8 +8,10 @@ import { isWithin } from "./staging-config-renderer";
 // The composite preflight checks this pin once; the secret-put path checks it AGAIN immediately before every spawn through
 // `resolveReviewedWrangler`, so a package swapped between preflight and put (or a stale preflight) is refused at the point of use.
 
-/** The one Wrangler version this tooling's deploy wrappers are reviewed against (Gates 4/5/7 deployed with an earlier pin). */
-export const REVIEWED_WRANGLER_VERSION = "4.143.1";
+/** The one Wrangler version this tooling's deploy wrappers are reviewed against (Gates 4/5/7 deployed with an earlier pin).
+ * 4.154.0 supersedes 4.143.1 after a source-level re-review of the dotenv, working-directory, credential and `secret put` paths against
+ * the installed package (behaviour unchanged; see PHASE5C_I3_PROVISIONING_RUNBOOK.md, "Wrangler 4.154.0 re-review"). */
+export const REVIEWED_WRANGLER_VERSION = "4.154.0";
 
 const MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
 
@@ -30,7 +32,7 @@ async function readJsonFile(path: string, code: string): Promise<unknown> {
 // Implicit dotenv loading (audit F1)
 // ---------------------------------------------------------------------------
 
-/** Wrangler 4.143.1 loads dotenv files from its working directory for EVERY command, independently of the environment the wrapper builds
+/** Wrangler 4.154.0 (unchanged from the previously reviewed 4.143.1) loads dotenv files from its working directory for EVERY command, independently of the environment the wrapper builds
  * for the child: its global yargs middleware calls `loadDotEnv((args["env-file"] ?? getDefaultEnvFiles(args.env)).map(path.resolve), {
  * includeProcessEnv: true })` and REPLACES `process.env` with the result (wrangler-dist/cli.js; verified against the installed package by
  * tests/r06-activation-secret-wrapper.test.ts). Whatever a `.env` or `.env.local` there defines -- `CLOUDFLARE_API_BASE_URL`,

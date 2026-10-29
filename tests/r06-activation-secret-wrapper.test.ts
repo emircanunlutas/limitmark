@@ -110,6 +110,9 @@ test("submission spawns the pinned Wrangler exactly three times: closed argv, fi
   assert.deepEqual(calls.map((call) => call.stdin), [key.keyFingerprint, key.publicKey, privateKey], "values travel on stdin only, private key last");
   for (const call of calls) for (const value of [privateKey, key.publicKey, key.keyFingerprint, account]) assert.equal(call.argv.some((arg) => arg.includes(value)), false, "no value in argv");
   for (const call of calls) assert.equal(call.argv.some((arg) => /^--(env|config|var|route|cron|name-override)/u.test(arg) || arg === "-e" || arg === "-c"), false);
+  // Wrangler's global/hidden flags that change dotenv selection, the working directory or the credential source can never be carried
+  // (`--temporary` and `--event-code` are hidden flags `secret put` accepts: they create/use a temporary account instead of the pinned one)
+  for (const call of calls) assert.equal(call.argv.some((arg) => /^--(temporary|temporary-account|event-code|eventCode|env-file|cwd|profile)(?:=|$)/u.test(arg)), false, "no flag that changes dotenv, directory or credential source");
   const realRoot = await realpath(rig.root);
   for (const call of calls) assert.equal(await realpath(call.cwd), realRoot, "the child's working directory is exactly the verified root");
 }));
@@ -418,7 +421,7 @@ test("F1: the check is repeated immediately before EVERY spawn: a dotenv entry c
   assert.deepEqual(await rig.tooling.submit({ env: rig.env }), { submitted: [...ATTESTATION_SECRET_ORDER], stoppedAt: null });
 }));
 
-test("F1: the prohibited set is PINNED to Wrangler 4.143.1's own getDefaultEnvFiles and implicit-load call sites; a Wrangler change fails here, not silently", async () => {
+test("F1: the prohibited set is PINNED to Wrangler 4.154.0's own getDefaultEnvFiles and implicit-load call sites; a Wrangler change fails here, not silently", async () => {
   const installed = JSON.parse(await readFile(join(repoRoot, "node_modules", "wrangler", "package.json"), "utf8")) as { version: string };
   assert.equal(installed.version, REVIEWED_WRANGLER_VERSION, "this pin test describes the reviewed Wrangler");
   const dist = await readFile(join(repoRoot, "node_modules", "wrangler", "wrangler-dist", "cli.js"), "utf8");
@@ -429,9 +432,29 @@ test("F1: the prohibited set is PINNED to Wrangler 4.143.1's own getDefaultEnvFi
   // every place that asks for the default files, and every place that loads dotenv files: a new one is a review event
   assert.equal(count("getDefaultEnvFiles("), 3, "definition + the global CLI middleware + the dev-only getVarsForDev");
   assert.equal(count("loadDotEnv("), 3, "definition + the global CLI middleware + the dev-only getVarsForDev");
-  assert.equal(count('(args["env-file"] ?? getDefaultEnvFiles(args.env)).map((p8) => path28.resolve(p8))'), 1, "the global middleware resolves default files against the working directory");
+  // (4.154.0's bundler numbers the `path` import path29 where 4.143.1's was path28: the same expression, re-reviewed for 4.154.0)
+  assert.equal(count('(args["env-file"] ?? getDefaultEnvFiles(args.env)).map((p8) => path29.resolve(p8))'), 1, "the global middleware resolves default files against the working directory");
   assert.equal(count("process.env = loadDotEnv(resolvedEnvFilePaths, {"), 1, "the global middleware REPLACES process.env with the loaded result");
   assert.equal(count("function getVarsForDev("), 1, "the other loader is dev-only (`wrangler dev` vars), not reached by `secret put`");
+  // Added by the 4.154.0 re-review. (1) The ONLY dotenv call that reads a file by path is inside loadDotEnv: any other `dotenv.config(` is a new
+  // implicit-load path and a review event.
+  const configCalls = [...dist.matchAll(/import_dotenv\d*\.default\.config\(\{/gu)];
+  assert.equal(configCalls.length, 1, "exactly one file-reading dotenv call");
+  const loader = dist.indexOf("function loadDotEnv(");
+  assert.ok(loader >= 0 && configCalls[0]!.index! > loader && configCalls[0]!.index! < dist.indexOf("\nfunction ", loader + 1), "and it is inside loadDotEnv");
+  // (2) 4.154.0 added `parseAndExpandDotEnv`, a string parser. It must stay reachable only through an EXPLICIT `--secrets-file` argument
+  // (deploy, versions upload, preview): three call sites, all `secretsFile`, none of them `secret put`.
+  assert.equal(count("parseAndExpandDotEnv"), 6, "definition (1) + `__name(parseAndExpandDotEnv, \"parseAndExpandDotEnv\")` (2) + exactly three `--secrets-file` call sites (3)");
+  assert.equal([...dist.matchAll(/parseBulkInputToObject\(\s*(?:props|args)\.secretsFile,\s*false,\s*parseAndExpandDotEnv\s*\)/gu)].length, 3, "every call site passes an explicit secretsFile");
+  // (3) `secret put` itself reads no file and no dotenv: its value comes from stdin (or a prompt on a TTY, which a closed pipe is not).
+  const putStart = dist.indexOf("secretPutCommand = createCommand({");
+  const putEnd = dist.indexOf("secretDeleteCommand = createCommand({", putStart);
+  assert.ok(putStart > 0 && putEnd > putStart, "the secret put command definition is located");
+  const putSource = dist.slice(putStart, putEnd);
+  for (const forbidden of ["readFileSync", "loadDotEnv", "getDefaultEnvFiles", "parseBulkInputToObject", "secretsFile", "readFile("])
+    assert.equal(putSource.includes(forbidden), false, `secret put does not touch ${forbidden}`);
+  assert.equal(/["'`]\.env/u.test(putSource), false, "secret put names no dotenv file (`args.env` is the --env flag, not a file)");
+  assert.equal(putSource.includes("await readFromStdin()"), true, "the secret value is read from stdin");
   const getDefaultEnvFiles = new Function(`${definition![0]}\nreturn getDefaultEnvFiles;`)() as (environment?: string) => string[];
   assert.deepEqual(getDefaultEnvFiles(undefined), [".env", ".env.local"]);
   assert.deepEqual(getDefaultEnvFiles(undefined), [...WRANGLER_DOTENV_DEFAULT_FILES], "the engine's default probes are exactly Wrangler's default list");
@@ -497,7 +520,8 @@ test("the Wrangler version is re-proven at the point of use, before every spawn"
   await ready(rig);
   const installed = join(rig.root, "node_modules", "wrangler", "package.json");
   const write = (value: unknown) => writeFile(installed, JSON.stringify(value));
-  for (const version of ["4.131.1", "4.143.0", "4.143.2", "4.143.1-beta.1", "5.0.0", ""]) {
+  // 4.143.1 is the PREVIOUSLY reviewed pin: once superseded it must refuse like any other unreviewed version
+  for (const version of ["4.131.1", "4.143.0", "4.143.1", "4.143.2", "4.143.1-beta.1", "4.153.0", "4.154.1", "4.154.0-beta.1", "5.0.0", ""]) {
     await write({ name: "wrangler", version });
     await refusesWith(rig.tooling.submit({ env: rig.env }), "wrangler-version-not-the-reviewed-pin");
   }
@@ -505,11 +529,15 @@ test("the Wrangler version is re-proven at the point of use, before every spawn"
   await refusesWith(rig.tooling.submit({ env: rig.env }), "pinned-wrangler-unavailable");
   await write({ name: "wrangler", version: REVIEWED_WRANGLER_VERSION });
   const manifest = join(rig.root, "package.json");
-  await writeFile(manifest, JSON.stringify({ devDependencies: { wrangler: "^4.143.1" } }));
-  await refusesWith(rig.tooling.submit({ env: rig.env }), "wrangler-version-not-the-reviewed-pin");
+  for (const declared of ["^4.143.1", "4.143.1", "^4.154.0", "~4.154.0", "latest"]) {
+    await writeFile(manifest, JSON.stringify({ devDependencies: { wrangler: declared } }));
+    await refusesWith(rig.tooling.submit({ env: rig.env }), "wrangler-version-not-the-reviewed-pin");
+  }
   await writeFile(manifest, JSON.stringify({ devDependencies: { wrangler: REVIEWED_WRANGLER_VERSION } }));
-  await writeFile(join(rig.root, "package-lock.json"), JSON.stringify({ packages: { "node_modules/wrangler": { version: "4.131.1" } } }));
-  await refusesWith(rig.tooling.submit({ env: rig.env }), "wrangler-version-not-the-reviewed-pin");
+  for (const locked of ["4.131.1", "4.143.1"]) {
+    await writeFile(join(rig.root, "package-lock.json"), JSON.stringify({ packages: { "node_modules/wrangler": { version: locked } } }));
+    await refusesWith(rig.tooling.submit({ env: rig.env }), "wrangler-version-not-the-reviewed-pin");
+  }
   await writeFile(join(rig.root, "package-lock.json"), JSON.stringify({ packages: { "node_modules/wrangler": { version: REVIEWED_WRANGLER_VERSION } } }));
   await rm(rig.fakePath);
   await refusesWith(rig.tooling.submit({ env: rig.env }), "pinned-wrangler-unavailable");
