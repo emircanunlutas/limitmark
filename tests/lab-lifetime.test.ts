@@ -294,7 +294,7 @@ test("F7 regression: a DB-suite step is PASS only for exactly 34 passing, unskip
   assert.match(evaluateDbRun(hidden, 0).failure ?? "", /known postgres\.js defect/);
 });
 
-test("F7 regression: an `npm test` step needs a summary, no failures, and exactly the database-gated tests skipped", () => {
+test("F7 regression: an `npm test` step needs a summary, no failures, and exactly the expected tests skipped", () => {
   const output = (over: Record<string, number> = {}) => spec({ tests: 900, suites: 0, pass: 866, fail: 0, cancelled: 0, skipped: EXPECTED_NPM_TEST_SKIPPED, todo: 0, ...over });
   assert.equal(evaluateNpmTestRun(output(), 0).failure, undefined);
   assert.match(evaluateNpmTestRun(output(), 1).failure ?? "", /exit code/);

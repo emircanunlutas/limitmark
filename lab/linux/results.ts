@@ -7,8 +7,8 @@ export type NodeTestCounts = { tests: number; pass: number; fail: number; skippe
 
 /** Reviewed counts. A different number is a failed step so that a silently missing or newly skipped test is noticed. */
 export const EXPECTED_DB_TESTS = 34;
-/** `npm test` skips exactly the TEST_DATABASE_URL-gated tests (they run in the DB steps, and only there). */
-export const EXPECTED_NPM_TEST_SKIPPED = EXPECTED_DB_TESTS;
+/** `npm test` skips the TEST_DATABASE_URL-gated tests plus the Windows-only live ACL test. */
+export const EXPECTED_NPM_TEST_SKIPPED = EXPECTED_DB_TESTS + 1;
 
 const KNOWN_FAULT = /Cannot read properties of null \(reading 'write'\)/;
 
