@@ -11,6 +11,8 @@ export type PublicOriginEnvironment = {
   PUBLIC_ORIGIN_SECRET?: string;
   VERCEL?: string;
   VERCEL_ENV?: string;
+  LIMITMARK_RUNTIME?: string;
+  PUBLIC_ORIGIN_HOSTNAME?: string;
 };
 
 export function isPublicOriginProtectionDisabled(environment: PublicOriginEnvironment): boolean {
@@ -21,8 +23,7 @@ export function isPublicOriginProtectionDisabled(environment: PublicOriginEnviro
 /** Routing restrictions supplement secret authentication; Host is never identity. */
 export function isPublicOriginAllowed(headers: HeaderReader, environment: PublicOriginEnvironment): boolean {
   if (isPublicOriginProtectionDisabled(environment)) return true;
-  if (environment.PUBLIC_ORIGIN_PROTECTION !== "required" ||
-      environment.VERCEL !== "1" || environment.VERCEL_ENV !== "production") return false;
+  if (environment.PUBLIC_ORIGIN_PROTECTION !== "required") return false;
 
   const expected = environment.PUBLIC_ORIGIN_SECRET ?? "";
   const received = headers.get(publicOriginHeader) ?? "";
@@ -31,6 +32,10 @@ export function isPublicOriginAllowed(headers: HeaderReader, environment: Public
   if (!timingSafeEqual(Buffer.from(expected), Buffer.from(received))) return false;
 
   const host = headers.get("host");
-  return (host === "limitmark.com" || host === "www.limitmark.com") &&
-    headers.get("x-forwarded-host") === host;
+  if (environment.LIMITMARK_RUNTIME === "cloud-run-lab") {
+    const expectedHost = environment.PUBLIC_ORIGIN_HOSTNAME;
+    return Boolean(expectedHost && host === expectedHost && headers.get("x-forwarded-host") === expectedHost);
+  }
+  if (environment.VERCEL !== "1" || environment.VERCEL_ENV !== "production") return false;
+  return (host === "limitmark.com" || host === "www.limitmark.com") && headers.get("x-forwarded-host") === host;
 }

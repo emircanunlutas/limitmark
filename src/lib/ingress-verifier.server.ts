@@ -19,6 +19,7 @@ import { importActiveIngressSigningKeys } from "./ingress-key-rollout";
 export type IngressVerificationPolicy = {
   audience: string;
   deploymentId: string;
+  hostname?: string;
   publicKeys: ReadonlyMap<string, CryptoKey>;
   requestBindingKey: CryptoKey;
   now?: () => number;
@@ -52,7 +53,8 @@ export async function verifyMutationIngress(request: Request, body: Uint8Array, 
   assertIngressFresh(payload[5], (policy.now ?? Date.now)());
   if (request.method !== "POST" || payload[6] !== request.method) throw new Error("ingress-method");
   if (url.protocol !== "https:" || payload[7] !== "https") throw new Error("ingress-scheme");
-  if (url.hostname !== "limitmark.com" || url.port || payload[8] !== url.hostname || request.headers.get("host") !== "limitmark.com" || forwardedHost !== "limitmark.com") throw new Error("ingress-host");
+  const hostname = policy.hostname ?? "limitmark.com";
+  if (url.hostname !== hostname || url.port || payload[8] !== url.hostname || request.headers.get("host") !== hostname || forwardedHost !== hostname) throw new Error("ingress-host");
   if (url.pathname !== INGRESS_MUTATION_PATH || payload[9] !== url.pathname) throw new Error("ingress-path");
   if (url.search !== "" || payload[10] !== "") throw new Error("ingress-query");
   if (request.headers.get("content-type") !== INGRESS_MUTATION_CONTENT_TYPE || payload[11] !== INGRESS_MUTATION_CONTENT_TYPE) throw new Error("ingress-content-type");

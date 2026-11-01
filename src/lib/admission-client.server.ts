@@ -27,9 +27,8 @@ export type AdmissionClientEnvironment = {
   ADMISSION_RELEASE_ID?: string; ADMISSION_RELEASE_KEY_ID?: string; ADMISSION_RELEASE_RPC_KEY?: string;
 };
 
-export async function createProductionAdmissionClient(environment: AdmissionClientEnvironment, oidc: ProductionOidcTokenProvider, request: typeof fetch = fetch): Promise<AdmissionClient | null> {
-  if (environment.VERCEL !== "1" || environment.VERCEL_ENV !== "production" || !environment.VERCEL_DEPLOYMENT_ID ||
-      environment.ADMISSION_RELEASE_ID !== environment.VERCEL_DEPLOYMENT_ID || !environment.ADMISSION_OIDC_AUDIENCE ||
+async function createAdmissionClient(environment: AdmissionClientEnvironment, oidc: ProductionOidcTokenProvider, request: typeof fetch, expectedDeploymentId: string | undefined): Promise<AdmissionClient | null> {
+  if (!expectedDeploymentId || environment.ADMISSION_RELEASE_ID !== expectedDeploymentId || !environment.ADMISSION_OIDC_AUDIENCE ||
       !environment.ADMISSION_RELEASE_KEY_ID || !/^[A-Za-z0-9_-]{1,64}$/u.test(environment.ADMISSION_RELEASE_KEY_ID)) return null;
   let endpoint: URL;
   try { endpoint = new URL(environment.ADMISSION_SERVICE_URL ?? ""); } catch { return null; }
@@ -73,4 +72,13 @@ export async function createProductionAdmissionClient(environment: AdmissionClie
     claimPre: (input) => call(ADMISSION_PRE_PATH, input) as Promise<PreDecision>,
     consumePost: (input) => call(ADMISSION_POST_PATH, input) as Promise<PostDecision>,
   };
+}
+
+export async function createProductionAdmissionClient(environment: AdmissionClientEnvironment, oidc: ProductionOidcTokenProvider, request: typeof fetch = fetch): Promise<AdmissionClient | null> {
+  if (environment.VERCEL !== "1" || environment.VERCEL_ENV !== "production" || !environment.VERCEL_DEPLOYMENT_ID) return null;
+  return createAdmissionClient(environment, oidc, request, environment.VERCEL_DEPLOYMENT_ID);
+}
+
+export async function createLaboratoryAdmissionClient(environment: AdmissionClientEnvironment & { LAB_DEPLOYMENT_ID?: string }, oidc: ProductionOidcTokenProvider, request: typeof fetch = fetch): Promise<AdmissionClient | null> {
+  return createAdmissionClient(environment, oidc, request, environment.LAB_DEPLOYMENT_ID);
 }

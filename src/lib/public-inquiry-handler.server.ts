@@ -14,7 +14,7 @@ import type { AdmissionClient } from "./admission-client.server";
 import type { TurnstileVerifier } from "./turnstile";
 
 export type PublicInquiryHandlerDependencies = {
-  environment: PublicOriginEnvironment & { NODE_ENV?: string; REQUEST_SUBMISSION_MODE?: string; ALLOW_DEMO_SUBMISSIONS?: string; PUBLIC_DEMO_ORIGIN?: string; PUBLIC_INQUIRY_OTEL_METRICS?: string; PUBLIC_INQUIRY_OTEL_METRICS_ENDPOINT?: string; PUBLIC_INQUIRY_OTEL_METRICS_SERVICE?: string };
+  environment: PublicOriginEnvironment & { NODE_ENV?: string; REQUEST_SUBMISSION_MODE?: string; ALLOW_DEMO_SUBMISSIONS?: string; PUBLIC_DEMO_ORIGIN?: string; PUBLIC_INQUIRY_OTEL_METRICS?: string; PUBLIC_INQUIRY_OTEL_METRICS_ENDPOINT?: string; PUBLIC_INQUIRY_OTEL_METRICS_SERVICE?: string; LIMITMARK_RUNTIME?: string; PUBLIC_ORIGIN_HOSTNAME?: string };
   ingressPolicy?: IngressVerificationPolicy; admission?: AdmissionClient; turnstile?: TurnstileVerifier; repository?: PublicInquiryRepository;
 };
 const noStoreHeaders = {
@@ -78,9 +78,11 @@ async function handlePublicInquiryInternal(request: Request, dependencies: Publi
       const result = await submitToAdapter(parsed.data, token, undefined, dependencies.environment);
       return result.status === "demo-accepted" ? responseFor({ kind: "redirect", location: "/test-talep-et/tesekkurler" }) : jsonState({ errors: {}, values, submissionToken: token, message: "Talep gönderimi şu anda kullanılamıyor." });
     }
-    if (mode !== "persistent" || dependencies.environment.VERCEL !== "1" || dependencies.environment.VERCEL_ENV !== "production" ||
-        dependencies.environment.PUBLIC_ORIGIN_PROTECTION !== "required" || request.headers.get("origin") !== "https://limitmark.com" ||
-        url.protocol !== "https:" || url.hostname !== "limitmark.com" ||
+    const laboratory = dependencies.environment.LIMITMARK_RUNTIME === "cloud-run-lab";
+    const expectedHostname = laboratory ? dependencies.environment.PUBLIC_ORIGIN_HOSTNAME : "limitmark.com";
+    if (mode !== "persistent" || (!laboratory && (dependencies.environment.VERCEL !== "1" || dependencies.environment.VERCEL_ENV !== "production")) ||
+        dependencies.environment.PUBLIC_ORIGIN_PROTECTION !== "required" || request.headers.get("origin") !== `https://${expectedHostname}` ||
+        url.protocol !== "https:" || !expectedHostname || url.hostname !== expectedHostname ||
         !isPublicOriginAllowed(request.headers, dependencies.environment) || !dependencies.ingressPolicy || !dependencies.admission || !dependencies.turnstile || !dependencies.repository) {
       return jsonState({ errors: {}, message: "Talep gönderimi şu anda kullanılamıyor." }, 503);
     }
