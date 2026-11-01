@@ -13,9 +13,45 @@ import {
   type AdmissionRpcPayload,
 } from "./admission-protocol";
 import { decodeCanonicalBase64url, encodeBase64url, toArrayBuffer } from "./ingress-protocol";
+import { decodeJwt } from "jose";
 import type { ClaimPreInput, ConsumePostInput, PostDecision, PreDecision } from "../../workers/admission-service/authority";
 
 export interface ProductionOidcTokenProvider { getToken(audience: string): Promise<string> }
+
+export class GoogleMetadataOidcTokenProvider implements ProductionOidcTokenProvider {
+  private cached?: { audience: string; token: string; expiresAtMs: number };
+  constructor(
+    private readonly request: typeof fetch = fetch,
+    private readonly now: () => number = Date.now,
+    private readonly endpoint = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity",
+  ) {}
+
+  async getToken(audience: string): Promise<string> {
+    if (!audience || audience.length > 256 || /[\s,]/u.test(audience)) throw new Error("oidc-audience");
+    const now = this.now();
+    if (this.cached && this.cached.audience === audience && this.cached.expiresAtMs - 60_000 > now) return this.cached.token;
+    const url = new URL(this.endpoint);
+    if (url.protocol !== "http:" || url.hostname !== "metadata.google.internal" ||
+        url.pathname !== "/computeMetadata/v1/instance/service-accounts/default/identity" || url.username || url.password || url.port || url.search || url.hash) {
+      throw new Error("metadata-endpoint");
+    }
+    url.searchParams.set("audience", audience);
+    url.searchParams.set("format", "full");
+    const response = await this.request(url, {
+      method: "GET",
+      headers: { "Metadata-Flavor": "Google" },
+      signal: AbortSignal.timeout(2_000),
+      redirect: "manual",
+    });
+    if (!response.ok) throw new Error("metadata-token");
+    const token = (await response.text()).trim();
+    if (!token || token.length > 8_192) throw new Error("metadata-token");
+    const claims = decodeJwt(token);
+    if (typeof claims.exp !== "number" || !Number.isSafeInteger(claims.exp) || claims.exp * 1_000 <= now) throw new Error("metadata-expiry");
+    this.cached = { audience, token, expiresAtMs: claims.exp * 1_000 };
+    return token;
+  }
+}
 export interface AdmissionClient {
   claimPre(input: ClaimPreInput): Promise<PreDecision>;
   consumePost(input: ConsumePostInput): Promise<PostDecision>;

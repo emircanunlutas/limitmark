@@ -1,7 +1,7 @@
 import "server-only";
 
 import { Buffer } from "node:buffer";
-import { createLaboratoryAdmissionClient } from "./admission-client.server";
+import { createLaboratoryAdmissionClient, GoogleMetadataOidcTokenProvider } from "./admission-client.server";
 import { getDatabase } from "./db/database.server";
 import { importRequestBindingKey, importIngressPublicKeys, type IngressVerificationPolicy } from "./ingress-verifier.server";
 import { PostgresInquiryRepository } from "./inquiry-repository";
@@ -34,7 +34,6 @@ export type LaboratoryRuntimeEnvironment = Record<string, string | undefined> & 
   LAB_INGRESS_REQUEST_BINDING_KEY?: string;
   LAB_ADMISSION_SERVICE_URL?: string;
   LAB_ADMISSION_OIDC_AUDIENCE?: string;
-  LAB_ADMISSION_OIDC_TOKEN?: string;
   LAB_ADMISSION_RELEASE_ID?: string;
   LAB_ADMISSION_RELEASE_KEY_ID?: string;
   LAB_ADMISSION_RELEASE_RPC_KEY?: string;
@@ -99,7 +98,7 @@ export async function createLaboratoryRuntimeDependencies(
       !environment.LAB_INGRESS_AUDIENCE || !identifierPattern.test(environment.LAB_INGRESS_AUDIENCE) ||
       !environment.LAB_DEPLOYMENT_ID || !identifierPattern.test(environment.LAB_DEPLOYMENT_ID) ||
       !environment.LAB_INGRESS_PUBLIC_KEYS || !validHttpsRoot(environment.LAB_ADMISSION_SERVICE_URL) ||
-      !environment.LAB_ADMISSION_OIDC_AUDIENCE || !environment.LAB_ADMISSION_OIDC_TOKEN || environment.LAB_ADMISSION_OIDC_TOKEN.length > 8_192 ||
+      !environment.LAB_ADMISSION_OIDC_AUDIENCE ||
       !environment.LAB_ADMISSION_RELEASE_ID || environment.LAB_ADMISSION_RELEASE_ID !== environment.LAB_DEPLOYMENT_ID ||
       !environment.LAB_ADMISSION_RELEASE_KEY_ID || !/^[A-Za-z0-9_-]{1,64}$/u.test(environment.LAB_ADMISSION_RELEASE_KEY_ID) ||
       !validSecret(environment.LAB_ADMISSION_RELEASE_RPC_KEY) ||
@@ -124,7 +123,7 @@ export async function createLaboratoryRuntimeDependencies(
       ADMISSION_RELEASE_KEY_ID: environment.LAB_ADMISSION_RELEASE_KEY_ID,
       ADMISSION_RELEASE_RPC_KEY: environment.LAB_ADMISSION_RELEASE_RPC_KEY,
       LAB_DEPLOYMENT_ID: environment.LAB_DEPLOYMENT_ID,
-    }, { getToken: async () => environment.LAB_ADMISSION_OIDC_TOKEN! }, request);
+    }, new GoogleMetadataOidcTokenProvider(request), request);
     if (!admission) return { enabled: false, reason: "invalid" };
     const database = getDatabase(environment.LAB_DATABASE_URL, poolMax);
     const repository = new PostgresInquiryRepository(database);

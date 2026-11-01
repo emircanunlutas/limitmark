@@ -29,6 +29,8 @@ export type VercelOidcPolicy = {
 
 export const VERCEL_OIDC_CLOCK_TOLERANCE_SECONDS = 5;
 export const VERCEL_OIDC_MAX_LIFETIME_SECONDS = 7_200;
+export const GOOGLE_OIDC_CLOCK_TOLERANCE_SECONDS = 5;
+export const GOOGLE_OIDC_MAX_LIFETIME_SECONDS = 3_600;
 
 function exactString(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.length >= 1 && value.length <= maximum && value.trim() === value;
@@ -112,5 +114,88 @@ export async function authenticateVercelOidc(token: string, verifier: VercelOidc
       timestampsAreValid(claims.issuedAtSeconds, claims.notBeforeSeconds, claims.expiresAtSeconds, now);
   } catch {
     return false;
+  }
+}
+
+export type GoogleOidcPolicy = {
+    issuer: "https://accounts.google.com" | "accounts.google.com";
+    audience: string;
+    serviceAccountEmail: string;
+    serviceAccountSubject?: string;
+  };
+
+export type VerifiedGoogleOidcClaims = {
+    issuer: string;
+    audience: readonly [string];
+    subject: string;
+    email: string;
+    issuedAtSeconds: number;
+    expiresAtSeconds: number;
+  };
+
+export interface GoogleOidcSignatureVerifier {
+    verify(token: string, nowMs: number): Promise<VerifiedGoogleOidcClaims>;
+  }
+
+function googleTimestampsAreValid(iat: number, exp: number, now: number): boolean {
+    return exp >= iat && exp - iat <= GOOGLE_OIDC_MAX_LIFETIME_SECONDS &&
+      iat <= now + GOOGLE_OIDC_CLOCK_TOLERANCE_SECONDS &&
+      exp > now - GOOGLE_OIDC_CLOCK_TOLERANCE_SECONDS;
+  }
+
+export function getGoogleJwksEndpoint(): URL {
+    return new URL("https://www.googleapis.com/oauth2/v3/certs");
+  }
+
+export function createGoogleOidcVerifier(policy: GoogleOidcPolicy, options: Omit<BoundedJwksOptions, "endpoint"> = {}): GoogleOidcSignatureVerifier {
+    if (!policy.audience || !/^[^,\s]{1,256}$/u.test(policy.audience) ||
+        !/^[^@\s]{1,254}@[^@\s]{1,254}$/u.test(policy.serviceAccountEmail) ||
+        policy.serviceAccountSubject !== undefined && !exactString(policy.serviceAccountSubject, 256) ||
+        policy.issuer !== "https://accounts.google.com" && policy.issuer !== "accounts.google.com") throw new Error("google-oidc-policy");
+    const resolver = new BoundedRs256JwksResolver({ endpoint: getGoogleJwksEndpoint(), ...options });
+    return {
+      async verify(token: string, nowMs: number): Promise<VerifiedGoogleOidcClaims> {
+        const inspected = inspectCompactJwt(token, 8_192);
+        const now = Math.floor(nowMs / 1_000);
+        if (inspected.header.alg !== "RS256" || !exactString(inspected.header.kid, 128)) throw new Error("google-oidc-header");
+        if (inspected.header.typ !== undefined && inspected.header.typ !== "JWT" && inspected.header.typ !== "jwt") throw new Error("google-oidc-type");
+        if (inspected.payload.iss !== policy.issuer ||
+            inspected.payload.aud !== policy.audience ||
+            typeof inspected.payload.sub !== "string" ||
+            typeof inspected.payload.email !== "string" ||
+            inspected.payload.email !== policy.serviceAccountEmail ||
+            inspected.payload.email_verified !== true ||
+            !exactNumericDate(inspected.payload.iat) ||
+            !exactNumericDate(inspected.payload.exp) ||
+            policy.serviceAccountSubject !== undefined && inspected.payload.sub !== policy.serviceAccountSubject ||
+            !googleTimestampsAreValid(inspected.payload.iat, inspected.payload.exp, now)) throw new Error("google-oidc-claims");
+        const { payload } = await jwtVerify(token, resolver.resolve, {
+          algorithms: ["RS256"],
+          issuer: policy.issuer,
+          audience: policy.audience,
+          requiredClaims: ["iss", "aud", "sub", "email", "email_verified", "iat", "exp"],
+          clockTolerance: GOOGLE_OIDC_CLOCK_TOLERANCE_SECONDS,
+          currentDate: new Date(nowMs),
+        });
+        if (payload.email !== policy.serviceAccountEmail || payload.email_verified !== true ||
+            typeof payload.sub !== "string" || !exactNumericDate(payload.iat) || !exactNumericDate(payload.exp) ||
+            policy.serviceAccountSubject !== undefined && payload.sub !== policy.serviceAccountSubject ||
+            !googleTimestampsAreValid(payload.iat, payload.exp, now)) throw new Error("google-oidc-verified-claims");
+        return { issuer: payload.iss!, audience: [policy.audience], subject: payload.sub, email: payload.email, issuedAtSeconds: payload.iat, expiresAtSeconds: payload.exp };
+      },
+    };
+  }
+
+export async function authenticateGoogleOidc(token: string, verifier: GoogleOidcSignatureVerifier, policy: GoogleOidcPolicy, nowMs: number): Promise<boolean> {
+    if (!token || token.length > 8_192 || token.includes(",")) return false;
+    try {
+      const claims = await verifier.verify(token, nowMs);
+      const now = Math.floor(nowMs / 1_000);
+      return claims.issuer === policy.issuer && claims.audience.length === 1 && claims.audience[0] === policy.audience &&
+        claims.email === policy.serviceAccountEmail && claims.subject === (policy.serviceAccountSubject ?? claims.subject) &&
+        exactNumericDate(claims.issuedAtSeconds) && exactNumericDate(claims.expiresAtSeconds) &&
+        googleTimestampsAreValid(claims.issuedAtSeconds, claims.expiresAtSeconds, now);
+    } catch {
+      return false;
   }
 }

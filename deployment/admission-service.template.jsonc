@@ -17,6 +17,7 @@
     { "tag": "production-v1", "new_sqlite_classes": ["ProductionAdmissionAuthority"] }
   ],
   "vars": {
+    "ADMISSION_IDENTITY_MODE": "vercel",
     "VERCEL_OIDC_ISSUER": "__REQUIRED_TEAM_SCOPED_VERCEL_ISSUER__",
     "VERCEL_OIDC_AUDIENCE": "__REQUIRED_ADMISSION_AUDIENCE__",
     "VERCEL_OIDC_SUBJECT": "__REQUIRED_EXACT_PRODUCTION_SUBJECT__",

@@ -13,8 +13,8 @@ import {
   type AuthorityAttestationRuntime,
 } from "./authority-attestation";
 import { authorityAttestationRuntimeFromEnvironment } from "./authority-attestation-config";
-import { createVercelOidcVerifier, type VercelOidcPolicy } from "./auth";
-import { createAdmissionService, type AdmissionServiceRelease } from "./service";
+import { createGoogleOidcVerifier, createVercelOidcVerifier, type GoogleOidcPolicy, type VercelOidcPolicy } from "./auth";
+import { createAdmissionService, createLaboratoryAdmissionService, type AdmissionServiceRelease } from "./service";
 import { validateRuntimeSecrets } from "../../deployment/secret-policy";
 
 export { PublicInquiryAdmissionAuthority } from "./authority";
@@ -36,6 +36,11 @@ export type AdmissionServiceEnvironment = {
   AUTHORITY: AuthorityNamespace;
   VERCEL_OIDC_ISSUER: string; VERCEL_OIDC_AUDIENCE: string; VERCEL_OIDC_SUBJECT: string;
   VERCEL_OWNER_ID: string; VERCEL_PROJECT_ID: string;
+  ADMISSION_IDENTITY_MODE?: "vercel" | "google-lab";
+  GOOGLE_OIDC_ISSUER?: "https://accounts.google.com" | "accounts.google.com";
+  GOOGLE_OIDC_AUDIENCE?: string;
+  GOOGLE_SERVICE_ACCOUNT_EMAIL?: string;
+  GOOGLE_SERVICE_ACCOUNT_SUBJECT?: string;
   AUTHORITY_OPERATOR_PUBLIC_KEY: string;
   ADMISSION_CURRENT_RELEASE_ID: string; ADMISSION_CURRENT_KEY_ID: string; ADMISSION_CURRENT_RPC_KEY: string; ADMISSION_CURRENT_ACTIVATED_AT_MS: string;
   ADMISSION_PREVIOUS_RELEASE_ID?: string; ADMISSION_PREVIOUS_KEY_ID?: string; ADMISSION_PREVIOUS_RPC_KEY?: string;
@@ -114,8 +119,6 @@ const RUNTIME_CONFIG_UNAVAILABLE = { status: "UNAVAILABLE", reason: "runtime-con
 
 let handlerPromise: Promise<(request: Request) => Promise<Response>> | undefined;
 async function configure(environment: AdmissionServiceEnvironment) {
-  const policy: VercelOidcPolicy = { issuer: environment.VERCEL_OIDC_ISSUER, audience: environment.VERCEL_OIDC_AUDIENCE,
-    subject: environment.VERCEL_OIDC_SUBJECT, ownerId: environment.VERCEL_OWNER_ID, projectId: environment.VERCEL_PROJECT_ID };
   const releases: AdmissionServiceRelease[] = [{ role: "current", releaseId: environment.ADMISSION_CURRENT_RELEASE_ID,
     keyId: environment.ADMISSION_CURRENT_KEY_ID, rpcKey: await importAdmissionRpcKey(environment.ADMISSION_CURRENT_RPC_KEY),
     activatedAtMs: Number(environment.ADMISSION_CURRENT_ACTIVATED_AT_MS) }];
@@ -127,6 +130,23 @@ async function configure(environment: AdmissionServiceEnvironment) {
       activatedAtMs: Number(previousValues[3]), retireAtMs: Number(previousValues[4]) });
   }
   const authority = environment.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID);
+  if (environment.ADMISSION_IDENTITY_MODE === "google-lab") {
+    if (environment.VERCEL_OIDC_ISSUER || environment.VERCEL_OIDC_AUDIENCE || environment.VERCEL_OIDC_SUBJECT ||
+        environment.VERCEL_OWNER_ID || environment.VERCEL_PROJECT_ID ||
+        !environment.GOOGLE_OIDC_ISSUER || !environment.GOOGLE_OIDC_AUDIENCE || !environment.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
+      throw new Error("google-lab-identity-config");
+    }
+    const policy: GoogleOidcPolicy = {
+      issuer: environment.GOOGLE_OIDC_ISSUER,
+      audience: environment.GOOGLE_OIDC_AUDIENCE,
+      serviceAccountEmail: environment.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      serviceAccountSubject: environment.GOOGLE_SERVICE_ACCOUNT_SUBJECT,
+    };
+    return createLaboratoryAdmissionService({ releases, oidcPolicy: policy, oidcVerifier: createGoogleOidcVerifier(policy), authority });
+  }
+  if (environment.ADMISSION_IDENTITY_MODE !== undefined && environment.ADMISSION_IDENTITY_MODE !== "vercel") throw new Error("identity-mode");
+  const policy: VercelOidcPolicy = { issuer: environment.VERCEL_OIDC_ISSUER, audience: environment.VERCEL_OIDC_AUDIENCE,
+    subject: environment.VERCEL_OIDC_SUBJECT, ownerId: environment.VERCEL_OWNER_ID, projectId: environment.VERCEL_PROJECT_ID };
   return createAdmissionService({ releases, oidcPolicy: policy, oidcVerifier: createVercelOidcVerifier(policy), authority });
 }
 
