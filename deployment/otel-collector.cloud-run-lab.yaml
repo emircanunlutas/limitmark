@@ -1,0 +1,28 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        # Cloud Run sidecars share a loopback network. Do not bind a public
+        # receiver address.
+        endpoint: 127.0.0.1:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 96
+    spike_limit_mib: 24
+  batch:
+    send_batch_size: 32
+    send_batch_max_size: 64
+    timeout: 5s
+
+exporters:
+  googlecloud:
+    project: ${env:GOOGLE_CLOUD_PROJECT}
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [googlecloud]
