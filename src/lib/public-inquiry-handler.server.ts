@@ -14,7 +14,7 @@ import type { AdmissionClient } from "./admission-client.server";
 import type { TurnstileVerifier } from "./turnstile";
 
 export type PublicInquiryHandlerDependencies = {
-  environment: PublicOriginEnvironment & { NODE_ENV?: string; REQUEST_SUBMISSION_MODE?: string; ALLOW_DEMO_SUBMISSIONS?: string; PUBLIC_DEMO_ORIGIN?: string };
+  environment: PublicOriginEnvironment & { NODE_ENV?: string; REQUEST_SUBMISSION_MODE?: string; ALLOW_DEMO_SUBMISSIONS?: string; PUBLIC_DEMO_ORIGIN?: string; PUBLIC_INQUIRY_OTEL_METRICS?: string; PUBLIC_INQUIRY_OTEL_METRICS_ENDPOINT?: string; PUBLIC_INQUIRY_OTEL_METRICS_SERVICE?: string };
   ingressPolicy?: IngressVerificationPolicy; admission?: AdmissionClient; turnstile?: TurnstileVerifier; repository?: PublicInquiryRepository;
 };
 const noStoreHeaders = {

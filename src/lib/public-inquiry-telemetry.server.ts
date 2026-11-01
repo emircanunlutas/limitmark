@@ -1,5 +1,7 @@
 import "server-only";
 
+import { getPublicInquiryOtelRecorder } from "./public-inquiry-otel.server";
+
 const MAX_LATENCY_SAMPLES = 1_024;
 
 type PublicInquiryTelemetryState = {
@@ -39,12 +41,23 @@ export type PublicInquiryTelemetrySnapshot = {
 export function beginPublicInquiryRequest(): () => void {
   state.incoming += 1;
   state.active += 1;
+  let finishOtel = () => {};
+  try {
+    finishOtel = getPublicInquiryOtelRecorder().begin();
+  } catch {
+    // Export and recording failures are observation-only.
+  }
   const startedAt = performance.now();
   let completed = false;
 
   return () => {
     if (completed) return;
     completed = true;
+    try {
+      finishOtel();
+    } catch {
+      // Export and recording failures are observation-only.
+    }
     state.active -= 1;
     const latency = Math.max(0, performance.now() - startedAt);
     if (state.latencySamples.length < MAX_LATENCY_SAMPLES) {
@@ -59,6 +72,11 @@ export function beginPublicInquiryRequest(): () => void {
 export function recordPublicInquiryOutcome(status: number): void {
   if (status >= 200 && status < 300) state.accepted += 1;
   else state.rejected += 1;
+  try {
+    getPublicInquiryOtelRecorder().recordOutcome(status);
+  } catch {
+    // Export and recording failures are observation-only.
+  }
 }
 
 export function getPublicInquiryTelemetrySnapshot(): PublicInquiryTelemetrySnapshot {
