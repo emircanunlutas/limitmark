@@ -9,6 +9,7 @@ import { verifyMutationIngress, type IngressVerificationPolicy } from "./ingress
 import { isPublicOriginAllowed, type PublicOriginEnvironment } from "./public-origin";
 import { executeVerifiedPublicInquiry, type PublicInquiryFlowResult, type PublicInquiryRepository } from "./public-inquiry-flow.server";
 import { parseStrictUrlEncodedForm, readBoundedPublicInquiryBody } from "./public-inquiry-body";
+import { beginPublicInquiryRequest, recordPublicInquiryOutcome } from "./public-inquiry-telemetry.server";
 import type { AdmissionClient } from "./admission-client.server";
 import type { TurnstileVerifier } from "./turnstile";
 
@@ -28,7 +29,30 @@ function responseFor(result: PublicInquiryFlowResult): Response {
   return result.kind === "redirect" ? Response.json(result, { headers: noStoreHeaders }) : jsonState(result.state);
 }
 
-export async function handlePublicInquiry(request: Request, dependencies: PublicInquiryHandlerDependencies): Promise<Response> {
+function beginTelemetrySafely(): () => void {
+  try {
+    const finish = beginPublicInquiryRequest();
+    return () => {
+      try {
+        finish();
+      } catch {
+        // Telemetry must never affect the defensive response path.
+      }
+    };
+  } catch {
+    return () => {};
+  }
+}
+
+function recordOutcomeSafely(status: number): void {
+  try {
+    recordPublicInquiryOutcome(status);
+  } catch {
+    // Telemetry must never affect the defensive response path.
+  }
+}
+
+async function handlePublicInquiryInternal(request: Request, dependencies: PublicInquiryHandlerDependencies): Promise<Response> {
   try {
     const url = new URL(request.url);
     if (request.method !== "POST" || url.pathname !== INGRESS_MUTATION_PATH || url.search || request.headers.get("content-type") !== INGRESS_MUTATION_CONTENT_TYPE ||
@@ -68,5 +92,16 @@ export async function handlePublicInquiry(request: Request, dependencies: Public
       return jsonState({ errors: {}, message: "Talep gönderimi şu anda kullanılamıyor." }, 413);
     }
     return jsonState({ errors: {}, message: "Talep gönderimi şu anda kullanılamıyor." }, 400);
+  }
+}
+
+export async function handlePublicInquiry(request: Request, dependencies: PublicInquiryHandlerDependencies): Promise<Response> {
+  const finishTelemetry = beginTelemetrySafely();
+  try {
+    const response = await handlePublicInquiryInternal(request, dependencies);
+    recordOutcomeSafely(response.status);
+    return response;
+  } finally {
+    finishTelemetry();
   }
 }
