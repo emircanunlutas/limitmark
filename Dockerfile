@@ -13,6 +13,7 @@ COPY package.json package-lock.json next.config.ts tsconfig.json next-env.d.ts .
 COPY src ./src
 COPY drizzle ./drizzle
 COPY workers ./workers
+COPY operator ./operator
 COPY deployment ./deployment
 RUN npm run build
 RUN npm prune --omit=dev
