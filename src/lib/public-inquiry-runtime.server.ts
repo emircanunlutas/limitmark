@@ -1,8 +1,9 @@
 import "server-only";
 
 import { Buffer } from "node:buffer";
+import { X509Certificate } from "node:crypto";
 import { createLaboratoryAdmissionClient, GoogleMetadataOidcTokenProvider } from "./admission-client.server";
-import { getDatabase } from "./db/database.server";
+import { getDatabase, type DatabaseTlsConfiguration } from "./db/database.server";
 import { importRequestBindingKey, importIngressPublicKeys, type IngressVerificationPolicy } from "./ingress-verifier.server";
 import { PostgresInquiryRepository } from "./inquiry-repository";
 import { handlePublicInquiry, type PublicInquiryHandlerDependencies } from "./public-inquiry-handler.server";
@@ -28,6 +29,7 @@ export type LaboratoryRuntimeEnvironment = Record<string, string | undefined> & 
   LAB_ORIGIN_HOSTNAME?: string;
   LAB_PUBLIC_ORIGIN_SECRET?: string;
   LAB_DATABASE_URL?: string;
+  LAB_DATABASE_CA_CERT?: string;
   LAB_DATABASE_POOL_MAX?: string;
   LAB_INGRESS_AUDIENCE?: string;
   LAB_DEPLOYMENT_ID?: string;
@@ -64,8 +66,17 @@ function validDatabase(value: string | undefined): value is string {
   try {
     const url = new URL(value ?? "");
     return (url.protocol === "postgres:" || url.protocol === "postgresql:") &&
-      Boolean(url.hostname && url.username && url.password && url.pathname.length > 1);
+      Boolean(url.hostname && url.username && url.password && url.pathname.length > 1 && !url.search && !url.hash);
   } catch { return false; }
+}
+
+function validDatabaseCa(value: string | undefined): value is string {
+  if (!value?.includes("-----BEGIN CERTIFICATE-----")) return false;
+  try {
+    return new X509Certificate(value).ca;
+  } catch {
+    return false;
+  }
 }
 
 function validPool(value: string | undefined): number | null {
@@ -94,6 +105,7 @@ export async function createLaboratoryRuntimeDependencies(
       !validHostname(environment.LAB_PUBLIC_HOSTNAME) ||
       !validHostname(environment.LAB_ORIGIN_HOSTNAME) ||
       !validDatabase(environment.LAB_DATABASE_URL) ||
+      !validDatabaseCa(environment.LAB_DATABASE_CA_CERT) ||
       poolMax === null ||
       !validSecret(environment.LAB_PUBLIC_ORIGIN_SECRET) ||
       !validSecret(environment.LAB_INGRESS_REQUEST_BINDING_KEY) ||
@@ -129,7 +141,12 @@ export async function createLaboratoryRuntimeDependencies(
       LAB_DEPLOYMENT_ID: environment.LAB_DEPLOYMENT_ID,
     }, new GoogleMetadataOidcTokenProvider(request), request);
     if (!admission) return { enabled: false, reason: "invalid" };
-    const database = getDatabase(environment.LAB_DATABASE_URL, poolMax);
+    const databaseUrl = new URL(environment.LAB_DATABASE_URL);
+    const databaseTls: DatabaseTlsConfiguration = {
+      ca: environment.LAB_DATABASE_CA_CERT,
+      servername: databaseUrl.hostname,
+    };
+    const database = getDatabase(environment.LAB_DATABASE_URL, poolMax, databaseTls);
     const repository = new PostgresInquiryRepository(database);
     const turnstile = new CloudflareTurnstileVerifier({
       secretKey: environment.LAB_TURNSTILE_SECRET_KEY,

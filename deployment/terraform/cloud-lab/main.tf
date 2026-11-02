@@ -14,6 +14,7 @@ locals {
     "limitmark-lab-admission-release-key-id",
     "limitmark-lab-admission-release-rpc-key",
     "limitmark-lab-database-url",
+    "limitmark-lab-database-ca-cert",
     "limitmark-lab-ingress-audience",
     "limitmark-lab-ingress-public-keys",
     "limitmark-lab-ingress-request-binding-key",

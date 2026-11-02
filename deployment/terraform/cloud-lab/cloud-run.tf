@@ -2,6 +2,7 @@ locals {
   cloud_run_secrets = {
     LAB_PUBLIC_ORIGIN_SECRET        = "limitmark-lab-public-origin-secret"
     LAB_DATABASE_URL                = "limitmark-lab-database-url"
+    LAB_DATABASE_CA_CERT            = "limitmark-lab-database-ca-cert"
     LAB_INGRESS_AUDIENCE            = "limitmark-lab-ingress-audience"
     LAB_INGRESS_PUBLIC_KEYS         = "limitmark-lab-ingress-public-keys"
     LAB_INGRESS_REQUEST_BINDING_KEY = "limitmark-lab-ingress-request-binding-key"

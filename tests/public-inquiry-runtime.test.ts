@@ -29,6 +29,15 @@ test("laboratory runtime rejects production credentials and test database config
   assert.deepEqual(result, { enabled: false, reason: "invalid" });
 });
 
+test("laboratory runtime rejects a database URL without a CA trust anchor", async () => {
+  const result = await createLaboratoryRuntimeDependencies({
+    ...disabled,
+    LIMITMARK_RUNTIME: "cloud-run-lab",
+    LAB_DATABASE_URL: "postgresql://lab@10.80.0.10/limitmark_lab",
+  });
+  assert.deepEqual(result, { enabled: false, reason: "invalid" });
+});
+
 test("laboratory runtime does not make an unauthenticated direct route available", async () => {
   const response = await import("../src/lib/public-inquiry-runtime.server").then(({ handleLaboratoryPublicInquiry }) =>
     handleLaboratoryPublicInquiry(new Request("https://lab.limitmark.test/api/public-inquiries", {
