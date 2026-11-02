@@ -57,3 +57,12 @@ resource "google_cloud_run_v2_service_iam_member" "invoker" {
 
   depends_on = [google_cloud_run_v2_service.lab]
 }
+
+# generateIdToken on the invoker's own identity requires iam.serviceAccounts.getOpenIdToken.
+# roles/iam.serviceAccountOpenIdTokenCreator contains only that permission (it cannot mint
+# access tokens, sign blobs, or impersonate), and it is bound to this single service account.
+resource "google_service_account_iam_member" "invoker_self_open_id_token" {
+  service_account_id = google_service_account.invoker.name
+  role               = "roles/iam.serviceAccountOpenIdTokenCreator"
+  member             = "serviceAccount:${google_service_account.invoker.email}"
+}

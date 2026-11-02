@@ -69,3 +69,14 @@ variable "postgres_machine_type" {
   type    = string
   default = "e2-small"
 }
+
+variable "postgres_migration_user" {
+  type        = string
+  description = "Database owner role used only for reviewed migrations. It is created without a password."
+  default     = "limitmark_lab_migrator"
+
+  validation {
+    condition     = can(regex("^[a-z_][a-z0-9_]{0,62}$", var.postgres_migration_user)) && var.postgres_migration_user != var.postgres_database_user
+    error_message = "The migration role must be a simple lowercase identifier distinct from the application role."
+  }
+}

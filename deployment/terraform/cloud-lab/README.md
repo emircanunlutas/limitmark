@@ -7,24 +7,22 @@ does not recreate either network.
 The configuration creates API service declarations, a Docker Artifact Registry
 repository, empty Secret Manager containers, dedicated service accounts, an
 IAM-authenticated Cloud Run service, a fresh private PostgreSQL VM/disk, and a
-TCP/5432 firewall rule limited to the laboratory subnet.
+TCP/5432 firewall rule limited to the laboratory subnet, plus an IAP-only SSH rule.
 
 ## Secret handling
 
 Terraform creates secret **containers only**. Never add secret versions,
 database passwords, service-account keys, or certificates to Terraform source,
 variables, state files, or logs. Populate secret versions through a separate
-reviewed secret-management procedure. The PostgreSQL role and application
-password must be created over the private TLS channel after the VM is
-provisioned.
+reviewed secret-management procedure. Role passwords are set interactively after provisioning (see "Database initialization").
 
 The PostgreSQL bootstrap script contains no credentials. It installs PostgreSQL
 16, generates a dedicated laboratory CA and a short-lived server certificate
 signed by that CA, includes the VM private IP in the certificate SAN, binds
 PostgreSQL to the VM's private address, rejects non-TLS host connections, and
 allows the lab application subnet for the named application database/user.
-The CA private key remains on the database VM. Export only the CA certificate
-over an approved operator channel, then store that certificate as the
+The CA private key remains on the database VM (`/var/lib/limitmark-lab/ca`, mode 0700, owned by `postgres`). Only the public CA certificate is exported (see
+"Operator access and CA export"), then stored as the
 `limitmark-lab-database-ca-cert` Secret Manager version consumed by Cloud Run.
 The application must use the database VM private IP in `LAB_DATABASE_URL` and
 the runtime enforces strict certificate and hostname verification.
@@ -93,16 +91,141 @@ resources are external prerequisites. The database CA must be exported between
 VM bootstrap and Cloud Run secret population, so those steps are intentionally
 separate and non-circular.
 
+## Invoker identity
+
+The Cloudflare signer authenticates as `limitmark-lab-invoker` and calls IAM
+Credentials `generateIdToken` for that same account. The API requires
+`iam.serviceAccounts.getOpenIdToken`, so `iam.tf` binds
+`roles/iam.serviceAccountOpenIdTokenCreator` to the invoker account **on the
+invoker service account resource only** (self-binding). That role cannot mint
+access tokens, sign blobs, or impersonate. Cloud Run invocation stays a
+service-scoped `roles/run.invoker` grant. No project-level token-creator grant
+exists; `tests/cloud-lab-infrastructure.test.ts` enforces this.
+
+## Operator access and CA export
+
+The VM has no external address. Prerequisites (not created by Terraform, because
+a Cloud NAT on the shared subnet would also give egress to historical VMs):
+
+- A Cloud NAT already covers `limitmark-lab-subnet`. Confirm read-only with
+  `gcloud compute routers list` / `gcloud compute routers nats list --router <r> --region europe-west3`.
+  Without it the bootstrap fails fast ("package installation failed") before PostgreSQL is configured.
+- The operator is granted separately (Terraform grants no operator IAM):
+  `roles/iap.tunnelResourceAccessor`, `roles/compute.osLogin`,
+  `roles/iam.serviceAccountUser` on `limitmark-lab-postgres` (required to SSH to a VM that
+  runs as a service account), and read access to the instance and its serial output.
+
+### Exporting the public CA certificate
+
+Only the **public** CA certificate is exported, from `/var/lib/limitmark-lab/public/lab-ca.crt`
+(root-owned, 0644). The CA private key lives in `/var/lib/limitmark-lab/ca` (0700, `postgres`);
+never use `sudo` to read that directory, and never copy anything from it. Cloud Run always
+verifies the server against the CA stored in Secret Manager (`rejectUnauthorized: true`, strict
+hostname); nothing below relaxes that, and no metadata/guest-attribute channel is trusted.
+
+1. **Pin the VM identity.** Record the immutable instance ID and confirm name, zone,
+   private IP and service account match the intended laboratory VM:
+
+   ```bash
+   gcloud compute instances describe limitmark-lab-postgres --zone europe-west3-a      --format="value(id,networkInterfaces[0].networkIP,serviceAccounts[0].email,status)"
+   ```
+
+   Expect service account `limitmark-lab-postgres@<project>.iam.gserviceaccount.com`. `gcloud compute ssh`
+   stores the host key under `compute.<instance-id>`, so a different VM reusing the name fails
+   host-key verification; do not accept a changed host key.
+2. **Read the expected fingerprint from the serial console** (a Google-side channel that does
+   not depend on the SSH session):
+
+   ```bash
+   gcloud compute instances get-serial-port-output limitmark-lab-postgres --zone europe-west3-a | grep LAB_CA_FINGERPRINT
+   ```
+
+3. **Download the certificate over IAP + OS Login.**
+
+   ```bash
+   gcloud compute scp --zone europe-west3-a --tunnel-through-iap      limitmark-lab-postgres:/var/lib/limitmark-lab/public/lab-ca.crt ./lab-ca.crt
+   ```
+
+4. **Verify locally** that the file is a single CA certificate whose SHA-256 fingerprint
+   equals the serial-console value, and that it is not a private key:
+
+   ```bash
+   openssl x509 -in lab-ca.crt -noout -subject -fingerprint -sha256 -ext basicConstraints
+   grep -c "PRIVATE KEY" lab-ca.crt   # must print 0
+   ```
+
+5. **Prove the live server chains to it** through the tunnel from "Database initialization" step 2:
+
+   ```bash
+   openssl s_client -starttls postgres -connect 127.0.0.1:55432 -CAfile lab-ca.crt      -verify_ip <VM_PRIVATE_IP> -verify_return_error </dev/null
+   ```
+
+6. Only then store it: `gcloud secrets versions add limitmark-lab-database-ca-cert --data-file=lab-ca.crt`,
+   delete the local copy per your workspace policy, and deploy a new Cloud Run revision.
+
 ## Database initialization
 
-After the VM is reachable privately and the CA certificate is stored in the
-operator's protected workspace, connect with `psql` using that CA and
-`sslmode=verify-full` (the host must be the VM private IP). Create separate
-migration and application roles with passwords entered
-interactively; the migration role owns the database and the runtime role does
-not. Run the reviewed Drizzle migrations with `DATABASE_MIGRATION_URL` over
-the same verified TLS connection. Then apply repeatable `REVOKE ALL` and
-`GRANT` statements so the runtime role has only `CONNECT`, `USAGE` on the
-application schema, and required DML/sequence privileges on migrated tables.
-Do not grant the runtime role `CREATE` or ownership. Do not put passwords in
-Terraform, startup metadata, command arguments, or shell history.
+The bootstrap (idempotent, re-run on every boot) already creates, over the
+local socket, the database owned by `limitmark_lab_migrator` and the
+`limitmark_lab_app` role, both **without passwords** and without superuser,
+CREATEDB or CREATEROLE. Neither can log in until a password is set. `pg_hba`
+permits both roles, TLS only, from the laboratory subnet; non-TLS is rejected.
+
+1. Open IAP SSH to the VM and set each password interactively (`password`
+   is not written to history or argv):
+
+   ```bash
+   gcloud compute ssh limitmark-lab-postgres --zone europe-west3-a --tunnel-through-iap
+   sudo -u postgres psql
+   password limitmark_lab_migrator
+   password limitmark_lab_app
+   ```
+
+2. Tunnel the database port over the same IAP SSH session. The forwarded
+   connection originates from the VM itself, inside the permitted subnet:
+
+   ```bash
+   gcloud compute ssh limitmark-lab-postgres --zone europe-west3-a --tunnel-through-iap -- -N -L 127.0.0.1:55432:<VM_PRIVATE_IP>:5432
+   ```
+
+3. Connect with strict verification; `hostaddr` keeps the certificate check on
+   the VM private IP while traffic uses the tunnel (enter the password at the prompt):
+
+   ```bash
+   psql "host=<VM_PRIVATE_IP> hostaddr=127.0.0.1 port=55432 dbname=limitmark_lab user=limitmark_lab_migrator sslmode=verify-full sslrootcert=lab-ca.crt"
+   ```
+
+4. Run the reviewed migrations as the migration role, then apply the runtime privileges
+   as the same role (repeat after every migration):
+
+   ```bash
+   psql "<connection string from step 3>" -v ON_ERROR_STOP=1 -v app_role=limitmark_lab_app -f postgres-runtime-grants.sql
+   ```
+
+   `postgres-runtime-grants.sql` is derived from the only code the laboratory runtime executes
+   (`PostgresInquiryRepository.create`): `INSERT` on `inquiries`, `inquiry_events` and
+   `notification_outbox`, plus column-level `SELECT (id, submission_token, payload_fingerprint)`
+   on `inquiries`. No `UPDATE`, `DELETE`, sequence or `CREATE` privilege is granted (all keys are
+   `gen_random_uuid()`). No default privileges are granted: a table added by a later migration has
+   no runtime access until it is reviewed and added to that file, and a test fails if it is not
+   accounted for. The file was verified against a local PostgreSQL 16 container, including
+   `ON CONFLICT ... RETURNING`, foreign-key inserts, and denial of everything else.
+5. Build `LAB_DATABASE_URL` with the VM private IP as host and no query
+   parameters; store it as its secret version through the reviewed procedure.
+
+Note: `drizzle-kit migrate` uses `DATABASE_MIGRATION_URL`, and its handling of a
+custom CA / server name through the tunnel has not been verified. Until it is,
+apply the SQL in `drizzle/` with the `psql` connection above, or supply TLS
+options in a reviewed config change.
+
+## Certificate lifecycle
+
+| Item | Behavior |
+| --- | --- |
+| CA | RSA-4096, 365 days, `pathlen:0`, created once, persisted on the boot disk. Never rotated automatically. A warning is logged under 30 days; an expired CA aborts the bootstrap. |
+| Server certificate | RSA-2048, 30 days, SAN = VM private IP only, signed by the CA. |
+| Reboot / VM restart | Existing CA and server certificate are reused (they live on the persistent disk). The server certificate is reissued automatically only if it expires within 7 days, the private IP changed, or it no longer verifies against the CA. |
+| Renewal (running VM) | Reboot, or run `sudo google_metadata_script_runner startup` (restarts PostgreSQL; brief outage). The CA is unchanged, so no secret or Cloud Run change is needed. If the IP changed, update the database URL secret. |
+| Reprovisioning | `terraform destroy`/recreate produces a new CA. Export and fingerprint-check it, add a new `limitmark-lab-database-ca-cert` version, and deploy a new Cloud Run revision (secrets resolve at instance start). Re-set role passwords; migrations must be re-applied. |
+
+No external certificate automation is introduced.
