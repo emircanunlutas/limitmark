@@ -1,4 +1,5 @@
 import { createIngressSigner } from "./signer";
+import { createGoogleIdTokenProvider } from "./google-id-token";
 
 export type LaboratoryIngressSignerEnvironment = {
   LAB_PUBLIC_HOSTNAME: string;
@@ -9,6 +10,7 @@ export type LaboratoryIngressSignerEnvironment = {
   LAB_INGRESS_SIGNING_PRIVATE_KEY: string;
   LAB_INGRESS_IDENTITY_HMAC_KEY: string;
   LAB_PUBLIC_ORIGIN_SECRET: string;
+  LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS?: string;
 };
 
 let configuredHandler: ((request: Request) => Promise<Response>) | undefined;
@@ -24,6 +26,7 @@ const laboratoryIngressSignerWorker = {
         !environment.LAB_INGRESS_AUDIENCE || !environment.LAB_DEPLOYMENT_ID ||
         !environment.LAB_INGRESS_SIGNING_KEY_ID || !environment.LAB_INGRESS_SIGNING_PRIVATE_KEY ||
         !environment.LAB_INGRESS_IDENTITY_HMAC_KEY || !environment.LAB_PUBLIC_ORIGIN_SECRET ||
+        !environment.LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS ||
         !validHostname(environment.LAB_PUBLIC_HOSTNAME) || !validHostname(environment.LAB_ORIGIN_HOSTNAME) ||
         environment.LAB_PUBLIC_HOSTNAME === environment.LAB_ORIGIN_HOSTNAME ||
         !/^[A-Za-z0-9_.:-]{1,128}$/u.test(environment.LAB_INGRESS_AUDIENCE) ||
@@ -44,6 +47,10 @@ const laboratoryIngressSignerWorker = {
       signingPrivateKeyPkcs8: environment.LAB_INGRESS_SIGNING_PRIVATE_KEY,
       identityHmacKey: environment.LAB_INGRESS_IDENTITY_HMAC_KEY,
       originSecret: environment.LAB_PUBLIC_ORIGIN_SECRET,
+      cloudRunAuthorizationToken: createGoogleIdTokenProvider(
+        environment.LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS,
+        `https://${environment.LAB_ORIGIN_HOSTNAME}`,
+      ),
     });
     return configuredHandler(request);
   },
