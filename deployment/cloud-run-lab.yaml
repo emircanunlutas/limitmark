@@ -2,8 +2,10 @@ apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: limitmark-public-inquiry-lab
+  # The app accepts only authenticated requests. Grant roles/run.invoker only
+  # to the approved Cloudflare-origin identity; never add allUsers.
   annotations:
-    run.googleapis.com/ingress: internal-and-cloud-load-balancing
+    run.googleapis.com/ingress: all
     run.googleapis.com/execution-environment: gen2
     run.googleapis.com/launch-stage: BETA
 spec:
@@ -46,6 +48,9 @@ spec:
               value: limitmark-public-inquiry-lab
             - name: LAB_PUBLIC_HOSTNAME
               value: LAB_HOSTNAME
+            # This exact https:// hostname is also the Google OIDC audience.
+            - name: LAB_ORIGIN_HOSTNAME
+              value: ORIGIN_HOSTNAME.run.app
             # Must exactly match the Google ID-token audience accepted by the
             # isolated admission Worker and requested from the metadata server.
             - name: LAB_ADMISSION_OIDC_AUDIENCE
@@ -123,3 +128,6 @@ spec:
         - name: collector-config
           secret:
             secretName: limitmark-lab-otel-collector-config
+            items:
+              - key: latest
+                path: config.yaml

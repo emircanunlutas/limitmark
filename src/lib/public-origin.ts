@@ -13,6 +13,7 @@ export type PublicOriginEnvironment = {
   VERCEL_ENV?: string;
   LIMITMARK_RUNTIME?: string;
   PUBLIC_ORIGIN_HOSTNAME?: string;
+  PUBLIC_ORIGIN_PUBLIC_HOSTNAME?: string;
 };
 
 export function isPublicOriginProtectionDisabled(environment: PublicOriginEnvironment): boolean {
@@ -34,7 +35,8 @@ export function isPublicOriginAllowed(headers: HeaderReader, environment: Public
   const host = headers.get("host");
   if (environment.LIMITMARK_RUNTIME === "cloud-run-lab") {
     const expectedHost = environment.PUBLIC_ORIGIN_HOSTNAME;
-    return Boolean(expectedHost && host === expectedHost && headers.get("x-forwarded-host") === expectedHost);
+    const publicHost = environment.PUBLIC_ORIGIN_PUBLIC_HOSTNAME;
+    return Boolean(expectedHost && publicHost && host === expectedHost && headers.get("x-forwarded-host") === publicHost);
   }
   if (environment.VERCEL !== "1" || environment.VERCEL_ENV !== "production") return false;
   return (host === "limitmark.com" || host === "www.limitmark.com") && headers.get("x-forwarded-host") === host;

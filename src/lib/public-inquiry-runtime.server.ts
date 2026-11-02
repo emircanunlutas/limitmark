@@ -25,6 +25,7 @@ const forbiddenProductionKeys = [
 export type LaboratoryRuntimeEnvironment = Record<string, string | undefined> & {
   LIMITMARK_RUNTIME?: string;
   LAB_PUBLIC_HOSTNAME?: string;
+  LAB_ORIGIN_HOSTNAME?: string;
   LAB_PUBLIC_ORIGIN_SECRET?: string;
   LAB_DATABASE_URL?: string;
   LAB_DATABASE_POOL_MAX?: string;
@@ -91,6 +92,7 @@ export async function createLaboratoryRuntimeDependencies(
       environment.ENABLE_PERSISTENT_SUBMISSIONS !== "true" ||
       environment.PUBLIC_ORIGIN_PROTECTION !== "required" ||
       !validHostname(environment.LAB_PUBLIC_HOSTNAME) ||
+      !validHostname(environment.LAB_ORIGIN_HOSTNAME) ||
       !validDatabase(environment.LAB_DATABASE_URL) ||
       poolMax === null ||
       !validSecret(environment.LAB_PUBLIC_ORIGIN_SECRET) ||
@@ -112,7 +114,9 @@ export async function createLaboratoryRuntimeDependencies(
     const ingressPolicy: IngressVerificationPolicy = {
       audience: environment.LAB_INGRESS_AUDIENCE,
       deploymentId: environment.LAB_DEPLOYMENT_ID,
-      hostname: environment.LAB_PUBLIC_HOSTNAME,
+      environment: "cloud-run-lab",
+      publicHostname: environment.LAB_PUBLIC_HOSTNAME,
+      originHostname: environment.LAB_ORIGIN_HOSTNAME,
       publicKeys: await importIngressPublicKeys(environment.LAB_INGRESS_PUBLIC_KEYS),
       requestBindingKey: await importRequestBindingKey(environment.LAB_INGRESS_REQUEST_BINDING_KEY),
     };
@@ -137,7 +141,8 @@ export async function createLaboratoryRuntimeDependencies(
       ...environment,
       LIMITMARK_RUNTIME: LAB_RUNTIME,
       PUBLIC_ORIGIN_SECRET: environment.LAB_PUBLIC_ORIGIN_SECRET,
-      PUBLIC_ORIGIN_HOSTNAME: environment.LAB_PUBLIC_HOSTNAME,
+      PUBLIC_ORIGIN_HOSTNAME: environment.LAB_ORIGIN_HOSTNAME,
+      PUBLIC_ORIGIN_PUBLIC_HOSTNAME: environment.LAB_PUBLIC_HOSTNAME,
     };
     return {
       enabled: true,

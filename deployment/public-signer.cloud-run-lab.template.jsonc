@@ -1,0 +1,18 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "limitmark-public-ingress-cloud-run-lab",
+  "main": "../workers/ingress-signer/laboratory-index.ts",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "LAB_PUBLIC_HOSTNAME/*", "zone_name": "LAB_PUBLIC_ZONE" }
+  ],
+  "vars": {
+    "LAB_PUBLIC_HOSTNAME": "__REQUIRED_LAB_PUBLIC_HOSTNAME__",
+    "LAB_ORIGIN_HOSTNAME": "__REQUIRED_CLOUD_RUN_ORIGIN_HOSTNAME__",
+    "LAB_INGRESS_AUDIENCE": "__REQUIRED_LAB_INGRESS_AUDIENCE__",
+    "LAB_DEPLOYMENT_ID": "__REQUIRED_LAB_DEPLOYMENT_ID__",
+    "LAB_INGRESS_SIGNING_KEY_ID": "__REQUIRED_LAB_SIGNING_KEY_ID__"
+  }
+}

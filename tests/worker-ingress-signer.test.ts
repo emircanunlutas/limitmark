@@ -28,7 +28,7 @@ async function signerFixture() {
   const privatePkcs8 = encodeBase64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey)));
   const forwarded: Array<{ url: string; init?: RequestInit }> = [];
   const signer = createIngressSigner({
-    environment: "production", publicHosts: ["limitmark.com", "www.limitmark.com"], targetOrigin: "https://limitmark.com",
+    environment: "production", publicHosts: ["limitmark.com", "www.limitmark.com"], targetOrigin: "https://limitmark.com", originHostname: "limitmark.com",
     audience: "prj_limitmark", deploymentId: "dpl_reviewed", keyId: "key-current", signingPrivateKeyPkcs8: privatePkcs8,
     identityHmacKey: hmacKey, originSecret: "o".repeat(43), vercelBypassSecret: "b".repeat(43),
   }, {
@@ -110,4 +110,31 @@ test("credential-bearing fetch construction cannot escape the fixed approved ori
     assert.equal((item.init!.headers as Headers).has("content-encoding"), false);
   }
   assert.equal(forwarded[0].url, "https://limitmark.com//attacker.example/escape");
+});
+
+test("laboratory signer binds the public host, forwards the origin host, and requires Cloud Run auth", async () => {
+  const pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+  const privatePkcs8 = encodeBase64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey)));
+  const forwarded: Array<{ url: string; init?: RequestInit }> = [];
+  const signer = createIngressSigner({
+    environment: "cloud-run-lab", publicHosts: ["inquiry-lab.example"], targetOrigin: "https://origin-lab.run.app",
+    originHostname: "origin-lab.run.app", audience: "lab-audience", deploymentId: "lab-deployment", keyId: "lab-key",
+    signingPrivateKeyPkcs8: privatePkcs8, identityHmacKey: hmacKey, originSecret: "o".repeat(43),
+    cloudRunAuthorizationToken: async () => "Bearer eyJ.lab",
+  }, { fetch: async (input, init) => { forwarded.push({ url: String(input), init }); return new Response("ok"); } });
+  const response = await signer(new Request("https://inquiry-lab.example/api/public-inquiries", {
+    method: "POST", body: "name=Lab", headers: { "content-type": "application/x-www-form-urlencoded", "cf-connecting-ip": "203.0.113.9" },
+  }));
+  assert.equal(response.status, 200);
+  const headers = forwarded[0].init!.headers as Headers;
+  assert.equal(forwarded[0].url, "https://origin-lab.run.app/api/public-inquiries");
+  assert.equal(headers.get("host"), "origin-lab.run.app");
+  assert.equal(headers.get("x-forwarded-host"), "inquiry-lab.example");
+  assert.equal(headers.get("x-serverless-authorization"), "Bearer eyJ.lab");
+  const missingAuth = createIngressSigner({
+    environment: "cloud-run-lab", publicHosts: ["inquiry-lab.example"], targetOrigin: "https://origin-lab.run.app",
+    originHostname: "origin-lab.run.app", audience: "lab-audience", deploymentId: "lab-deployment", keyId: "lab-key",
+    signingPrivateKeyPkcs8: privatePkcs8, identityHmacKey: hmacKey, originSecret: "o".repeat(43),
+  });
+  assert.equal((await missingAuth(new Request("https://inquiry-lab.example/"))).status, 503);
 });

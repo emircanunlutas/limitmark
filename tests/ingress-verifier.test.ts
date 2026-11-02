@@ -35,6 +35,22 @@ test("Vercel verifier independently binds signature, audience, deployment, route
   await assert.rejects(() => verifyMutationIngress(valid.request, changed, valid.policy), /body-length|body-digest/);
 });
 
+test("laboratory verifier separates signed public hostname from Cloud Run origin hostname", async () => {
+  const valid = await signedRequest({ url: "https://origin-lab.run.app/api/public-inquiries",
+    headers: { host: "origin-lab.run.app", "x-forwarded-host": "inquiry-lab.example" } });
+  const payload = (await import("../src/lib/ingress-protocol")).splitIngressEnvelope(valid.request.headers.get(INGRESS_HEADER)!);
+  const labPayload = [...payload.payload] as unknown as string[];
+  labPayload[2] = "cloud-run-lab";
+  labPayload[8] = "inquiry-lab.example";
+  const envelope = await createIngressEnvelope(labPayload as unknown as IngressPayload, valid.pair.privateKey);
+  const request = new Request(valid.request.url, { method: "POST", body: valid.body, headers: { ...Object.fromEntries(valid.request.headers), [INGRESS_HEADER]: envelope } });
+  await assert.doesNotReject(() => verifyMutationIngress(request, valid.body, { ...valid.policy, environment: "cloud-run-lab", publicHostname: "inquiry-lab.example", originHostname: "origin-lab.run.app" }));
+  const unsignedForwarded = new Request("https://origin-lab.run.app/api/public-inquiries", { method: "POST", body: valid.body,
+    headers: { host: "origin-lab.run.app", "x-forwarded-host": "attacker.example", "content-type": INGRESS_MUTATION_CONTENT_TYPE,
+      "content-encoding": "identity", [INGRESS_HEADER]: envelope } });
+  await assert.rejects(() => verifyMutationIngress(unsignedForwarded, valid.body, { ...valid.policy, environment: "cloud-run-lab", publicHostname: "inquiry-lab.example", originHostname: "origin-lab.run.app" }));
+});
+
 test("Vercel verifier rejects stale/future, wrong key/audience/deployment and request mismatches", async () => {
   for (const item of [
     await signedRequest({ now: 130_001 }), await signedRequest({ now: 94_999 }),

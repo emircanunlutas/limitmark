@@ -5,6 +5,7 @@ import {
   INGRESS_ENVIRONMENT,
   INGRESS_HEADER,
   INGRESS_IDENTITY_VERSION,
+  LAB_INGRESS_ENVIRONMENT,
   INGRESS_MUTATION_CONTENT_TYPE,
   INGRESS_MUTATION_PATH,
   assertIngressFresh,
@@ -19,7 +20,9 @@ import { importActiveIngressSigningKeys } from "./ingress-key-rollout";
 export type IngressVerificationPolicy = {
   audience: string;
   deploymentId: string;
-  hostname?: string;
+  environment?: "production" | "cloud-run-lab";
+  publicHostname?: string;
+  originHostname?: string;
   publicKeys: ReadonlyMap<string, CryptoKey>;
   requestBindingKey: CryptoKey;
   now?: () => number;
@@ -49,12 +52,15 @@ export async function verifyMutationIngress(request: Request, body: Uint8Array, 
   const url = new URL(request.url);
   const forwardedHost = request.headers.get("x-forwarded-host");
   const contentLength = request.headers.get("content-length");
-  if (payload[2] !== INGRESS_ENVIRONMENT || payload[3] !== policy.audience || payload[4] !== policy.deploymentId) throw new Error("ingress-audience");
+  if (payload[2] !== (policy.environment === "cloud-run-lab" ? LAB_INGRESS_ENVIRONMENT : INGRESS_ENVIRONMENT) ||
+      payload[3] !== policy.audience || payload[4] !== policy.deploymentId) throw new Error("ingress-audience");
   assertIngressFresh(payload[5], (policy.now ?? Date.now)());
   if (request.method !== "POST" || payload[6] !== request.method) throw new Error("ingress-method");
   if (url.protocol !== "https:" || payload[7] !== "https") throw new Error("ingress-scheme");
-  const hostname = policy.hostname ?? "limitmark.com";
-  if (url.hostname !== hostname || url.port || payload[8] !== url.hostname || request.headers.get("host") !== hostname || forwardedHost !== hostname) throw new Error("ingress-host");
+  const publicHostname = policy.publicHostname ?? "limitmark.com";
+  const originHostname = policy.originHostname ?? publicHostname;
+  if (url.hostname !== originHostname || url.port || payload[8] !== publicHostname ||
+      request.headers.get("host") !== originHostname || forwardedHost !== publicHostname) throw new Error("ingress-host");
   if (url.pathname !== INGRESS_MUTATION_PATH || payload[9] !== url.pathname) throw new Error("ingress-path");
   if (url.search !== "" || payload[10] !== "") throw new Error("ingress-query");
   if (request.headers.get("content-type") !== INGRESS_MUTATION_CONTENT_TYPE || payload[11] !== INGRESS_MUTATION_CONTENT_TYPE) throw new Error("ingress-content-type");
