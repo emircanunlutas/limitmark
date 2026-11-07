@@ -38,15 +38,9 @@ resource "google_secret_manager_secret_iam_member" "app_secret_accessor" {
   member    = "serviceAccount:${google_service_account.app.email}"
 }
 
-resource "google_compute_subnetwork_iam_member" "cloud_run_network_user" {
-  project    = var.project_id
-  region     = var.region
-  subnetwork = data.google_compute_subnetwork.lab.name
-  role       = "roles/compute.networkUser"
-  member     = "serviceAccount:service-${data.google_project.current.number}@serverless-robot-prod.iam.gserviceaccount.com"
-
-  depends_on = [google_project_service.required]
-}
+# No roles/compute.networkUser grant for the Cloud Run service agent: Google documents that the agent's default
+# roles/run.serviceAgent already carries the Direct VPC egress permissions for a same-project subnet; networkUser
+# is only a fallback. If the first revision fails with a subnet permission error, add a subnet-scoped grant then.
 
 resource "google_cloud_run_v2_service_iam_member" "invoker" {
   project  = var.project_id

@@ -174,6 +174,5 @@ resource "google_cloud_run_v2_service" "lab" {
   depends_on = [
     google_project_service.required,
     google_secret_manager_secret_iam_member.app_secret_accessor,
-    google_compute_subnetwork_iam_member.cloud_run_network_user,
   ]
 }

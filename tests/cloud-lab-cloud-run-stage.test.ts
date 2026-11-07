@@ -66,6 +66,19 @@ test("runbook keeps the three validations separate and flags the long-lived sign
   assert.match(runbook, /validated \*\*independently\*\*/u);
   for (const phrase of ["Cloud Run infrastructure", "Application to PostgreSQL", "Public traffic"]) assert.ok(runbook.includes(phrase), phrase);
   assert.match(runbook, /service-account JSON key/u);
-  assert.match(runbook, /7 add, 0 change, 0 destroy/u);
+  assert.match(runbook, /6 add, 0 change, 0 destroy/u);
   assert.equal(/ya29\.|BEGIN [A-Z ]*PRIVATE KEY/u.test(runbook), false);
+});
+
+test("no network or project-wide permission beyond the reviewed set is granted to Cloud Run", () => {
+  const iam = read("iam.tf");
+  assert.equal(/google_compute_subnetwork_iam_member|roles\/compute\.networkUser/u.test(iam.replace(/^\s*#.*$/gmu, "")), false);
+  assert.equal(/google_compute_subnetwork_iam_member/u.test(cloudRun), false);
+});
+
+test("end-to-end runbook keeps key creation unapproved and gated", () => {
+  const e2e = read("E2E-DEPLOYMENT.md");
+  assert.match(e2e, /No service-account key has been created/u);
+  for (const gate of ["| A |", "| B |", "| C |", "| D |", "| E |", "| F |", "| G |"]) assert.ok(e2e.includes(gate), gate);
+  assert.equal(/ya29\.|BEGIN [A-Z ]*PRIVATE KEY/u.test(e2e), false);
 });

@@ -61,16 +61,16 @@ audience is `https://` plus that hostname); app service account `limitmark-lab-a
 The Cloudflare signer currently authenticates with a Google **service-account JSON key** for `limitmark-lab-invoker`
 (`LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS`). That is a long-lived key and needs explicit approval and a rotation plan before it is created.
 
-## Plan (whole module against the remote state, no `-target`): 7 add, 0 change, 0 destroy
+## Plan (whole module against the remote state, no `-target`): 6 add, 0 change, 0 destroy
 
 `google_cloud_run_v2_service.lab`, `google_cloud_run_v2_service_iam_member.invoker`, `google_project_iam_member.app_metric_writer`,
-`google_compute_subnetwork_iam_member.cloud_run_network_user`, and the project services `run`, `monitoring`, `logging`.
+and the project services `run`, `monitoring`, `logging` (the subnet `networkUser` grant was removed in 3P.2, see below).
 
 | New IAM binding | Scope | Why |
 | --- | --- | --- |
 | `roles/run.invoker` to `limitmark-lab-invoker` | this one service | the Cloudflare signer's ID token is the only way in; no `allUsers`, no project-wide invoker |
 | `roles/monitoring.metricWriter` to `limitmark-lab-app` | project (the role cannot be narrower) | the collector sidecar writes the OTel metrics |
-| `roles/compute.networkUser` to the Cloud Run service agent | `limitmark-lab-subnet` only | Direct VPC egress. Believed redundant for a same-project subnet (the agent's own role may suffice); kept because removing it risks a failed first deploy. Drop it after a successful deploy shows it is unneeded. The service agent must exist first: enable the Run API, then `gcloud beta services identity create --service=run.googleapis.com` |
+| *(removed)* `roles/compute.networkUser` to the Cloud Run service agent | - | Google's Cloud Run docs: the service agent's default `roles/run.serviceAgent` already holds the Direct VPC egress permissions; networkUser is only a fallback. Removed in 3P.2 to avoid an unneeded grant. If the first revision fails with a subnet permission error, add a `limitmark-lab-subnet`-scoped grant at that point (a reviewed, reversible step). |
 
 Operational notes: the service uses request-based CPU, so the collector's periodic export can stall between requests and metrics may lag until the
 next request; `cpu_idle=false` would fix that at instance-based cost and is a later decision. `PRIVATE_RANGES_ONLY` sends only private ranges into the

@@ -32,9 +32,9 @@ The database URL must not contain query parameters. The lab runtime supplies
 server name, so `sslmode=disable`, alternate roots, and hostname bypasses are
 rejected.
 
-Direct VPC egress uses the existing subnet. The Cloud Run service agent receives
-`roles/compute.networkUser` on `limitmark-lab-subnet` only; no project-wide
-network-user grant is defined. The PostgreSQL firewall rule allows TCP/5432 only
+Direct VPC egress uses the existing subnet. No `roles/compute.networkUser` grant is
+defined: the Cloud Run service agent's default `roles/run.serviceAgent` covers Direct VPC
+egress in the same project (networkUser is only a documented fallback). The PostgreSQL firewall rule allows TCP/5432 only
 from `10.80.0.0/24` to the disposable database tag because the existing subnet
 is shared with the laboratory VMs.
 
