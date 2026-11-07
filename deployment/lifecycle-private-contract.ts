@@ -133,7 +133,7 @@ export function validateStagingLifecycleTransportManifest(value: unknown, templa
 }
 
 export function validateLifecycleEnvironmentGates(value: unknown): void {
-  if (!exact(value, ["version", "production", "staging", "crossEnvironmentKeyReuseAllowed", "crossEnvironmentCredentialReuseAllowed",
+  if (!exact(value, ["version", "production", "staging", "lab", "crossEnvironmentKeyReuseAllowed", "crossEnvironmentCredentialReuseAllowed",
     "crossEnvironmentNamespaceReuseAllowed", "publicPersistenceEnabled"]) || value.version !== 1 ||
       value.crossEnvironmentKeyReuseAllowed !== false || value.crossEnvironmentCredentialReuseAllowed !== false ||
       value.crossEnvironmentNamespaceReuseAllowed !== false || value.publicPersistenceEnabled !== false) throw new Error("unsafe-lifecycle-environments");
@@ -160,6 +160,10 @@ export function validateLifecycleEnvironmentGates(value: unknown): void {
   if (production.requestObjectRetentionHours !== 24 || staging.requestObjectRetentionHours !== 24 ||
       production.resultObjectRetentionDays !== 30 || staging.resultObjectRetentionDays !== 30)
     throw new Error("unsafe-lifecycle-environments");
+  validateLabEnvironmentGate(value.lab);
+  // No resource identity may be shared between any two environments (checked on the pinned values, not by pattern).
+  const identities = [production, staging, value.lab as Record<string, unknown>].flatMap((section) => fields.map((field) => section[field]));
+  if (new Set(identities).size !== identities.length) throw new Error("unsafe-lifecycle-environments");
 }
 
 // ---------------------------------------------------------------------------
@@ -262,4 +266,127 @@ export function validateNeverInitializedStagingLifecycleSnapshot(value: unknown,
   if (typeof value.observedAtMs !== "number" || !Number.isSafeInteger(value.observedAtMs) || value.observedAtMs < 0 ||
       Math.abs(nowMs - value.observedAtMs) > LIVE_READONLY_OBSERVATION_FRESHNESS_MS)
     throw new Error("unsafe-live-readonly-observation-freshness");
+}
+
+// ---------------------------------------------------------------------------
+// Laboratory environment (third environment, additive). Structurally independent of the Production and staging validators above:
+// every literal is the lab-only identity, there is NO wildcard or pattern acceptance of environment names, and a Production or
+// staging config can never satisfy a lab validator (nor the reverse). Lab rotation is not implemented.
+// ---------------------------------------------------------------------------
+
+export const LAB_RESOURCES = Object.freeze({
+  requestBucket: "limitmark-lifecycle-requests-lab",
+  resultBucket: "limitmark-lifecycle-results-lab",
+  mailboxWorker: "limitmark-lifecycle-mailbox-lab",
+  observerWorker: "limitmark-lifecycle-observer-lab",
+  guardObject: "lab-lifecycle-dispatch-v1",
+  executorWorker: "limitmark-authority-operator-executor-lab",
+  admissionWorker: "limitmark-admission-service-lab",
+  authorityObject: "lab-public-inquiries-v1",
+  publicHostname: "lab.limitmark.com",
+  admissionHostname: "lab-admission.limitmark.com",
+});
+const labBuckets = [
+  { binding: "REQUEST_BUCKET", bucket_name: LAB_RESOURCES.requestBucket },
+  { binding: "RESULT_BUCKET", bucket_name: LAB_RESOURCES.resultBucket },
+];
+const labReader = { binding: "LIFECYCLE_READER", service: LAB_RESOURCES.admissionWorker, entrypoint: "LabAuthorityLifecycleReadOnly" };
+
+function labBase(value: unknown, kind: "mailbox" | "observer", template: boolean): StagingScheduleState {
+  const extra = kind === "mailbox" ? ["durable_objects", "migrations", "vars"] : [];
+  if (!exact(value, [...common, ...extra])) throw new Error("unsafe-lifecycle-config");
+  const scheduleState = stagingScheduleState(value.triggers);
+  if (value.$schema !== "../node_modules/wrangler/config-schema.json" ||
+      value.name !== (kind === "mailbox" ? LAB_RESOURCES.mailboxWorker : LAB_RESOURCES.observerWorker) || value.compatibility_date !== "2026-09-13" ||
+      value.workers_dev !== false || value.preview_urls !== false ||
+      JSON.stringify(value.r2_buckets) !== JSON.stringify(labBuckets) ||
+      value.main !== (template ? `__REQUIRED_RENDERED_LAB_${kind.toUpperCase()}_MAIN__.ts` :
+        `../workers/${kind === "mailbox" ? "lifecycle-mailbox/lab-index" : "lab-lifecycle-observer"}.ts`))
+    throw new Error("unsafe-lifecycle-config");
+  const expectedServices = kind === "mailbox" ? [
+    { binding: "LIFECYCLE_EXECUTOR", service: LAB_RESOURCES.executorWorker, entrypoint: "LabOperatorLifecycleExecutor" }, labReader,
+  ] : [labReader];
+  if (JSON.stringify(value.services) !== JSON.stringify(expectedServices)) throw new Error("unsafe-lifecycle-services");
+  if (kind === "mailbox") {
+    if (JSON.stringify(value.durable_objects) !== JSON.stringify({ bindings: [{ name: "DISPATCH_GUARD", class_name: "LabLifecycleDispatchGuard" }] }) ||
+        JSON.stringify(value.migrations) !== JSON.stringify([{ tag: "lab-guard-v1", new_sqlite_classes: ["LabLifecycleDispatchGuard"] }]) ||
+        !exact(value.vars, ["AUTHORITY_OPERATOR_PUBLIC_KEY", "LIFECYCLE_ENVIRONMENT"]) ||
+        value.vars.LIFECYCLE_ENVIRONMENT !== "lab") throw new Error("unsafe-lifecycle-guard");
+    const key = value.vars.AUTHORITY_OPERATOR_PUBLIC_KEY;
+    if (template ? key !== "__REQUIRED_LAB_OPERATOR_ED25519_PUBLIC_KEY__" : typeof key !== "string" || key.startsWith("__REQUIRED_"))
+      throw new Error("unsafe-lifecycle-key");
+    if (!template) decodeCanonicalBase64url(key as string, 32);
+  }
+  if (template ? value.account_id !== "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__" :
+      typeof value.account_id !== "string" || !/^[a-f0-9]{32}$/u.test(value.account_id) || /^0{32}$/u.test(value.account_id))
+    throw new Error("unsafe-lifecycle-account");
+  return scheduleState;
+}
+/** Lab mailbox/observer validators. Same two reviewed schedule states as staging (initially no active Cron). */
+export function validateLabLifecycleMailboxConfig(value: unknown, template = true, requireScheduleState?: StagingScheduleState): StagingScheduleState {
+  const state = labBase(value, "mailbox", template);
+  if (requireScheduleState && state !== requireScheduleState) throw new Error("unsafe-staging-schedule-state");
+  return state;
+}
+export function validateLabLifecycleObserverConfig(value: unknown, template = true, requireScheduleState?: StagingScheduleState): StagingScheduleState {
+  const state = labBase(value, "observer", template);
+  if (requireScheduleState && state !== requireScheduleState) throw new Error("unsafe-staging-schedule-state");
+  return state;
+}
+
+export function validateLabLifecycleTransportManifest(value: unknown, template = true): void {
+  if (!exact(value, ["version", "environment", "accountId", "requestBucket", "resultBucket", "authorityId", "policyEpoch", "operatorPublicKey"]) ||
+      value.version !== 1 || value.environment !== "lab" || value.requestBucket !== LAB_RESOURCES.requestBucket ||
+      value.resultBucket !== LAB_RESOURCES.resultBucket || value.authorityId !== LAB_RESOURCES.authorityObject ||
+      value.policyEpoch !== "phase5c-i1-epoch-1" ||
+      (template ? value.accountId !== "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__" || value.operatorPublicKey !== "__REQUIRED_LAB_OPERATOR_ED25519_PUBLIC_KEY__" :
+        typeof value.accountId !== "string" || !/^[a-f0-9]{32}$/u.test(value.accountId) || /^0{32}$/u.test(value.accountId) ||
+        typeof value.operatorPublicKey !== "string" || value.operatorPublicKey.startsWith("__REQUIRED_"))) throw new Error("unsafe-lifecycle-manifest");
+  if (!template) decodeCanonicalBase64url(value.operatorPublicKey as string, 32);
+}
+
+const labAdmissionServiceKeys = ["$schema", "name", "main", "compatibility_date", "workers_dev", "preview_urls", "routes", "durable_objects", "migrations", "vars"];
+const labAdmissionVars = ["ADMISSION_IDENTITY_MODE", "GOOGLE_OIDC_ISSUER", "GOOGLE_OIDC_AUDIENCE", "GOOGLE_SERVICE_ACCOUNT_EMAIL",
+  "GOOGLE_SERVICE_ACCOUNT_SUBJECT", "AUTHORITY_OPERATOR_PUBLIC_KEY", "ADMISSION_CURRENT_RELEASE_ID", "ADMISSION_CURRENT_KEY_ID", "ADMISSION_CURRENT_ACTIVATED_AT_MS"];
+/** The lab admission Worker: public admission fetch (Google-OIDC lab identity mode) on the single pinned lab admission hostname, plus the
+ * lab-only lifecycle entrypoints. Hosts ONLY LabAdmissionAuthority; any Production/staging DO class, route, or hostname is rejected. */
+export function validateLabAdmissionServiceConfig(value: unknown, template = true): void {
+  if (!exact(value, labAdmissionServiceKeys)) throw new Error("unsafe-lab-admission-config");
+  if (value.$schema !== "../node_modules/wrangler/config-schema.json" || value.name !== LAB_RESOURCES.admissionWorker ||
+      value.main !== "../workers/admission-service/lab-index.ts" || value.compatibility_date !== "2026-09-13" ||
+      value.workers_dev !== false || value.preview_urls !== false)
+    throw new Error("unsafe-lab-admission-config");
+  if (JSON.stringify(value.routes) !== JSON.stringify([{ pattern: LAB_RESOURCES.admissionHostname, custom_domain: true }]))
+    throw new Error("unsafe-lab-admission-route");
+  if (JSON.stringify(value.durable_objects) !== JSON.stringify({ bindings: [{ name: "AUTHORITY", class_name: "LabAdmissionAuthority" }] }))
+    throw new Error("unsafe-lab-admission-binding");
+  if (JSON.stringify(value.migrations) !== JSON.stringify([{ tag: "lab-admission-v1", new_sqlite_classes: ["LabAdmissionAuthority"] }]))
+    throw new Error("unsafe-lab-admission-migration");
+  if (!exact(value.vars, labAdmissionVars)) throw new Error("unsafe-lab-admission-vars");
+  const vars = value.vars as Record<string, unknown>;
+  if (vars.ADMISSION_IDENTITY_MODE !== "google-lab" || vars.GOOGLE_OIDC_ISSUER !== "https://accounts.google.com" ||
+      vars.GOOGLE_OIDC_AUDIENCE !== `https://${LAB_RESOURCES.admissionHostname}`) throw new Error("unsafe-lab-admission-vars");
+  const key = vars.AUTHORITY_OPERATOR_PUBLIC_KEY;
+  if (template ? key !== "__REQUIRED_LAB_OPERATOR_ED25519_PUBLIC_KEY__" : typeof key !== "string" || key.startsWith("__REQUIRED_"))
+    throw new Error("unsafe-lab-admission-key");
+  if (!template) decodeCanonicalBase64url(key as string, 32);
+  if (!template) for (const name of ["GOOGLE_SERVICE_ACCOUNT_EMAIL", "GOOGLE_SERVICE_ACCOUNT_SUBJECT", "ADMISSION_CURRENT_RELEASE_ID",
+    "ADMISSION_CURRENT_KEY_ID", "ADMISSION_CURRENT_ACTIVATED_AT_MS"])
+    if (typeof vars[name] !== "string" || (vars[name] as string).startsWith("__REQUIRED_") || vars[name] === "") throw new Error("unsafe-lab-admission-vars");
+}
+
+/** Lab section of deployment/lifecycle-environment-gates.json. Pinned allowlist; provisioning stays closed until the project owner opens the lab gates. */
+export function validateLabEnvironmentGate(value: unknown): void {
+  const labFields = ["requestBucket", "resultBucket", "mailboxWorker", "observerWorker", "guardObject", "executorWorker", "admissionWorker", "authorityObject",
+    "publicHostname", "admissionHostname", "requestObjectRetentionHours", "resultObjectRetentionDays", "retentionLiveVerified", "rotationImplemented",
+    "requestCredentialScopeLiveVerified", "resultCredentialScopeLiveVerified", "provisioningOpen", "isolatedFromProduction", "productionProvisioningImplied"];
+  if (!exact(value, labFields)) throw new Error("unsafe-lifecycle-environments");
+  const lab = value as Record<string, unknown>;
+  for (const field of ["requestBucket", "resultBucket", "mailboxWorker", "observerWorker", "guardObject", "executorWorker", "admissionWorker", "authorityObject",
+    "publicHostname", "admissionHostname"] as const)
+    if (lab[field] !== LAB_RESOURCES[field]) throw new Error("unsafe-lifecycle-environments");
+  if (lab.requestObjectRetentionHours !== 24 || lab.resultObjectRetentionDays !== 30 || lab.retentionLiveVerified !== false ||
+      lab.rotationImplemented !== false || lab.requestCredentialScopeLiveVerified !== false || lab.resultCredentialScopeLiveVerified !== false ||
+      lab.provisioningOpen !== false || lab.isolatedFromProduction !== true || lab.productionProvisioningImplied !== false)
+    throw new Error("unsafe-lifecycle-environments");
 }

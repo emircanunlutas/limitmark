@@ -1,0 +1,8 @@
+# Lab environment: rendered operator-local instances of the tracked lab templates (they hold the account id and PUBLIC keys only). Never commit.
+# Kept here (not in the root .gitignore) so the root list that tests/lab-bootstrap.test.ts compares with the parity image's build-context exclusions is unchanged.
+lifecycle-transport.lab.json
+authority-result-trust.lab.json
+lifecycle-mailbox.lab.jsonc
+lifecycle-observer.lab.jsonc
+operator-lifecycle-executor.lab.jsonc
+admission-service.lab.jsonc

@@ -27,13 +27,13 @@ Cloudflare Durable Object, which gate F exercises.
 
 The authority answers `unavailable` until an operator-signed `initialize` is applied. The reviewed path (R2 request bucket -> cron mailbox with one-shot DispatchGuard -> operator executor -> admission Worker, with an
 Authority attestation signer) is **mandatory** and is specified, with its dependency graph, trust-chain test results, key generation, delivery, verification and partial-failure recovery, in `AUTHORITY-BOOTSTRAP.md`.
-Decisions that remain with the project owner: a **dedicated Cloudflare account** (the reviewed validators pin the "production" Worker and bucket names, so the lab must not share an account with real production Workers) and approval of the Cloudflare resources listed there.
+Since 3P.6 the lab is an isolated `lab` environment inside the **existing** Cloudflare account and `limitmark.com` zone (owner decision; no second account): every Worker, Durable Object class, bucket, key and authority id has a lab-only name pinned by lab validators, and Production and staging stay closed. The exact manifest, permissions, DNS/route requirements and sequence are in `LAB-ENVIRONMENT.md`. Decisions that remain with the project owner: approval of that manifest and of each Cloudflare creation step.
 
 ### 0.3 Ordered gate overview (no circular dependencies)
 
 | # | Gate | Depends on | Public traffic possible? | Rollback boundary |
 | --- | --- | --- | --- | --- |
-| P0 | Cloudflare account decision, Turnstile widget, operator workstation + keygen | owner | no | delete widget/keys |
+| P0 | Lab environment manifest approval (`LAB-ENVIRONMENT.md`), dedicated lab API token, DNS/SSL read-only checks, Turnstile widget for `lab.limitmark.com`, operator workstation + keygen | owner | no | delete token/widget/keys |
 | A | GCP secrets (11) | P0 | no | disable versions, delete key |
 | B | Images pushed (digests) | none | no | delete images |
 | C | Cloud Run applied (6 resources); fails closed (404/503/ingress 4xx) without Workers | A, B | no (IAM-protected) | destroy 6 resources |
@@ -62,7 +62,7 @@ Observed on 2026-11-07 (read-only): no project-level `roles/run.invoker`, `servi
 ## 2. Step 1 - Real Turnstile widget [CF] [OWNER for account access]
 
 1. Cloudflare dashboard -> **Turnstile** -> **Add widget** (account-level, not tied to a Worker).
-2. Name `limitmark-lab`. **Hostname management:** add exactly the lab public hostname (the value of `lab_public_hostname`; no wildcard, no `localhost`, no `run.app` host). The app additionally checks the
+2. Name `limitmark-lab`. **Hostname management:** add exactly `lab.limitmark.com` (the value of `lab_public_hostname`; no wildcard, no `localhost`, no `run.app` host, not any earlier lab hostname). The app additionally checks the
    `hostname` field of the verification response against `LAB_TURNSTILE_EXPECTED_HOSTNAME`.
 3. Widget mode: Managed (default). Pre-clearance off.
 4. Copy the **site key** (public) and **secret key** (shown once). Never use Cloudflare's published dummy test keys: `createLaboratoryRuntimeDependencies` rejects the known ones.
@@ -159,7 +159,7 @@ Preferred: a one-off Cloud Run **job** from the same image, SA and VPC running a
 **E0** - follow `AUTHORITY-BOOTSTRAP.md` sections 3.1-3.8 end to end. Gate: `authority:result --kind lifecycle` returns **POSITIVE**, and the negative (unauthorized-command) test was run first. Do not continue otherwise.
 
 **E1** - signer Worker (the only public Worker):
-1. Render `public-signer.cloud-run-lab.template.jsonc` (hostnames, audience, deployment id, signing key id). Secrets via `wrangler secret put`: `LAB_INGRESS_SIGNING_PRIVATE_KEY`, `LAB_INGRESS_IDENTITY_HMAC_KEY`, `LAB_PUBLIC_ORIGIN_SECRET`, `LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS` (the key from Step 3, piped directly).
+1. Render `public-signer.cloud-run-lab.template.jsonc` (public hostname `lab.limitmark.com`, audience, deployment id, signing key id; route `lab.limitmark.com/*` in zone `limitmark.com`). Secrets via `wrangler secret put`: `LAB_INGRESS_SIGNING_PRIVATE_KEY`, `LAB_INGRESS_IDENTITY_HMAC_KEY`, `LAB_PUBLIC_ORIGIN_SECRET`, `LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS` (the key from Step 3, piped directly).
 2. `wrangler deploy --dry-run`, deploy, then attach the route `LAB_PUBLIC_HOSTNAME/*` last. Before the route exists the hostname must return the Cloudflare default response, never the origin.
 Rollback: `wrangler rollback` or detach the route.
 
@@ -193,7 +193,7 @@ Acceptance: all healthy runs 100 % success for static and valid scenarios, zero 
 | Invoker SA key creation and rotation | yes | no |
 | Image push to Artifact Registry | yes | no |
 | `terraform apply` (6 resources) and Cloud Run job | yes | no |
-| Dedicated Cloudflare account decision; Turnstile widget | yes | yes |
+| Lab environment manifest approval and dedicated lab API token; Turnstile widget | yes | yes |
 | R2 buckets and two scoped R2 tokens; admission, executor, mailbox Workers and their secrets (E0) | yes | yes |
 | Operator keygen, signed initialization command and its submission | yes (operator key custody) | R2 write token |
 | Signer Worker, its secrets and public route (E1) | yes | yes |

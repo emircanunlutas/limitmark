@@ -12,6 +12,7 @@ import {
   ADMISSION_AUTHORITY_ID,
   ADMISSION_POLICY_EPOCH,
   STAGING_ADMISSION_AUTHORITY_ID,
+  LAB_ADMISSION_AUTHORITY_ID,
   inspectLifecycleAuthority,
   type DurableStorageLike,
   type LifecycleReceipt,
@@ -84,6 +85,8 @@ export interface AuthorityAttestationIdentity {
 }
 export const PRODUCTION_ATTESTATION_IDENTITY: AuthorityAttestationIdentity = Object.freeze({
   environment: "production", authorityId: ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH });
+export const LAB_ATTESTATION_IDENTITY: AuthorityAttestationIdentity = Object.freeze({
+  environment: "lab", authorityId: LAB_ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH });
 export const STAGING_ATTESTATION_IDENTITY: AuthorityAttestationIdentity = Object.freeze({
   environment: "staging", authorityId: STAGING_ADMISSION_AUTHORITY_ID, policyEpoch: ADMISSION_POLICY_EPOCH });
 

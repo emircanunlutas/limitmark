@@ -37,7 +37,7 @@ test("no project-level or broad impersonation or public invocation grants exist"
 });
 
 test("admission Worker audience equals the Cloud Run admission audience, not the origin audience", () => {
-  const template = JSON.parse(read("deployment/admission-service.cloud-run-lab.template.jsonc")
+  const template = JSON.parse(read("deployment/admission-service.lab.template.jsonc")
     .split("\n").filter((line) => !line.trim().startsWith("//")).join("\n")) as {
     routes: Array<{ pattern: string }>; vars: Record<string, string>;
   };

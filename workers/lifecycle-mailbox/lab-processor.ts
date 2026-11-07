@@ -1,0 +1,51 @@
+import type { R2Bucket } from "@cloudflare/workers-types";
+import type { GuardOutcome } from "./dispatch-guard";
+import { unsignedDiagnostic } from "../../operator/attested-relay";
+import { boundedResult, parseControl, publishSignedEnvelope, readBounded } from "./wire";
+
+// Lab (third environment) capability. Only "initialize.json" is ever read here — there
+// is deliberately no lab "rotate-release.json" handling anywhere in this
+// file (LAB ROTATION — NOT IMPLEMENTED / GATE 9 — CLOSED): even a
+// misdelivered rotate artifact in the lab request bucket is never read.
+
+export type LabGuardStub = {
+  processInitialization(artifact: string): Promise<GuardOutcome>;
+  settle(digest: string): Promise<{ version: 1; settled: boolean }>;
+};
+export type LabMailboxEnvironment = {
+  REQUEST_BUCKET: R2Bucket;
+  RESULT_BUCKET: R2Bucket;
+  DISPATCH_GUARD: { getByName(name: string): LabGuardStub };
+};
+
+export async function publishLab(bucket: R2Bucket, key: string, value: object): Promise<void> {
+  if (await bucket.head(key)) return;
+  const written = await bucket.put(key, boundedResult(value));
+  if (!written || typeof written !== "object" || written.key !== key)
+    throw new Error("result-publication-unconfirmed");
+}
+
+export async function processLabInitializationSlot(env: LabMailboxEnvironment): Promise<void> {
+  const bytes = await readBounded(await env.REQUEST_BUCKET.get("initialize.json"), 4_096);
+  if (!bytes) return;
+  const artifact = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  if (artifact.charCodeAt(0) === 0xfeff) return;
+  const guard = env.DISPATCH_GUARD.getByName("lab-lifecycle-dispatch-v1");
+  const outcome = await guard.processInitialization(artifact);
+  if (!/^[a-f0-9]{64}$/u.test(outcome.digest)) return;
+  const resultKey = `lifecycle/${outcome.digest}.json`;
+  // Signed evidence is stored as the Authority's exact bytes; everything else is an unsigned, never-positive diagnostic.
+  if (outcome.status === "ATTESTED") await publishSignedEnvelope(env.RESULT_BUCKET, resultKey, outcome.envelope);
+  else if (outcome.status !== "UNAVAILABLE" && outcome.reason !== "consumed")
+    await publishLab(env.RESULT_BUCKET, resultKey, unsignedDiagnostic(outcome.digest, outcome.status, outcome.reason));
+}
+
+export async function processLabSettlement(env: LabMailboxEnvironment): Promise<void> {
+  const bytes = await readBounded(await env.REQUEST_BUCKET.get("settle.json"), 1_024);
+  if (!bytes) return;
+  const control = parseControl(bytes);
+  const outcome = await env.DISPATCH_GUARD.getByName("lab-lifecycle-dispatch-v1").settle(control.digest);
+  await publishLab(env.RESULT_BUCKET, `settlement/${control.nonce}.json`, { ...outcome, digest: control.digest,
+    nonce: control.nonce, environment: "lab", authorityId: "lab-public-inquiries-v1", policyEpoch: "phase5c-i1-epoch-1",
+    observedAtMs: Date.now() });
+}

@@ -3,6 +3,7 @@ import {
   ADMISSION_AUTHORITY_ID,
   ADMISSION_POLICY_EPOCH,
   STAGING_ADMISSION_AUTHORITY_ID,
+  LAB_ADMISSION_AUTHORITY_ID,
   initializeAuthority,
   rotateAuthorityRelease,
   type AuthorityInitialization,
@@ -23,8 +24,8 @@ export const AUTHORITY_OPERATOR_COMMAND_VERSION = "limitmark-authority-operator-
 export type AuthorityInitializationCommand = readonly [
   version: typeof AUTHORITY_OPERATOR_COMMAND_VERSION,
   operation: "initialize",
-  environment: "production" | "staging",
-  authorityId: typeof ADMISSION_AUTHORITY_ID | typeof STAGING_ADMISSION_AUTHORITY_ID,
+  environment: "production" | "staging" | "lab",
+  authorityId: typeof ADMISSION_AUTHORITY_ID | typeof STAGING_ADMISSION_AUTHORITY_ID | typeof LAB_ADMISSION_AUTHORITY_ID,
   policyEpoch: typeof ADMISSION_POLICY_EPOCH,
   releaseId: string,
   releaseKeyId: string,
@@ -59,10 +60,11 @@ export function canonicalOperatorCommandBytes(command: AuthorityOperatorCommand)
     // staging-flagged command can never validate against the Production
     // authority object, and vice versa (Gate 2: environment isolation).
     const expectedAuthorityId = command[2] === "production" ? ADMISSION_AUTHORITY_ID :
-      command[2] === "staging" ? STAGING_ADMISSION_AUTHORITY_ID : undefined;
+      command[2] === "staging" ? STAGING_ADMISSION_AUTHORITY_ID :
+      command[2] === "lab" ? LAB_ADMISSION_AUTHORITY_ID : undefined;
     if (command.length !== 9 || expectedAuthorityId === undefined || command[3] !== expectedAuthorityId || !validRelease(command[5]) ||
         !validKeyId(command[6]) || !validTime(command[7]) || typeof command[8] !== "boolean" ||
-        command[2] === "production" && command[8] !== true) throw new Error("operator-command");
+        command[2] === "production" && command[8] !== true || command[2] === "lab" && command[8] !== false) throw new Error("operator-command");
   } else if (command[1] === "rotate-release") {
     // Rotation remains Production-only. Staging rotation is NOT IMPLEMENTED
     // (Gate 9 — CLOSED); no staging environment/authority value is accepted here.
@@ -137,7 +139,7 @@ async function receiptBase(command: AuthorityOperatorCommand, operatorPublicKey:
 export type BeforeLifecycleFreshness = () => Promise<void>;
 
 export async function executeSignedAuthorityInitialization(storage: DurableStorageLike, command: AuthorityInitializationCommand, signature: string,
-  operatorPublicKey: string, nowMs: number, expectedEnvironment: "production" | "staging" = "production",
+  operatorPublicKey: string, nowMs: number, expectedEnvironment: "production" | "staging" | "lab" = "production",
   finalNow: () => number = () => nowMs, preflight?: BeforeLifecycleFreshness): Promise<{ status: "initialized" | "already-initialized"; receipt?: LifecycleReceipt }> {
   if (command[2] !== expectedEnvironment) throw new Error("operator-environment");
   await verifyOperatorCommand(command, signature, operatorPublicKey);
@@ -149,7 +151,8 @@ export async function executeSignedAuthorityInitialization(storage: DurableStora
   if (!Number.isSafeInteger(observed) || Math.abs(observed - command[7]) > 5 * 60_000) throw new Error("operator-command-freshness");
   const specification: AuthorityInitialization = { environment: command[2], authorityId: command[3], policyEpoch: command[4], releaseId: command[5],
     releaseKeyId: command[6], nowMs: command[7], confirmProduction: command[8] };
-  const expectedAuthorityId = expectedEnvironment === "staging" ? STAGING_ADMISSION_AUTHORITY_ID : ADMISSION_AUTHORITY_ID;
+  const expectedAuthorityId = expectedEnvironment === "staging" ? STAGING_ADMISSION_AUTHORITY_ID :
+    expectedEnvironment === "lab" ? LAB_ADMISSION_AUTHORITY_ID : ADMISSION_AUTHORITY_ID;
   return initializeAuthority(storage, specification, { ...receipt, appliedMs: observed }, { expectedAuthorityId });
 }
 

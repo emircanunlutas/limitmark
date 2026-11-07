@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "attestationVersion": 2,
+  "trustEpoch": 1,
+  "environments": [
+    {
+      "environment": "lab",
+      "authorityId": "lab-public-inquiries-v1",
+      "policyEpoch": "phase5c-i1-epoch-1",
+      "currentKeyFingerprint": "__REQUIRED_LAB_WRITER_KEY_FINGERPRINT__",
+      "keys": [
+        {
+          "keyFingerprint": "__REQUIRED_LAB_WRITER_KEY_FINGERPRINT__",
+          "publicKey": "__REQUIRED_LAB_WRITER_ED25519_PUBLIC_KEY__",
+          "status": "active",
+          "notBeforeMs": "__REQUIRED_LAB_NOT_BEFORE_MS__",
+          "notAfterMs": null
+        }
+      ]
+    }
+  ]
+}

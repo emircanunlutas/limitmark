@@ -1,12 +1,13 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { importAdmissionRpcKey } from "../../src/lib/admission-protocol";
-import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID, inspectLifecycleAuthority, PublicInquiryAdmissionAuthority, type DurableStorageLike } from "./authority";
+import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID, LAB_ADMISSION_AUTHORITY_ID, inspectLifecycleAuthority, PublicInquiryAdmissionAuthority, type DurableStorageLike } from "./authority";
 import type { AuthorityInitializationCommand, AuthorityReleaseRotationCommand } from "./operator-command";
 import {
   AuthorityAttestationCoordinator,
   PRODUCTION_ATTESTATION_IDENTITY,
   STAGING_ATTESTATION_IDENTITY,
+  LAB_ATTESTATION_IDENTITY,
   type AttestedLifecycleResult,
   type AttestedReconciliationResult,
   type AttestedRecoveryResult,
@@ -48,6 +49,7 @@ export type AdmissionServiceEnvironment = {
   /** R06 signer bindings (secret channel). Each Authority class reads only its own environment's names; see authority-attestation-config.ts. */
   AUTHORITY_ATTESTATION_PRIVATE_KEY?: string; AUTHORITY_ATTESTATION_PUBLIC_KEY?: string; AUTHORITY_ATTESTATION_KEY_FINGERPRINT?: string;
   AUTHORITY_STAGING_ATTESTATION_PRIVATE_KEY?: string; AUTHORITY_STAGING_ATTESTATION_PUBLIC_KEY?: string; AUTHORITY_STAGING_ATTESTATION_KEY_FINGERPRINT?: string;
+  AUTHORITY_LAB_ATTESTATION_PRIVATE_KEY?: string; AUTHORITY_LAB_ATTESTATION_PUBLIC_KEY?: string; AUTHORITY_LAB_ATTESTATION_KEY_FINGERPRINT?: string;
 };
 
 /** Production RPC adapter. Business/state-machine logic remains in the reviewed
@@ -118,7 +120,8 @@ const runtimeSecretsValid = (environment: AdmissionServiceEnvironment): boolean 
 const RUNTIME_CONFIG_UNAVAILABLE = { status: "UNAVAILABLE", reason: "runtime-config-invalid" } as const;
 
 let handlerPromise: Promise<(request: Request) => Promise<Response>> | undefined;
-async function configure(environment: AdmissionServiceEnvironment) {
+let labHandlerPromise: Promise<(request: Request) => Promise<Response>> | undefined;
+async function configure(environment: AdmissionServiceEnvironment, authorityId: typeof ADMISSION_AUTHORITY_ID | typeof LAB_ADMISSION_AUTHORITY_ID = ADMISSION_AUTHORITY_ID) {
   const releases: AdmissionServiceRelease[] = [{ role: "current", releaseId: environment.ADMISSION_CURRENT_RELEASE_ID,
     keyId: environment.ADMISSION_CURRENT_KEY_ID, rpcKey: await importAdmissionRpcKey(environment.ADMISSION_CURRENT_RPC_KEY),
     activatedAtMs: Number(environment.ADMISSION_CURRENT_ACTIVATED_AT_MS) }];
@@ -129,7 +132,7 @@ async function configure(environment: AdmissionServiceEnvironment) {
     releases.push({ role: "previous", releaseId: previousValues[0]!, keyId: previousValues[1]!, rpcKey: await importAdmissionRpcKey(previousValues[2]!),
       activatedAtMs: Number(previousValues[3]), retireAtMs: Number(previousValues[4]) });
   }
-  const authority = environment.AUTHORITY.getByName(ADMISSION_AUTHORITY_ID);
+  const authority = environment.AUTHORITY.getByName(authorityId);
   if (environment.ADMISSION_IDENTITY_MODE === "google-lab") {
     if (environment.VERCEL_OIDC_ISSUER || environment.VERCEL_OIDC_AUDIENCE || environment.VERCEL_OIDC_SUBJECT ||
         environment.VERCEL_OWNER_ID || environment.VERCEL_PROJECT_ID ||
@@ -155,6 +158,18 @@ export class AdmissionServiceWorker extends WorkerEntrypoint<AdmissionServiceEnv
     try {
       if (!runtimeSecretsValid(this.env)) throw new Error("admission-secret-policy");
       handlerPromise ??= configure(this.env); return await (await handlerPromise)(request);
+    }
+    catch { return Response.json({ decision: "unavailable" }, { status: 503 }); }
+  }
+}
+
+/** Lab public admission fetch (third environment): identical gate and handler, but the Authority is always the lab authority and the
+ * handler cache is separate. Only the lab entry module (lab-index.ts) exports it; the Production Worker never addresses the lab id. */
+export class LabAdmissionServiceWorker extends WorkerEntrypoint<AdmissionServiceEnvironment> {
+  override async fetch(request: Request): Promise<Response> {
+    try {
+      if (!runtimeSecretsValid(this.env)) throw new Error("admission-secret-policy");
+      labHandlerPromise ??= configure(this.env, LAB_ADMISSION_AUTHORITY_ID); return await (await labHandlerPromise)(request);
     }
     catch { return Response.json({ decision: "unavailable" }, { status: 503 }); }
   }
@@ -271,6 +286,71 @@ export class StagingAuthorityLifecycleReadOnly extends WorkerEntrypoint<Admissio
   async attestReconciliation(digest: string, nonce: string): Promise<AttestedReconciliationResult | typeof RUNTIME_CONFIG_UNAVAILABLE> {
     if (!runtimeSecretsValid(this.env)) return RUNTIME_CONFIG_UNAVAILABLE;
     return this.env.AUTHORITY.getByName(STAGING_ADMISSION_AUTHORITY_ID).attestReconciliation(digest, nonce);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Laboratory capability (third environment, additive). A physically separate Durable Object class and entrypoints pinned to
+// LAB_ADMISSION_AUTHORITY_ID, deployed as a separate rendered lab admission Worker with its own AUTHORITY namespace. The lab
+// entrypoints can never address the Production or staging authority ids, and the Production/staging entrypoints above can never
+// address the lab id. Lab rotation is NOT IMPLEMENTED (refused, like staging). Lab never reads another environment's signer bindings.
+// ---------------------------------------------------------------------------
+
+/** Lab RPC adapter: structurally identical to StagingAdmissionAuthority except for its pinned lab identity. */
+export class LabAdmissionAuthority extends DurableObject<AdmissionServiceEnvironment> {
+  private readonly operatorPublicKey: string;
+  private readonly authority: PublicInquiryAdmissionAuthority;
+  private readonly durableStorage: DurableStorageLike;
+  private readonly attestation: AuthorityAttestationCoordinator;
+  constructor(state: DurableObjectState, environment: AdmissionServiceEnvironment, attestationRuntime?: AuthorityAttestationRuntime) {
+    super(state, environment);
+    this.durableStorage = state.storage as unknown as DurableStorageLike;
+    // The data-plane core must serve the LAB identity (it defaults to the Production id and would answer unavailable for lab state).
+    this.authority = new PublicInquiryAdmissionAuthority({ storage: this.durableStorage },
+      { expectedAuthorityId: LAB_ADMISSION_AUTHORITY_ID, expectedPolicyEpoch: ADMISSION_POLICY_EPOCH });
+    this.operatorPublicKey = environment.AUTHORITY_OPERATOR_PUBLIC_KEY;
+    this.attestation = new AuthorityAttestationCoordinator(this.durableStorage, LAB_ATTESTATION_IDENTITY, this.operatorPublicKey,
+      attestationRuntime ?? authorityAttestationRuntimeFromEnvironment("lab", environment));
+  }
+  async initializeFromOperatorAttested(command: AuthorityInitializationCommand, signature: string) {
+    return this.attestation.initialize(command, signature);
+  }
+  async attestAppliedLifecycle(digest: string) { return this.attestation.attestAppliedLifecycle(digest); }
+  async attestReconciliation(digest: string, nonce: string) { return this.attestation.attestReconciliation(digest, nonce); }
+  /** LAB ROTATION - NOT IMPLEMENTED. No parsing, verification or storage access; every call fails closed. */
+  async rotateReleaseFromOperator(): Promise<{ status: "refused" }> { return { status: "refused" }; }
+  async inspectLifecycle(digest: string) {
+    return inspectLifecycleAuthority(this.durableStorage, digest, Date.now(), LAB_ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH);
+  }
+  async claimPre(input: Parameters<PublicInquiryAdmissionAuthority["claimPre"]>[0]) { return this.authority.claimPre(input); }
+  async consumePost(input: Parameters<PublicInquiryAdmissionAuthority["consumePost"]>[0]) { return this.authority.consumePost(input); }
+  override async alarm(): Promise<void> { await this.authority.alarm(); }
+}
+
+/** Lab executor binds only this entrypoint; lifecycle-only surface pinned to the distinct lab authority. */
+export class LabAuthorityLifecycleOnly extends WorkerEntrypoint<AdmissionServiceEnvironment> {
+  override fetch(): Response { return new Response(null, { status: 404 }); }
+  async initializeAuthorityFromOperatorAttested(command: AuthorityInitializationCommand, signature: string) {
+    if (!runtimeSecretsValid(this.env)) throw new Error("admission-secret-policy");
+    return this.env.AUTHORITY.getByName(LAB_ADMISSION_AUTHORITY_ID).initializeFromOperatorAttested(command, signature);
+  }
+  /** LAB ROTATION - NOT IMPLEMENTED. */
+  async rotateAuthorityReleaseFromOperator(): Promise<{ status: "refused" }> { return { status: "refused" }; }
+}
+
+/** Narrow lab read capability: one fixed lab authority, SELECT-only. */
+export class LabAuthorityLifecycleReadOnly extends WorkerEntrypoint<AdmissionServiceEnvironment> {
+  override fetch(): Response { return new Response(null, { status: 404 }); }
+  async inspectLifecycle(digest: string) {
+    return this.env.AUTHORITY.getByName(LAB_ADMISSION_AUTHORITY_ID).inspectLifecycle(digest);
+  }
+  async attestAppliedLifecycle(digest: string): Promise<AttestedRecoveryResult | typeof RUNTIME_CONFIG_UNAVAILABLE> {
+    if (!runtimeSecretsValid(this.env)) return RUNTIME_CONFIG_UNAVAILABLE;
+    return this.env.AUTHORITY.getByName(LAB_ADMISSION_AUTHORITY_ID).attestAppliedLifecycle(digest);
+  }
+  async attestReconciliation(digest: string, nonce: string): Promise<AttestedReconciliationResult | typeof RUNTIME_CONFIG_UNAVAILABLE> {
+    if (!runtimeSecretsValid(this.env)) return RUNTIME_CONFIG_UNAVAILABLE;
+    return this.env.AUTHORITY.getByName(LAB_ADMISSION_AUTHORITY_ID).attestReconciliation(digest, nonce);
   }
 }
 
