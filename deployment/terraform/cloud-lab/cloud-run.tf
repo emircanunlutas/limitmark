@@ -25,6 +25,12 @@ resource "google_cloud_run_v2_service" "lab" {
     timeout                          = "30s"
     max_instance_request_concurrency = 2
 
+    # Secret versions are referenced as "latest" and resolved only when an instance starts. Bumping this marker is the Terraform-managed way to
+    # create a new revision (no image, env, IAM or network change) after a Secret Manager version changes, without unmanaged drift.
+    labels = {
+      limitmark-secret-refresh = "ingress-public-keys-v2"
+    }
+
     scaling {
       min_instance_count = 0
       max_instance_count = 2
