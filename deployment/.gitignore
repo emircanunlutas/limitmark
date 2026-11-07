@@ -6,3 +6,4 @@ lifecycle-mailbox.lab.jsonc
 lifecycle-observer.lab.jsonc
 operator-lifecycle-executor.lab.jsonc
 admission-service.lab.jsonc
+public-signer.cloud-run-lab.jsonc

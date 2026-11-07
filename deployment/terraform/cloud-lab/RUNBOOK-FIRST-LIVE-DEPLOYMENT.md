@@ -141,7 +141,7 @@ Verified in configuration and tests: digest-pinned images only; dedicated `limit
 returns 404/503 for missing runtime configuration; no health probe masks fail-closed states. Residual note: `ingress = ALL` is needed because Cloudflare reaches the `run.app` URL; bypass resistance rests on IAM plus
 the application gates, not on network reachability.
 
-Cold start (expected, measure at gate D): the ~1.1 GB application image is pulled on every new instance; Direct VPC egress attaches on the first request; the collector starts first (`depends_on`), the app's TCP startup
+Cold start (expected, measure at gate D): the ~1.1 GB application image is pulled on every new instance; Direct VPC egress attaches on the first request; the collector is NOT a startup dependency (no `depends_on`/probe: the loopback-only OTLP receiver cannot be reached by a platform startup probe, and application availability must not depend on telemetry; decision 2026-11-07), the app's TCP startup
 probe passes as soon as Next listens (~150 ms after process start), and the first PostgreSQL connection pays TLS and a 5 s `connect_timeout` ceiling. Min instances is 0, so the first request after idle may take several seconds and
 the signer may see a slow origin; the request timeout is 30 s and per-instance concurrency 2 (max 2 instances = at most 4 in-flight requests). Risk: 512 Mi for the Next server plus pool of 5 connections is untested under load -
 watch container memory in the baseline and raise limits before defensive testing if utilisation exceeds ~70 %. Request-based CPU lets the collector stall between requests; metric gaps are not loss.
@@ -159,7 +159,7 @@ Preferred: a one-off Cloud Run **job** from the same image, SA and VPC running a
 **E0** - follow `AUTHORITY-BOOTSTRAP.md` sections 3.1-3.8 end to end. Gate: `authority:result --kind lifecycle` returns **POSITIVE**, and the negative (unauthorized-command) test was run first. Do not continue otherwise.
 
 **E1** - signer Worker (the only public Worker):
-1. Render `public-signer.cloud-run-lab.template.jsonc` (public hostname `lab.limitmark.com`, audience, deployment id, signing key id; route `lab.limitmark.com/*` in zone `limitmark.com`). Secrets via `wrangler secret put`: `LAB_INGRESS_SIGNING_PRIVATE_KEY`, `LAB_INGRESS_IDENTITY_HMAC_KEY`, `LAB_PUBLIC_ORIGIN_SECRET`, `LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS` (the key from Step 3, piped directly).
+1. Render `public-signer.cloud-run-lab.template.jsonc` (public hostname `lab.limitmark.com`, audience, deployment id, signing key id; Worker **custom domain** `lab.limitmark.com`: the available OAuth token cannot create DNS records or read zones, so a zone route cannot be used). Secrets via `wrangler secret put`: `LAB_INGRESS_SIGNING_PRIVATE_KEY`, `LAB_INGRESS_IDENTITY_HMAC_KEY`, `LAB_PUBLIC_ORIGIN_SECRET`, `LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS` (the key from Step 3, piped directly).
 2. `wrangler deploy --dry-run`, deploy, then attach the route `LAB_PUBLIC_HOSTNAME/*` last. Before the route exists the hostname must return the Cloudflare default response, never the origin.
 Rollback: `wrangler rollback` or detach the route.
 

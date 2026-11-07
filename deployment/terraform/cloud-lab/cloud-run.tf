@@ -43,7 +43,8 @@ resource "google_cloud_run_v2_service" "lab" {
       name  = "app"
       image = var.cloud_run_image
 
-      depends_on = ["collector"]
+      # No depends_on: application availability must not depend on collector readiness (owner decision 2026-11-07). The collector
+      # receiver stays loopback-only (127.0.0.1:4318), which a platform startup probe cannot reach, so a probe/depends_on pair cannot work.
 
       ports {
         container_port = 8080
@@ -56,10 +57,7 @@ resource "google_cloud_run_v2_service" "lab" {
         }
       }
 
-      env {
-        name  = "PORT"
-        value = "8080"
-      }
+      # PORT is reserved: Cloud Run injects it from ports.container_port (8080). Setting it explicitly is rejected at create time.
       env {
         name  = "LIMITMARK_RUNTIME"
         value = "cloud-run-lab"

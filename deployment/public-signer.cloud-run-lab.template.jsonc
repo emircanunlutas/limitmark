@@ -6,7 +6,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "routes": [
-    { "pattern": "LAB_PUBLIC_HOSTNAME/*", "zone_name": "LAB_PUBLIC_ZONE" }
+    { "pattern": "__REQUIRED_LAB_PUBLIC_HOSTNAME__", "custom_domain": true }
   ],
   "vars": {
     "LAB_PUBLIC_HOSTNAME": "__REQUIRED_LAB_PUBLIC_HOSTNAME__",

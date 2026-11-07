@@ -47,9 +47,13 @@ const laboratoryIngressSignerWorker = {
       signingPrivateKeyPkcs8: environment.LAB_INGRESS_SIGNING_PRIVATE_KEY,
       identityHmacKey: environment.LAB_INGRESS_IDENTITY_HMAC_KEY,
       originSecret: environment.LAB_PUBLIC_ORIGIN_SECRET,
-      cloudRunAuthorizationToken: createGoogleIdTokenProvider(
-        environment.LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS,
-        `https://${environment.LAB_ORIGIN_HOSTNAME}`,
+      // The provider returns the bare ID token; Cloud Run requires the "Bearer " scheme on x-serverless-authorization
+      // (found at the first live request, 2026-11-07: the unprefixed value was rejected with 401 by Cloud Run IAM).
+      cloudRunAuthorizationToken: ((getToken: () => Promise<string>) => async () => `Bearer ${await getToken()}`)(
+        createGoogleIdTokenProvider(
+          environment.LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS,
+          `https://${environment.LAB_ORIGIN_HOSTNAME}`,
+        ),
       ),
     });
     return configuredHandler(request);

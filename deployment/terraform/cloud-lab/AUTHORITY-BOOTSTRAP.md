@@ -129,3 +129,22 @@ The recovery rows above are derived from the code paths and tests; none has been
 - Boundary 2 (authority): delete the lab admission Worker (and its DO namespace) - lab admission stops (fail closed); the application keeps rejecting submissions with the generic state.
 - Boundary 3 (keys): delete private key files, delete lab Worker secrets. Public keys in config may remain.
 - Every rollback targets lab-named resources only; none touches a staging or Production resource.
+
+## 5. Live execution record, 2026-11-07 (Phase 3P.7)
+
+### 5.1 Temporary transport deviation (Wrangler OAuth) - NOT a permanent dependency
+- **What happened:** the available Cloudflare session was a broad `wrangler login` OAuth token. It cannot create R2 S3 API tokens (HTTP 403 on token/permission-group endpoints), so section 3.3 step 3 could not be done. The signed
+  command bytes were therefore delivered with `wrangler r2 object put limitmark-lifecycle-requests-lab/initialize.json --remote`, and results were read with `wrangler r2 object get ... --remote` and verified by the unchanged
+  reviewed `readLabAuthorityResult` against `authority-result-trust.lab.json` (the stored object stays untrusted transport data). No reviewed CLI, trust rule or signature check was changed or bypassed.
+- **Weakness vs the designed transport:** the OAuth session can read/write every bucket in the account, whereas the designed tokens are scoped to one lab bucket each. The deviation was used for one negative test and two initialization
+  uploads and must not be repeated.
+- **Least-privilege approach for all later operations (owner action, one time):** in the Cloudflare dashboard (R2 -> Manage API tokens) create two tokens: **request** = "Object Read & Write" restricted to bucket
+  `limitmark-lifecycle-requests-lab` (R2 has no write-only permission; the lab tooling only ever PUTs), **result** = "Object Read only" restricted to `limitmark-lifecycle-results-lab`; no TTL beyond 90 days, no IP wildcard if the
+  operator IP is stable. Save each as `{"accessKeyId","secretAccessKey"}` outside the repository and use `--request-credentials` / `--result-credentials`. Then run `npx wrangler logout` and delete the OAuth token from
+  the workstation. Do not mint these through the OAuth session.
+- Because the lab initialization is one-shot and immutable, no further lifecycle command is expected; the tokens are needed only for `settle`/future lab operations.
+
+### 5.2 Observed behaviour worth knowing
+- `wrangler r2 object get --file X` leaves a **0-byte X when the key does not exist**; test file size, not existence.
+- Pre-claim refusals (unsigned/foreign-key/expired command, or `UNAVAILABLE` authority-read) publish **no** result object by design (empty digest or `UNAVAILABLE`); absence of a result therefore cannot distinguish them. See the
+  investigation of the first real command (digest `478c4017...`) in the 3P.7 completion report: stage unresolved, no claim consumed.
