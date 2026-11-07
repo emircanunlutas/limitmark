@@ -4,6 +4,8 @@ Path: legitimate client -> Cloudflare admission (signer Worker, Turnstile, admis
 Every layer assumes the previous one failed: Cloud Run refuses callers without a Google ID token (IAM), the app independently verifies the signed ingress
 envelope, origin secret and request binding, and PostgreSQL accepts only TLS from the lab subnet with an INSERT-only role.
 
+> **Correction (3P.3):** the gate table below omits the admission authority initialization (operator-signed command; the Durable Object answers `unavailable` until initialized). It is gate E0 and is detailed, with the replay-protection findings, in `RUNBOOK-FIRST-LIVE-DEPLOYMENT.md` section 0.2. Replay protection itself is verified there.
+
 ## 1. Cloudflare-to-Google authentication decision
 
 | Option | Verified? | Verdict |

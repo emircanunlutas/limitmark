@@ -82,3 +82,12 @@ test("end-to-end runbook keeps key creation unapproved and gated", () => {
   for (const gate of ["| A |", "| B |", "| C |", "| D |", "| E |", "| F |", "| G |"]) assert.ok(e2e.includes(gate), gate);
   assert.equal(/ya29\.|BEGIN [A-Z ]*PRIVATE KEY/u.test(e2e), false);
 });
+
+test("the live-deployment runbook marks approvals, keeps the key uncreated and records the initialization blocker", () => {
+  const runbook = read("RUNBOOK-FIRST-LIVE-DEPLOYMENT.md");
+  for (const phrase of ["[OWNER]", "[CF]", "NOTHING here has been executed", "authority initialization", "Cryptographic binding is not replay prevention", "6 to add, 0 to change, 0 to destroy"]) {
+    assert.ok(runbook.toLowerCase().includes(phrase.toLowerCase()), phrase);
+  }
+  assert.equal(/ya29\.|BEGIN [A-Z ]*PRIVATE KEY|"private_key"\s*:/u.test(runbook), false);
+  assert.match(runbook, /Turnstile[\s\S]*none\*\* - the admission Worker/u);
+});
