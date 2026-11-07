@@ -146,3 +146,57 @@ Operator procedure and the commands are in `README.md` ("Operator access and CA 
   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` with the `cloud-init` host-key lines in the serial output.
 - Applying `drizzle/*.sql` with `psql` does not populate `drizzle.__drizzle_migrations`; rerun only new files.
 - The migrator password is not stored anywhere. Reset it with an `ALTER ROLE` file as above when migrations are needed.
+
+## State bucket access review (2026-11-07, read-only; nothing below has been applied)
+
+Effective access to `gs://limitmark-field-qual-1045646810362-tfstate`:
+
+| Principal | Path | Can read | Can write |
+| --- | --- | --- | --- |
+| `user:emircanunlutas1@gmail.com` | project `roles/owner` | yes | yes |
+| `1045646810362-compute@developer...` (default Compute SA) | project `roles/editor` | yes | yes, but see below |
+| Google service agents (Compute, Artifact Registry) | service-agent roles | no storage-object permissions | no |
+| `limitmark-lab-postgres`, `-app`, `-invoker` | none at project level | no | no |
+
+Facts that bound the exposure:
+
+- No organization or folder, no deny policies, no user-managed keys on the default Compute SA, public access prevention is enforced.
+- The bucket's own IAM only holds Google's default `projectOwner/Editor/Viewer` legacy bindings. Bucket IAM is additive, so editing it
+  **cannot** remove the access that project-level `roles/editor` grants; only a deny policy or removing the role can.
+- The default Compute SA is attached only to the terminated historical VMs `limitmark-client` and `limitmark-sut`. Their access scopes
+  include `devstorage.read_only`, so tokens from their metadata server could **read** state but not write it. Starting either VM (or any
+  process holding that SA's credentials outside the metadata server) would widen that.
+- State holds topology and the rendered bootstrap script text; a scan found no keys, tokens or passwords.
+
+Smallest safe remediation, in order of preference:
+
+1. **Bucket-scoped IAM deny policy** (`state-bucket-deny-policy.json`): denies the default Compute SA object and bucket access on this
+   bucket only. It leaves `roles/editor` and the historical VMs untouched. Needs the operator to hold `roles/iam.denyAdmin` first, which is
+   an IAM grant that this phase was not allowed to make. Permission names are checked by the API at creation time:
+
+   ```powershell
+   gcloud iam policies create tfstate-deny-default-compute --attachment-point="cloudresourcemanager.googleapis.com/projects/limitmark-field-qual" `
+     --kind=denypolicies --policy-file=state-bucket-deny-policy.json
+   gcloud iam policies get tfstate-deny-default-compute --attachment-point="cloudresourcemanager.googleapis.com/projects/limitmark-field-qual" --kind=denypolicies
+   ```
+
+   Verify afterwards: `gcloud storage ls gs://<bucket>` as the operator still works, and `terraform plan` still reports no changes.
+   Rollback: `gcloud iam policies delete tfstate-deny-default-compute --attachment-point=... --kind=denypolicies`.
+2. Remove `roles/editor` from the default Compute SA. Cleanest, but a project-wide IAM change and the historical VMs may rely on it:
+   needs explicit approval and a check against the frozen C1 procedures first.
+3. Move the state bucket to a dedicated project with no Editor service accounts. Strongest boundary, but a larger migration.
+
+## Maintenance procedures added in phase 3P.1
+
+- **Drizzle migration history** (`drizzle-schema-fingerprint.sql`, `drizzle-expected-schema.txt`, `drizzle-baseline.mjs`, `drizzle-reconcile.sh`).
+  drizzle-orm 0.45 keeps `drizzle.__drizzle_migrations (id serial, hash text, created_at bigint)`: `hash` is the SHA-256 of each migration file and
+  `created_at` the journal `when`; the migrator runs a file only when the latest `created_at` is lower than its journal `when`. The reconcile script
+  diffs the live schema fingerprint against the expected one (produced by a real `drizzle-kit migrate`), aborts on any difference or an empty result,
+  and only then records the history in one transaction (refusing to continue if unknown rows exist). It never changes application tables. Applied to the
+  live database on 2026-11-07: fingerprint identical (104 lines), 3 rows recorded, identical to what `drizzle-kit` itself writes; Drizzle would apply 0 of 3.
+  Regenerate the expected schema only together with a new migration.
+- **Certificate renewal** (`postgres-renew-cert.sh`, `test-renew-cert.sh`): see README "Certificate lifecycle". `test-renew-cert.sh` runs the real script
+  against a real PostgreSQL in a disposable container (18 checks: due, not due, wrong SAN, reload failure with rollback, expired CA fails closed, strict
+  `verify-full` client afterwards).
+- **State bucket access**: see "State bucket access review" above and `state-bucket-deny-policy.json`.
+- **Cloud Run stage**: see `STAGE4-CLOUD-RUN.md`.

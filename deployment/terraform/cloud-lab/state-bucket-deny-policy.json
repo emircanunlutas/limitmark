@@ -1,0 +1,26 @@
+{
+  "displayName": "Deny the default Compute Engine service account access to the Terraform state bucket",
+  "rules": [
+    {
+      "description": "roles/editor on this account must not grant read or write access to infrastructure state. The operator user is not listed.",
+      "denyRule": {
+        "deniedPrincipals": [
+          "principal://iam.googleapis.com/projects/-/serviceAccounts/1045646810362-compute@developer.gserviceaccount.com"
+        ],
+        "deniedPermissions": [
+          "storage.googleapis.com/objects.get",
+          "storage.googleapis.com/objects.list",
+          "storage.googleapis.com/objects.create",
+          "storage.googleapis.com/objects.update",
+          "storage.googleapis.com/objects.delete",
+          "storage.googleapis.com/buckets.update",
+          "storage.googleapis.com/buckets.delete"
+        ],
+        "denialCondition": {
+          "title": "Only the Terraform state bucket",
+          "expression": "resource.name.startsWith('projects/_/buckets/limitmark-field-qual-1045646810362-tfstate')"
+        }
+      }
+    }
+  ]
+}

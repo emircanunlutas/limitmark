@@ -41,11 +41,20 @@ resource "google_compute_instance" "postgres" {
     database_user  = var.postgres_database_user
     migration_user = var.postgres_migration_user
     subnet_cidr    = data.google_compute_subnetwork.lab.ip_cidr_range
+    renew_script   = file("${path.module}/postgres-renew-cert.sh")
   })
 
   scheduling {
     automatic_restart   = false
     on_host_maintenance = "MIGRATE"
+  }
+
+  lifecycle {
+    # Changing the startup script makes the provider REPLACE this stateful VM (its private IP, and with it
+    # the certificate SAN and the database URL secret, could change). Bootstrap edits therefore apply only
+    # to a rebuilt VM (terraform apply -replace=google_compute_instance.postgres) or are installed in place
+    # by the operator, as was done for the certificate renewal timer (see STAGES.md).
+    ignore_changes = [metadata_startup_script]
   }
 }
 

@@ -31,7 +31,22 @@ variable "cloud_run_service_name" {
 
 variable "cloud_run_image" {
   type        = string
-  description = "Immutable Artifact Registry image reference supplied at deployment time."
+  description = "Application image: Artifact Registry reference pinned by digest, supplied at deployment time."
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+-docker\\.pkg\\.dev/[a-z][a-z0-9-]+/limitmark/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", var.cloud_run_image))
+    error_message = "Use an Artifact Registry image in the 'limitmark' repository pinned by digest (name@sha256:<64 hex>); tags are mutable."
+  }
+}
+
+variable "otel_collector_image" {
+  type        = string
+  description = "OpenTelemetry collector sidecar image mirrored into Artifact Registry and pinned by digest (Cloud Run does not pull the mutable Docker Hub tag)."
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+-docker\\.pkg\\.dev/[a-z][a-z0-9-]+/limitmark/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", var.otel_collector_image))
+    error_message = "Mirror the collector into the 'limitmark' Artifact Registry repository and pin it by digest."
+  }
 }
 
 variable "lab_public_hostname" {

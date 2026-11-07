@@ -132,4 +132,36 @@ REVOKE ALL ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO "${database_user}";
 SQL
 
+# --- Periodic server-certificate renewal: a daily timer renews only when due and reloads (never restarts) PostgreSQL.
+install -o root -g root -m 0750 /dev/stdin /usr/local/sbin/limitmark-lab-renew-server-cert <<'RENEW_SCRIPT'
+${renew_script}
+RENEW_SCRIPT
+cat > /etc/systemd/system/limitmark-lab-cert-renew.service <<UNIT
+[Unit]
+Description=Renew the LimitMark laboratory PostgreSQL server certificate when due
+After=postgresql@$${PG_VERSION}-main.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/limitmark-lab-renew-server-cert
+SyslogIdentifier=limitmark-lab-cert
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+UNIT
+cat > /etc/systemd/system/limitmark-lab-cert-renew.timer <<UNIT
+[Unit]
+Description=Daily check of the LimitMark laboratory PostgreSQL server certificate
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now limitmark-lab-cert-renew.timer
+
 echo "PostgreSQL ready on the private laboratory interface; set role passwords and run migrations per README."

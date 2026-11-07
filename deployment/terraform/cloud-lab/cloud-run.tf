@@ -137,7 +137,7 @@ resource "google_cloud_run_v2_service" "lab" {
 
     containers {
       name  = "collector"
-      image = "otel/opentelemetry-collector-contrib:0.136.0"
+      image = var.otel_collector_image
       args  = ["--config=/etc/otelcol-contrib/config.yaml"]
 
       resources {
