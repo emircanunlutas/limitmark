@@ -91,3 +91,12 @@ test("the live-deployment runbook marks approvals, keeps the key uncreated and r
   assert.equal(/ya29\.|BEGIN [A-Z ]*PRIVATE KEY|"private_key"\s*:/u.test(runbook), false);
   assert.match(runbook, /Turnstile[\s\S]*none\*\* - the admission Worker/u);
 });
+
+test("authority bootstrap is a mandatory, ordered gate with approvals marked and no secret material", () => {
+  const bootstrap = read("AUTHORITY-BOOTSTRAP.md");
+  const runbook = read("RUNBOOK-FIRST-LIVE-DEPLOYMENT.md");
+  for (const phrase of ["Mandatory vs optional", "no real LimitMark production Workers", "Negative test first", "POSITIVE", "Rollback boundaries", "NOTHING here has been executed"]) assert.ok(bootstrap.includes(phrase), phrase);
+  for (const phrase of ["| E0 |", "| E1 |", "AUTHORITY-BOOTSTRAP.md", "Dedicated Cloudflare account decision"]) assert.ok(runbook.includes(phrase), phrase);
+  assert.ok(runbook.indexOf("| E0 |") < runbook.indexOf("| E1 |"), "authority initialization precedes public traffic");
+  assert.equal(/ya29\.|BEGIN [A-Z ]*PRIVATE KEY|"private_key"\s*:/u.test(bootstrap + runbook), false);
+});

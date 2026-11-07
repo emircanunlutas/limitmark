@@ -23,20 +23,27 @@ transient file with restricted permissions and written straight to its destinati
 authority's nonce table. No defect was found; no code change was needed. Claim limit: this is proven for the code paths and a simulated Durable Object (Node SQLite) - not yet against a deployed
 Cloudflare Durable Object, which gate F exercises.
 
-### 0.2 New blocker found: the admission authority needs operator initialization
+### 0.2 Admission authority initialization - resolved by the existing reviewed chain (3P.4)
 
-`PublicInquiryAdmissionAuthority` answers `unavailable` until `initializeAuthority` has run (`authority_meta` and an active release row must exist; asserted by `admission-authority.test.ts`). The deployed
-Worker exposes initialization only through the `AuthorityLifecycleOnly` entrypoint (service binding, no public route), which is driven by an **operator-signed command** (`npm run authority:init:prepare`,
-Ed25519 operator key pair) delivered through the operator-executor Worker (`deployment/operator-lifecycle-executor.template.jsonc`) and, for `authority-submit.ts`, the R2 request/result buckets and lifecycle
-mailbox. `deployment/admission-service.cloud-run-lab.template.jsonc` contains none of this. Without it **every submission fails closed** even when everything else is correct.
+The authority answers `unavailable` until an operator-signed `initialize` is applied. The reviewed path (R2 request bucket -> cron mailbox with one-shot DispatchGuard -> operator executor -> admission Worker, with an
+Authority attestation signer) is **mandatory** and is specified, with its dependency graph, trust-chain test results, key generation, delivery, verification and partial-failure recovery, in `AUTHORITY-BOOTSTRAP.md`.
+Decisions that remain with the project owner: a **dedicated Cloudflare account** (the reviewed validators pin the "production" Worker and bucket names, so the lab must not share an account with real production Workers) and approval of the Cloudflare resources listed there.
 
-Required decision **[OWNER]** (not made here, because creating a new initialization path is a security-critical change under CLAUDE.md):
-- **Option 1 (reviewed path, recommended):** deploy the existing executor Worker (and mailbox/R2 only if `authority-submit.ts` is used) for the lab, generate an operator Ed25519 key pair, initialize with
-  `--environment production --confirm-production-authority-initialization` (the lab uses the production-class authority identity inside its own Cloudflare Worker/DO namespace; label evidence "laboratory"). Cost: several more
-  Cloudflare resources and a sealed-artifact workflow; all existing tests apply.
-- **Option 2:** a lab-only signed-command submission over the executor service binding without R2/mailbox. New code in a protected mechanism; needs your approval and its own review.
+### 0.3 Ordered gate overview (no circular dependencies)
 
-Also required: `AUTHORITY_OPERATOR_PUBLIC_KEY` in the admission Worker vars, and the `runtimeSecretsValid` gate (`ADMISSION_CURRENT_RPC_KEY` + operator public key + `AUTHORITY` binding) must pass.
+| # | Gate | Depends on | Public traffic possible? | Rollback boundary |
+| --- | --- | --- | --- | --- |
+| P0 | Cloudflare account decision, Turnstile widget, operator workstation + keygen | owner | no | delete widget/keys |
+| A | GCP secrets (11) | P0 | no | disable versions, delete key |
+| B | Images pushed (digests) | none | no | delete images |
+| C | Cloud Run applied (6 resources); fails closed (404/503/ingress 4xx) without Workers | A, B | no (IAM-protected) | destroy 6 resources |
+| D | PostgreSQL connectivity from the Cloud Run network | C | no | delete job |
+| E0 | **Control plane + authority initialization** (R2, admission, executor, mailbox; POSITIVE signed result) | P0, A (RPC key shared) | no (no public route) | AUTHORITY-BOOTSTRAP section 4 |
+| E1 | Invoker key created (just before use), signer Worker deployed, route attached last | C, E0 | **yes, starts here** | detach route |
+| F | Legitimate-user validation + failure drills | E1 | yes | detach route, revoke key |
+| G | Baseline frozen for defensive testing | F | yes | n/a |
+
+Infrastructure prerequisites (gates A-D) need no Cloudflare Workers. Prerequisites for accepting public traffic: C, D, E0 (POSITIVE), E1, and a real Turnstile widget. Cloud Run does not need the admission Worker to become Ready, so there is no cycle.
 
 ## 1. Pre-flight [LOCAL], repeatable and read-only
 
@@ -95,7 +102,7 @@ Verification: each secret shows exactly one enabled version; `wrangler secret li
 
 ## 4. Step 3 - Laboratory invoker credential [OWNER]
 
-Preconditions verified read-only (section 1). Create the key only after Step 7's Worker exists to receive it, or immediately before it, in one uninterrupted sitting.
+Preconditions verified read-only (section 1). Create the key only at gate E1, after E0 is POSITIVE and Cloud Run is applied, in one uninterrupted sitting with the signer Worker deployment that receives it.
 
 1. Create into a dedicated directory only the current user can read, on an encrypted volume (BitLocker/DPAPI-protected profile):
    ```powershell
@@ -147,13 +154,14 @@ Rollback: `terraform destroy -target` the six resources, or remove the service-s
 Preferred: a one-off Cloud Run **job** from the same image, SA and VPC running a read of `select 1` over the pinned-CA client, then deleted. Alternative: the first real submission at gate F with the application's
 `db_insert` outcome as evidence. Pass: TLS verified connection to `10.80.0.6:5432`, INSERT succeeds, UPDATE/DELETE denied. Rollback: delete the job.
 
-## 8. Step 7 - Cloudflare Workers [CF] [OWNER]
+## 8. Step 7 - Cloudflare control plane (E0) then signer (E1) [CF] [OWNER]
 
-0. **Resolve section 0.2 first** (authority initialization path). Without it, stop here.
-1. Render the two lab templates (`public-signer.cloud-run-lab.template.jsonc`, `admission-service.cloud-run-lab.template.jsonc`) with real values (every `__REQUIRED_*__` placeholder must be replaced; check with `scripts/validate-worker-contracts.ts` and a search for leftovers - how strictly the tooling rejects them was not verified). Admission Worker: `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_SERVICE_ACCOUNT_SUBJECT` (app SA unique ID `112648989669419541876`), `AUTHORITY_OPERATOR_PUBLIC_KEY`, release id/key id/activation time.
-2. `wrangler deploy --dry-run` for both. Then deploy admission first, signer second (route `LAB_PUBLIC_HOSTNAME/*`).
-3. Initialize the authority (section 0.2), then confirm with the read-only attested entrypoint.
-Rollback: `wrangler rollback`, detach the route (the public hostname then returns Cloudflare's default response, never the origin).
+**E0** - follow `AUTHORITY-BOOTSTRAP.md` sections 3.1-3.8 end to end. Gate: `authority:result --kind lifecycle` returns **POSITIVE**, and the negative (unauthorized-command) test was run first. Do not continue otherwise.
+
+**E1** - signer Worker (the only public Worker):
+1. Render `public-signer.cloud-run-lab.template.jsonc` (hostnames, audience, deployment id, signing key id). Secrets via `wrangler secret put`: `LAB_INGRESS_SIGNING_PRIVATE_KEY`, `LAB_INGRESS_IDENTITY_HMAC_KEY`, `LAB_PUBLIC_ORIGIN_SECRET`, `LAB_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS` (the key from Step 3, piped directly).
+2. `wrangler deploy --dry-run`, deploy, then attach the route `LAB_PUBLIC_HOSTNAME/*` last. Before the route exists the hostname must return the Cloudflare default response, never the origin.
+Rollback: `wrangler rollback` or detach the route.
 
 ## 9. Step 8 - End-to-end functional validation
 
@@ -185,5 +193,8 @@ Acceptance: all healthy runs 100 % success for static and valid scenarios, zero 
 | Invoker SA key creation and rotation | yes | no |
 | Image push to Artifact Registry | yes | no |
 | `terraform apply` (6 resources) and Cloud Run job | yes | no |
-| Turnstile widget, Worker secrets, Worker deploy, route, authority init path | yes | yes |
+| Dedicated Cloudflare account decision; Turnstile widget | yes | yes |
+| R2 buckets and two scoped R2 tokens; admission, executor, mailbox Workers and their secrets (E0) | yes | yes |
+| Operator keygen, signed initialization command and its submission | yes (operator key custody) | R2 write token |
+| Signer Worker, its secrets and public route (E1) | yes | yes |
 | Stop/start PostgreSQL, scale/revoke for failure drills | yes | no |
