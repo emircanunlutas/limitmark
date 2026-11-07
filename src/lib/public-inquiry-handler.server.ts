@@ -80,12 +80,15 @@ async function handlePublicInquiryInternal(request: Request, dependencies: Publi
     }
     const laboratory = dependencies.environment.LIMITMARK_RUNTIME === "cloud-run-lab";
     const expectedHostname = laboratory ? dependencies.environment.PUBLIC_ORIGIN_HOSTNAME : "limitmark.com";
+    // Laboratory only: Next.js derives request.url from the server bind address (0.0.0.0 under `next start --hostname 0.0.0.0`), never from Host or
+    // x-forwarded-host, so url.hostname cannot be compared with the Cloud Run hostname there. The Cloud Run hostname is instead enforced through the
+    // Host header inside isPublicOriginAllowed (behind the origin secret). Production keeps the url.hostname comparison unchanged.
     // The browser-facing Origin is the configured public hostname. In the laboratory the request URL host is the internal Cloud Run hostname
     // (expectedHostname) while browsers send the public origin; both come from server configuration, never from request headers.
     const expectedBrowserHostname = laboratory ? dependencies.environment.PUBLIC_ORIGIN_PUBLIC_HOSTNAME : "limitmark.com";
     if (mode !== "persistent" || (!laboratory && (dependencies.environment.VERCEL !== "1" || dependencies.environment.VERCEL_ENV !== "production")) ||
         dependencies.environment.PUBLIC_ORIGIN_PROTECTION !== "required" || !expectedBrowserHostname || request.headers.get("origin") !== `https://${expectedBrowserHostname}` ||
-        url.protocol !== "https:" || !expectedHostname || url.hostname !== expectedHostname ||
+        url.protocol !== "https:" || !laboratory && (!expectedHostname || url.hostname !== expectedHostname) ||
         !isPublicOriginAllowed(request.headers, dependencies.environment) || !dependencies.ingressPolicy || !dependencies.admission || !dependencies.turnstile || !dependencies.repository) {
       return jsonState({ errors: {}, message: "Talep gönderimi şu anda kullanılamıyor." }, 503);
     }
