@@ -66,8 +66,14 @@ variable "postgres_disk_size_gb" {
 }
 
 variable "postgres_machine_type" {
-  type    = string
-  default = "e2-small"
+  type        = string
+  description = "Dedicated-core by default: shared-core types (e2-micro/small/medium) throttle CPU after burst credits run out, which would distort capacity measurements."
+  default     = "e2-standard-2"
+
+  validation {
+    condition     = !contains(["e2-micro", "e2-small", "e2-medium"], var.postgres_machine_type)
+    error_message = "Use a dedicated-core machine type so database latency is not dominated by burst-credit throttling."
+  }
 }
 
 variable "postgres_migration_user" {

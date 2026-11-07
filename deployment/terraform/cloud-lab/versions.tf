@@ -1,4 +1,7 @@
 terraform {
+  # Bucket and prefix are supplied with -backend-config (see backend.gcs.hcl.example and STAGES.md).
+  backend "gcs" {}
+
   required_version = ">= 1.6.0"
 
   required_providers {
