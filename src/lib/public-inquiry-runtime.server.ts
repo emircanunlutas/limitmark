@@ -8,6 +8,7 @@ import { importRequestBindingKey, importIngressPublicKeys, type IngressVerificat
 import { PostgresInquiryRepository } from "./inquiry-repository";
 import { handlePublicInquiry, type PublicInquiryHandlerDependencies } from "./public-inquiry-handler.server";
 import { CloudflareTurnstileVerifier, publicInquiryTurnstileAction } from "./turnstile";
+import type { PublicIntakeState } from "./public-submission-config";
 
 const LAB_RUNTIME = "cloud-run-lab";
 const secretPattern = /^[A-Za-z0-9_-]{43}$/u;
@@ -92,13 +93,18 @@ export type LaboratoryRuntimeResult =
   | { enabled: false; reason: "disabled" | "invalid" }
   | { enabled: true; dependencies: PublicInquiryHandlerDependencies };
 
-export async function createLaboratoryRuntimeDependencies(
-  environment: LaboratoryRuntimeEnvironment,
-  request: typeof fetch = fetch,
-): Promise<LaboratoryRuntimeResult> {
-  if (environment.LIMITMARK_RUNTIME !== LAB_RUNTIME) return { enabled: false, reason: "disabled" };
+/** The single laboratory configuration check, shared by the API runtime and the public page so that neither can accept a configuration the other rejects.
+ * Pure and synchronous: it validates presence and shape only; key import, admission client and database construction remain in createLaboratoryRuntimeDependencies. */
+type ValidatedLaboratoryKeys = "LAB_PUBLIC_HOSTNAME" | "LAB_ORIGIN_HOSTNAME" | "LAB_PUBLIC_ORIGIN_SECRET" | "LAB_DATABASE_URL" | "LAB_DATABASE_CA_CERT" |
+  "LAB_INGRESS_AUDIENCE" | "LAB_DEPLOYMENT_ID" | "LAB_INGRESS_PUBLIC_KEYS" | "LAB_INGRESS_REQUEST_BINDING_KEY" | "LAB_ADMISSION_SERVICE_URL" |
+  "LAB_ADMISSION_OIDC_AUDIENCE" | "LAB_ADMISSION_RELEASE_ID" | "LAB_ADMISSION_RELEASE_KEY_ID" | "LAB_ADMISSION_RELEASE_RPC_KEY" |
+  "LAB_TURNSTILE_SITE_KEY" | "LAB_TURNSTILE_SECRET_KEY" | "LAB_TURNSTILE_EXPECTED_HOSTNAME";
+type ValidatedLaboratoryEnvironment = LaboratoryRuntimeEnvironment & { [Key in ValidatedLaboratoryKeys]: string };
+
+export function isLaboratoryRuntimeConfigurationValid(environment: LaboratoryRuntimeEnvironment): environment is ValidatedLaboratoryEnvironment {
+  if (environment.LIMITMARK_RUNTIME !== LAB_RUNTIME) return false;
   const poolMax = validPool(environment.LAB_DATABASE_POOL_MAX);
-  if (hasProductionCredentials(environment) || environment.VERCEL === "1" || environment.VERCEL_ENV !== undefined ||
+  return !(hasProductionCredentials(environment) || environment.VERCEL === "1" || environment.VERCEL_ENV !== undefined ||
       environment.REQUEST_SUBMISSION_MODE !== "postgres" ||
       environment.ENABLE_PERSISTENT_SUBMISSIONS !== "true" ||
       environment.PUBLIC_ORIGIN_PROTECTION !== "required" ||
@@ -118,7 +124,22 @@ export async function createLaboratoryRuntimeDependencies(
       !validSecret(environment.LAB_ADMISSION_RELEASE_RPC_KEY) ||
       !environment.LAB_TURNSTILE_SITE_KEY || !environment.LAB_TURNSTILE_SECRET_KEY ||
       turnstileTestSiteKeys.has(environment.LAB_TURNSTILE_SITE_KEY) || turnstileTestSecretKeys.has(environment.LAB_TURNSTILE_SECRET_KEY) ||
-      !environment.LAB_TURNSTILE_EXPECTED_HOSTNAME || !validHostname(environment.LAB_TURNSTILE_EXPECTED_HOSTNAME)) {
+      !environment.LAB_TURNSTILE_EXPECTED_HOSTNAME || !validHostname(environment.LAB_TURNSTILE_EXPECTED_HOSTNAME));
+}
+
+/** Intake state for the laboratory page: closed unless the full laboratory configuration is valid; the Turnstile site key comes from the same configuration. */
+export function getLaboratoryIntakeState(environment: LaboratoryRuntimeEnvironment): PublicIntakeState {
+  if (!isLaboratoryRuntimeConfigurationValid(environment)) return { kind: "closed" };
+  return { kind: "real", turnstile: { siteKey: environment.LAB_TURNSTILE_SITE_KEY, action: publicInquiryTurnstileAction } };
+}
+
+export async function createLaboratoryRuntimeDependencies(
+  environment: LaboratoryRuntimeEnvironment,
+  request: typeof fetch = fetch,
+): Promise<LaboratoryRuntimeResult> {
+  if (environment.LIMITMARK_RUNTIME !== LAB_RUNTIME) return { enabled: false, reason: "disabled" };
+  const poolMax = validPool(environment.LAB_DATABASE_POOL_MAX);
+  if (poolMax === null || !isLaboratoryRuntimeConfigurationValid(environment)) {
     return { enabled: false, reason: "invalid" };
   }
 

@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { isPublicOriginAllowed } from "./lib/public-origin";
+import { isPublicOriginAllowed, resolveOriginProtectionEnvironment } from "./lib/public-origin";
 
 /** Public origin resistance only. Every admin page/action still verifies Access. */
 export function proxy(request: NextRequest) {
@@ -17,7 +17,7 @@ export function proxy(request: NextRequest) {
   // authorization (CRON_SECRET) checked inside the route; no public credential
   // is accepted here.
   const cron = request.method === "GET" && path === "/api/cron/process-notifications";
-  const denied = !admin && !verification && !staticAsset && !cron && !isPublicOriginAllowed(request.headers, process.env);
+  const denied = !admin && !verification && !staticAsset && !cron && !isPublicOriginAllowed(request.headers, resolveOriginProtectionEnvironment(process.env));
   const response = denied
     ? new NextResponse(null, { status: 404 })
     : NextResponse.next();

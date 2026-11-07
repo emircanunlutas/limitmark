@@ -119,26 +119,8 @@ resource "google_cloud_run_v2_service" "lab" {
         value = var.lab_public_hostname
       }
 
-      # src/proxy.ts evaluates isPublicOriginAllowed against the RAW process.env, which only knows the PUBLIC_ORIGIN_* names (the LAB_* names are
-      # mapped only inside the route runtime). Without these three every page/asset request fails closed with 404 (found live, 2026-11-07).
-      # Same Secret Manager secret and same hostname values as the LAB_* variables; no new secret, credential or permission.
-      env {
-        name = "PUBLIC_ORIGIN_SECRET"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.lab["limitmark-lab-public-origin-secret"].id
-            version = "latest"
-          }
-        }
-      }
-      env {
-        name  = "PUBLIC_ORIGIN_HOSTNAME"
-        value = var.lab_origin_hostname
-      }
-      env {
-        name  = "PUBLIC_ORIGIN_PUBLIC_HOSTNAME"
-        value = var.lab_public_hostname
-      }
+      # PUBLIC_ORIGIN_* are deliberately NOT set: the laboratory runtime forbids production-named credentials such as PUBLIC_ORIGIN_SECRET in the raw
+      # environment, and src/proxy.ts resolves the origin gate from the LAB_* values below (resolveOriginProtectionEnvironment, cloud-run-lab only).
 
       dynamic "env" {
         for_each = local.cloud_run_secrets

@@ -5,6 +5,7 @@ import { resolveService } from "@/lib/services";
 import { generateSubmissionToken } from "@/lib/submission-token.server";
 import { connection } from "next/server";
 import { getPublicIntakeState } from "@/lib/public-submission-config";
+import { getLaboratoryIntakeState } from "@/lib/public-inquiry-runtime.server";
 import { availableProductionRateLimitProviders } from "@/lib/rate-limit";
 import { getContactEmail } from "@/lib/contact-email";
 
@@ -14,7 +15,10 @@ export default async function RequestPage({ searchParams }: { searchParams: Prom
   await connection();
   const { hizmet } = await searchParams;
   const service = resolveService(hizmet);
-  const intake = getPublicIntakeState(process.env, availableProductionRateLimitProviders);
+  // The explicit laboratory runtime (server configuration only) uses its own validated configuration; every other runtime keeps the production decision.
+  const intake = process.env.LIMITMARK_RUNTIME === "cloud-run-lab"
+    ? getLaboratoryIntakeState(process.env)
+    : getPublicIntakeState(process.env, availableProductionRateLimitProviders);
   if (intake.kind === "closed") {
     const contactEmail = getContactEmail(process.env.CONTACT_EMAIL);
     return <div className="page-shell"><Container>

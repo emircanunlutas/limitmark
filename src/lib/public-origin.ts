@@ -16,6 +16,20 @@ export type PublicOriginEnvironment = {
   PUBLIC_ORIGIN_PUBLIC_HOSTNAME?: string;
 };
 
+/** Returns the environment the origin gate must evaluate. In the explicit `cloud-run-lab` runtime (selected only by server configuration, never by
+ * request input) the laboratory-scoped LAB_* values are the sole source of the origin secret and hostnames: any raw PUBLIC_ORIGIN_* value is
+ * ignored, and a missing LAB_* value yields undefined, which isPublicOriginAllowed rejects (fail closed). Every other runtime is returned unchanged.
+ * The laboratory runtime forbids production-named credentials such as PUBLIC_ORIGIN_SECRET in the raw environment, so the gate cannot read them there. */
+export function resolveOriginProtectionEnvironment(environment: PublicOriginEnvironment): PublicOriginEnvironment {
+  if (environment.LIMITMARK_RUNTIME !== "cloud-run-lab") return environment;
+  return {
+    ...environment,
+    PUBLIC_ORIGIN_SECRET: environment.LAB_PUBLIC_ORIGIN_SECRET,
+    PUBLIC_ORIGIN_HOSTNAME: environment.LAB_ORIGIN_HOSTNAME,
+    PUBLIC_ORIGIN_PUBLIC_HOSTNAME: environment.LAB_PUBLIC_HOSTNAME,
+  };
+}
+
 export function isPublicOriginProtectionDisabled(environment: PublicOriginEnvironment): boolean {
   return environment.PUBLIC_ORIGIN_PROTECTION === undefined ||
     environment.PUBLIC_ORIGIN_PROTECTION === "disabled";
