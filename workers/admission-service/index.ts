@@ -145,7 +145,18 @@ async function configure(environment: AdmissionServiceEnvironment, authorityId: 
       serviceAccountEmail: environment.GOOGLE_SERVICE_ACCOUNT_EMAIL,
       serviceAccountSubject: environment.GOOGLE_SERVICE_ACCOUNT_SUBJECT,
     };
-    return createLaboratoryAdmissionService({ releases, oidcPolicy: policy, oidcVerifier: createGoogleOidcVerifier(policy), authority });
+    // A Durable Object stub is a request-scoped I/O object in workerd: one created while serving request A cannot be used by request B
+    // ("Cannot perform I/O on behalf of a different request"). This handler is cached across requests, so the lab authority resolves a fresh
+    // stub (same namespace, same object name) inside each call, i.e. within the current request. Only immutable configuration is cached.
+    const labAuthority = {
+      claimPre: (input: Parameters<PublicInquiryAdmissionAuthority["claimPre"]>[0]) => environment.AUTHORITY.getByName(authorityId).claimPre(input),
+      consumePost: (input: Parameters<PublicInquiryAdmissionAuthority["consumePost"]>[0]) => environment.AUTHORITY.getByName(authorityId).consumePost(input),
+    };
+    return createLaboratoryAdmissionService({ releases, oidcPolicy: policy, oidcVerifier: createGoogleOidcVerifier(policy, {
+      // Workers' native fetch throws "Illegal invocation" when called with any `this` other than the global (the JWKS resolver stores
+      // and invokes it as a method). Wrap it so it is always called as a plain function.
+      fetch: (input, init) => fetch(input, init),
+    }), authority: labAuthority });
   }
   if (environment.ADMISSION_IDENTITY_MODE !== undefined && environment.ADMISSION_IDENTITY_MODE !== "vercel") throw new Error("identity-mode");
   const policy: VercelOidcPolicy = { issuer: environment.VERCEL_OIDC_ISSUER, audience: environment.VERCEL_OIDC_AUDIENCE,
@@ -169,7 +180,8 @@ export class LabAdmissionServiceWorker extends WorkerEntrypoint<AdmissionService
   override async fetch(request: Request): Promise<Response> {
     try {
       if (!runtimeSecretsValid(this.env)) throw new Error("admission-secret-policy");
-      labHandlerPromise ??= configure(this.env, LAB_ADMISSION_AUTHORITY_ID); return await (await labHandlerPromise)(request);
+      labHandlerPromise ??= configure(this.env, LAB_ADMISSION_AUTHORITY_ID).catch((error) => { labHandlerPromise = undefined; throw error; });
+      return await (await labHandlerPromise)(request);
     }
     catch { return Response.json({ decision: "unavailable" }, { status: 503 }); }
   }
