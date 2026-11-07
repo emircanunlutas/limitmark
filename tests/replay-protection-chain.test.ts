@@ -118,7 +118,11 @@ test("cross-route and cross-origin replay of a signed envelope is rejected", asy
   const s = await c.signed();
   await assert.rejects(() => c.submit(s, { url: `https://${originHost}/api/other` }), /ingress-path/);
   await assert.rejects(() => c.submit(s, { url: `https://${originHost}/api/public-inquiries?x=1` }), /ingress-query/);
-  await assert.rejects(() => c.submit(s, { url: "https://other-origin.run.app/api/public-inquiries" }), /ingress-host/);
+  // A real cross-origin replay targets a different destination, so the Host header changes with the URL. (In the laboratory Next.js derives request.url
+  // from the bind address, so the URL authority is not an identity; the Host header is. See tests/lab-verifier-gate.test.ts.)
+  const otherOrigin = new Headers(s.headers); otherOrigin.set("host", "other-origin.run.app");
+  await assert.rejects(() => c.submit({ ...s, headers: otherOrigin }, { url: "https://other-origin.run.app/api/public-inquiries" }), /ingress-host/);
+  await assert.rejects(() => c.submit({ ...s, headers: otherOrigin }), /ingress-host/); // different Host alone is rejected as well
   const wrongForwarded = new Headers(s.headers); wrongForwarded.set("x-forwarded-host", "attacker.example");
   await assert.rejects(() => c.submit({ ...s, headers: wrongForwarded }), /ingress-host/);
   assert.equal(c.writes.length, 0);

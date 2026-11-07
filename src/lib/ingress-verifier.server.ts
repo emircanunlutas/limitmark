@@ -59,7 +59,10 @@ export async function verifyMutationIngress(request: Request, body: Uint8Array, 
   if (url.protocol !== "https:" || payload[7] !== "https") throw new Error("ingress-scheme");
   const publicHostname = policy.publicHostname ?? "limitmark.com";
   const originHostname = policy.originHostname ?? publicHostname;
-  if (url.hostname !== originHostname || url.port || payload[8] !== publicHostname ||
+  // Laboratory only: Next.js derives request.url from the server bind address (host 0.0.0.0, explicit port), so the URL authority carries no
+  // identity there; the origin hostname is enforced through the Host header below. Production keeps the URL comparison.
+  const urlAuthorityMismatch = policy.environment !== "cloud-run-lab" && (url.hostname !== originHostname || url.port !== "");
+  if (urlAuthorityMismatch || payload[8] !== publicHostname ||
       request.headers.get("host") !== originHostname || forwardedHost !== publicHostname) throw new Error("ingress-host");
   if (url.pathname !== INGRESS_MUTATION_PATH || payload[9] !== url.pathname) throw new Error("ingress-path");
   if (url.search !== "" || payload[10] !== "") throw new Error("ingress-query");
