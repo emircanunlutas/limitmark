@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
-import { build, type Plugin } from "esbuild";
+import { build } from "esbuild";
+import { localFiles } from "../support/worker-bundle";
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare, type V4MiniflareOptions } from "miniflare";
 import { encodeBase64url } from "../../src/lib/ingress-protocol";
 import { ADMISSION_AUTHORITY_ID, LAB_ADMISSION_AUTHORITY_ID } from "../../workers/admission-service/authority";
@@ -23,19 +23,7 @@ const names = ["mailbox", "observer", "stub", "driver"] as const;
 const paths = Object.fromEntries(names.map((name) => [name, join(runtimeRoot, `${name}.mjs`)])) as Record<(typeof names)[number], string>;
 const entries: Record<(typeof names)[number], string> = { mailbox: "workers/lifecycle-mailbox/index.ts", observer: "workers/lifecycle-observer.ts",
   stub: "tests/workers/support/guard-export-stub.ts", driver: "tests/workers/support/guard-export-driver.ts" };
-const localFiles: Plugin = { name: "workspace-files", setup(api) {
-  api.onResolve({ filter: /.*/ }, async (args) => {
-    if (args.path === "cloudflare:workers") return { path: args.path, external: true };
-    const base = args.path.startsWith(".") || isAbsolute(args.path) ? resolve(args.resolveDir || root, args.path) :
-      createRequire(args.importer || join(root, "package.json")).resolve(args.path);
-    for (const path of [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.json`, join(base, "index.ts")]) {
-      try { await readFile(path); return { path, namespace: "workspace-file" }; } catch { /* next */ }
-    }
-    throw new Error(`Unresolved local module: ${args.path}`);
-  });
-  api.onLoad({ filter: /.*/, namespace: "workspace-file" }, async (args) => ({ contents: await readFile(args.path),
-    resolveDir: dirname(args.path), loader: extname(args.path) === ".ts" ? "ts" : extname(args.path) === ".json" ? "json" : "js" }));
-} };
+
 
 async function bundle(): Promise<void> {
   await Promise.all(names.map(async (name) => {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
-import { build } from "esbuild";
+import { loadBundledGuard } from "./support/worker-bundle";
 import { encodeBase64url } from "../src/lib/ingress-protocol";
 import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, LAB_ADMISSION_AUTHORITY_ID, STAGING_ADMISSION_AUTHORITY_ID } from "../workers/admission-service/authority";
 import { AUTHORITY_OPERATOR_COMMAND_VERSION, signAuthorityInitializationCommand, type AuthorityInitializationCommand } from "../workers/admission-service/operator-command";
@@ -55,18 +55,7 @@ class RecordingLedger {
 
 before(async () => {
   directory = await mkdtemp(join(tmpdir(), "limitmark-guard-export-method-"));
-  const bundled = await build({ entryPoints: [resolve("workers/lifecycle-mailbox/dispatch-guard.ts")], bundle: true, write: false, platform: "node", format: "esm", target: "node24",
-    plugins: [{ name: "local-do-base", setup(api) {
-      api.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: "local-do-base", namespace: "test" }));
-      api.onLoad({ filter: /.*/, namespace: "test" }, () => ({ contents: "export class DurableObject { constructor(_state, env) { this.env = env; } }", loader: "js" }));
-      api.onResolve({ filter: /.*/ }, async (args) => {
-        const base = args.path.startsWith(".") || isAbsolute(args.path) ? resolve(args.resolveDir || process.cwd(), args.path) : args.path;
-        for (const path of [base, `${base}.ts`, `${base}.js`, join(base, "index.ts")]) { try { await readFile(path); return { path, namespace: "workspace-file" }; } catch { /* next */ } }
-        throw new Error(`unresolved: ${args.path}`);
-      });
-      api.onLoad({ filter: /.*/, namespace: "workspace-file" }, async (args) => ({ contents: await readFile(args.path), resolveDir: dirname(args.path), loader: extname(args.path) === ".ts" ? "ts" : "js" }));
-    } }] });
-  Guard = (await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString("base64")}`) as { LifecycleDispatchGuard: GuardClass }).LifecycleDispatchGuard;
+  Guard = await loadBundledGuard();
   const keys = async () => {
     const pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
     return { priv: encodeBase64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey))), pub: encodeBase64url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey))) };

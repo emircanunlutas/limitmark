@@ -104,6 +104,10 @@ const REVIEWED_UNPROVABLE_REFERENCES: Readonly<Record<string, readonly Reference
   // `import(`data:text/javascript;base64,...`)` of an esbuild bundle held in memory
   "tests/i3b-authority.test.ts": ["dynamic-import"], "tests/i3b-dispatch-faults.test.ts": ["dynamic-import"], "tests/i3b-staging-dispatch-faults.test.ts": ["dynamic-import"],
   "tests/i3b-staging.test.ts": ["dynamic-import"],
+  // tests/support/worker-bundle.ts (reviewed exception, owner-approved, ONE exact path): the SAME two idioms listed above, consolidated in a single test-only helper used by the guard-export tests.
+  // create-require: `createRequire(<importer>).resolve(<path>)` inside an esbuild onResolve plugin -- path resolution only. dynamic-import: `import(data:...)` of the real guard bundled in memory so it can run on node:sqlite.
+  // Both are required because the guard is a TypeScript Worker class that cannot be imported directly under Node. Safe: the helper lives under tests/, is imported only by tests, and the boundary scans still forbid runtime/operator/scripts from referencing tests/support.
+  "tests/support/worker-bundle.ts": ["create-require", "dynamic-import"],
 };
 
 /** Finding 1: every protected module (canonical, lower-case name) and the ONE repository file it must mean. A reference to one of these names
