@@ -1,5 +1,6 @@
 import { EventKindLedger } from "../../lab/defense/event-kind-ledger";
 import type { TallyCheckInput } from "../../lab/defense/m1-tally-check";
+import { FIELD_LEVELS, ba0FieldFingerprint } from "../../lab/defense/field-thresholds";
 import { OutcomeCounters, type CountedEvent } from "../../lab/defense/outcome-counters";
 
 // Shared, deterministic fixtures for the criterion 9 tests. The tally side is the REAL OutcomeCounters, the ledger side is the REAL EventKindLedger fed numbered
@@ -71,7 +72,8 @@ export const connectionsOf = (acceptedRemote: number) => ({ scope: "exact monoto
 /** server-level.json / core.json / manifest.json of one completed level that carried `remote` traffic. */
 export function levelEvidence(remote: E[] = remoteWorkload(), acceptedRemote = 3, gitSha = "a".repeat(40)) {
   const ext = externalOf(remote);
-  const sha = { git: gitSha, params: "b".repeat(64), workload: "c".repeat(64) };
+  const pinned = ba0FieldFingerprint(FIELD_LEVELS["ba0-l7-c1"].thresholds);
+  const sha = { git: gitSha, params: pinned.sha256, workload: "c".repeat(64) };
   const sequence = ["close_ingress", "drain", "final_telemetry", "snapshot"].map((name) => ({ name, ok: true, timedOut: false, skippedByCap: false, ms: 5, error: null }));
   return {
     serverLevel: {
@@ -79,7 +81,7 @@ export function levelEvidence(remote: E[] = remoteWorkload(), acceptedRemote = 3
       serverSide: { status: "complete", failureClass: null, reasons: [] }, window: { openedAt: "2026-11-08T10:00:00.000Z", closedAt: "2026-11-08T10:01:00.000Z", elapsedMs: 60_000 },
       reconcileInput: { externalAccepted: ext.accepted, statusHistogram: ext.statusHistogram, status503: ext.status503, classes: ext.l2.classes, l1Rejected: 0, egressFailed: 0, connections: { acceptedRemote, dropped: 0, clientErrorTotal: 0, clientErrorNoRequest: 0 }, externalInFlightMax: 1 },
     },
-    core: { level: { id: "ba0-l7-c1", campaignId: "campaign-a", workers: 1 }, parameters: { id: "ba0-field-v1", version: 1, sha256: sha.params }, workloadSha256: sha.workload,
+    core: { level: { id: "ba0-l7-c1", campaignId: "campaign-a", workers: 1 }, parameters: { id: pinned.id, version: pinned.version, sha256: sha.params }, workloadSha256: sha.workload,
       serverSide: { status: "complete", failureClass: null, reasons: [] }, firstReason: null, machine: { phasesCompleted: true }, sequence },
     manifest: { result: "SERVER-COMPLETE", git: { gitSha: sha.git, dirty: false } },
   };
@@ -91,6 +93,6 @@ export function validInput(canary: E[] = workload(), remote: E[] = remoteWorkloa
   return {
     tally: tallyOf(all), tallyFromFinalTick: true, journalByKind: journalOf(canary), journalIncomplete: false, external: externalOf(remote),
     kindLedger: ledgerArtifact(all), planeFin: planeFinOf(all.length), duplicateKeys: [], level: levelEvidence(remote),
-    connections: connectionsOf(3), ...receiptFins(remote),
+    connections: connectionsOf(3), anomalyTotal: 0, ...receiptFins(remote),
   };
 }

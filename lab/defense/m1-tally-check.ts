@@ -43,6 +43,7 @@
  * `kind-ledger.json` is MANDATORY. A run without it is REJECTED, never accepted by a weaker rule.
  */
 import { KIND_LEDGER_KINDS, KIND_LEDGER_SCHEMA } from "./event-kind-ledger";
+import { FIELD_LEVELS, ba0FieldFingerprint, type Ba0FieldThresholds } from "./field-thresholds";
 import type { OutcomeSnapshot } from "./outcome-counters";
 import { checkOutcomeIdentities, compareToLedger, type LedgerDifference } from "./plane-outcome-check";
 
@@ -73,6 +74,10 @@ export type TallyCheckInput = {
   planeFin?: unknown;
   /** Object keys that occurred more than once in any evidence file read (JSON.parse silently keeps the last). */
   duplicateKeys?: readonly string[];
+  /** R-5: problems found while verifying the SHA256SUMS inventory of the artifacts criterion 9 consumes (unlisted, mismatching, duplicate, aliased, conflicting). Any entry is an ERROR: the bytes cannot be trusted. */
+  inventoryProblems?: readonly string[];
+  /** `accounting.json.anomalyTotal` (the collector's anomaly count). Mandatory: absent or non-count is ERROR, nonzero is REJECT. */
+  anomalyTotal?: unknown;
   /** `{ serverLevel, core, manifest }` (the parsed server-level.json, core.json, manifest.json) from the same evidence directory; undefined/null when absent (REJECT). */
   level?: unknown;
   /** `connections.json` (the plane listener's exact counters); undefined/null when absent (REJECT). */
@@ -227,8 +232,11 @@ type LevelEvidence = {
   levelId: string; coreLevelId: string; campaignId: string; coreCampaignId: string; paramsSha: string; coreParamsSha: string; workloadSha: string; coreWorkloadSha: string;
   workers: number; coreWorkers: number; gitSha: string; manifestGitSha: string; statusSame: boolean; complete: boolean; manifestComplete: boolean; windowValid: boolean;
   firstReasonSet: boolean; finalizationOk: boolean;
+  coreParamsId: string; coreParamsVersion: unknown; dirty: boolean; windowConsistent: boolean;
   reconcile: { externalAccepted: number; statusHistogram: Record<string, number>; status503: { total: number; expectedShed: number; unexplained: number }; classes: Record<string, number>; l1Rejected: number; egressFailed: number; acceptedRemote: number } | null;
 };
+/** The wall-clock window (two Date reads) and `elapsedMs` (one monotonic span, rounded) are captured in adjacent statements by the field run; they are different clocks, so exact equality is not a valid test. 1 s bounds rounding and scheduling jitter and nothing else. */
+const WINDOW_SKEW_MS = 1_000;
 const HEX40 = /^[0-9a-f]{40}$/u; const HEX64 = /^[0-9a-f]{64}$/u;
 const REQUIRED_STEPS = ["close_ingress", "drain", "final_telemetry", "snapshot"];
 /** Reads the level identity/completion evidence; null when its shape is not recognizable (ERROR). Every identity field is required: nothing is defaulted. */
@@ -255,6 +263,8 @@ function readLevel(value: unknown): LevelEvidence | null {
   const w = serverLevel.window;
   const windowValid = isRecord(w) && typeof w.openedAt === "string" && typeof w.closedAt === "string" && Number.isFinite(Date.parse(w.openedAt)) && Number.isFinite(Date.parse(w.closedAt)) &&
     Date.parse(w.closedAt) >= Date.parse(w.openedAt) && typeof w.elapsedMs === "number" && Number.isFinite(w.elapsedMs) && w.elapsedMs >= 0;
+  if (typeof git.dirty !== "boolean" || typeof params.id !== "string") return null;
+  const windowConsistent = windowValid && Math.abs((Date.parse((w as { closedAt: string }).closedAt) - Date.parse((w as { openedAt: string }).openedAt)) - (w as { elapsedMs: number }).elapsedMs) <= WINDOW_SKEW_MS;
   const steps = core.sequence as unknown[];
   const finalizationOk = steps.every((step) => isRecord(step) && step.ok === true && step.timedOut !== true && step.skippedByCap !== true) &&
     REQUIRED_STEPS.every((name) => steps.some((step) => isRecord(step) && step.name === name));
@@ -272,7 +282,7 @@ function readLevel(value: unknown): LevelEvidence | null {
     workloadSha: serverLevel.workloadFingerprintSha256, coreWorkloadSha: core.workloadSha256, workers: serverLevel.workers, coreWorkers: coreLevel.workers, gitSha: serverLevel.gitSha, manifestGitSha: git.gitSha,
     statusSame: status.status === coreServer.status && JSON.stringify(status.failureClass) === JSON.stringify(coreServer.failureClass) && codes(reasons) === codes(coreReasons),
     complete: status.status === "complete" && status.failureClass === null && reasons.length === 0 && coreServer.status === "complete" && coreServer.failureClass === null && coreReasons.length === 0 && machine.phasesCompleted === true,
-    manifestComplete: manifest.result === "SERVER-COMPLETE", windowValid, firstReasonSet: core.firstReason !== null, finalizationOk, reconcile,
+    manifestComplete: manifest.result === "SERVER-COMPLETE", windowValid, coreParamsId: params.id, coreParamsVersion: params.version, dirty: git.dirty, windowConsistent, firstReasonSet: core.firstReason !== null, finalizationOk, reconcile,
   };
 }
 
@@ -283,6 +293,7 @@ const empty = (outcome: TallyCheckResult["outcome"], reasons: string[]): TallyCh
 /** Never throws. */
 export function evaluateTallyAgainstLedger(input: TallyCheckInput): TallyCheckResult {
   try {
+    if ((input.inventoryProblems?.length ?? 0) > 0) return empty("ERROR", ["m1.tally.evidence_inventory_invalid"]);
     if (input.tally === null || input.tally === undefined) return empty("REJECT", ["m1.tally.tally_missing"]);
     const snapshot = readSnapshot(input.tally);
     if (snapshot === null) return empty("ERROR", ["m1.tally.evidence_malformed_tally"]);
@@ -317,6 +328,8 @@ export function evaluateTallyAgainstLedger(input: TallyCheckInput): TallyCheckRe
     const reasons: string[] = [];
     if ((input.duplicateKeys?.length ?? 0) > 0) reasons.push("m1.tally.duplicate_json_keys");
     if (!input.tallyFromFinalTick) reasons.push("m1.tally.not_final_tick");
+    if (!isCount(input.anomalyTotal)) return empty("ERROR", ["m1.tally.evidence_malformed_accounting"]);
+    if (input.anomalyTotal !== 0) reasons.push("m1.tally.anomalies_nonzero");
 
     // F-1: the tally key set is the closed vocabulary, exactly. An absent key is never read as zero.
     const tallyKeys = Object.keys(snapshot.events);
@@ -383,6 +396,10 @@ export function evaluateTallyAgainstLedger(input: TallyCheckInput): TallyCheckRe
       if (!level.statusSame) reasons.push("m1.tally.level_status_mismatch");
       if (!level.complete || !level.manifestComplete) reasons.push("m1.tally.level_not_complete");
       if (!level.windowValid) reasons.push("m1.tally.level_window_invalid");
+      else if (!level.windowConsistent) reasons.push("m1.tally.level_window_elapsed_inconsistent");
+      if (level.dirty) reasons.push("m1.tally.source_tree_dirty");
+      const pinned = Object.hasOwn(FIELD_LEVELS, level.levelId) ? ba0FieldFingerprint((FIELD_LEVELS as Record<string, { thresholds: Ba0FieldThresholds }>)[level.levelId].thresholds) : null;
+      if (pinned === null || level.paramsSha !== pinned.sha256 || level.coreParamsSha !== pinned.sha256 || level.coreParamsId !== pinned.id || level.coreParamsVersion !== pinned.version) reasons.push("m1.tally.params_not_code_pinned");
       if (level.firstReasonSet) reasons.push("m1.tally.level_first_reason_set");
       if (!level.finalizationOk) reasons.push("m1.tally.level_finalization_incomplete");
     }

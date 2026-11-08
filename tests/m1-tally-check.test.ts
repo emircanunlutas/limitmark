@@ -155,7 +155,10 @@ test("CLI: unusable inputs are REFUSED with no artifact; arguments are strict", 
     const refused = m1TallyCheck({ serverId: id }, root);
     assert.equal(refused.exit, TALLY_EXIT.refused);
     assert.equal(refused.evidenceId, null);
-    assert.equal(gatherTallyInput(path.join(root, id)).tallyFromFinalTick, true);
+    // R-5: bytes that fail their checksum are never consumed; the gatherer reports the mismatch and offers no tally
+    const gathered = gatherTallyInput(path.join(root, id));
+    assert.equal(gathered.tallyFromFinalTick, false);
+    assert.ok(gathered.inventoryProblems?.includes("checksum_mismatch:telemetry.json"));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
   assert.deepEqual(parseTallyArguments(["--server", "20261006T100000Z-level-aaaaaa"]), { serverId: "20261006T100000Z-level-aaaaaa" });
   for (const argv of [[], ["--server"], ["--server", "x"], ["--server", "20261006T100000Z-level-aaaaaa", "--x"], ["--url", "20261006T100000Z-level-aaaaaa"]]) assert.throws(() => parseTallyArguments(argv), Error, JSON.stringify(argv));

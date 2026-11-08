@@ -11,7 +11,7 @@
  * Exit codes: 0 PASS, 1 REJECT, 2 REFUSED (bad arguments or unusable evidence directory), 4 ERROR.
  */
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory, verifyEvidenceDirectory } from "../evidence/manifest";
 import { evidenceSafeError } from "../evidence/redact";
@@ -30,17 +30,79 @@ export function parseTallyArguments(argv: readonly string[]): TallyCli {
   return { serverId: argv[1] };
 }
 
-const readJson = (file: string): unknown => { try { return JSON.parse(readFileSync(file, "utf8")); } catch { return undefined; } };
-const DUPLICATE_KEY_CHECKED = ["telemetry.json", "kind-ledger.json", "processes.json", "external.json", "server-level.json", "core.json", "manifest.json", "accounting.json", "connections.json"] as const;
+/** Every artifact criterion 9 consumes. Each must be listed in SHA256SUMS and in manifest.json, and is read exactly once: the verified bytes are the bytes parsed. */
+export const MANDATORY_ARTIFACTS = ["telemetry.json", "kind-ledger.json", "processes.json", "external.json", "server-level.json", "core.json", "accounting.json", "connections.json", "manifest.json"] as const;
+const SUM_LINE = /^([0-9a-f]{64}) {2}([a-z0-9][a-z0-9.-]{0,60}\.json)$/u;
 
-/** Gathers the evaluator's input from a finalized evidence directory. Anything unreadable becomes the matching null/flag, never a guess. */
+export type VerifiedInventory = { problems: string[]; bytes: Map<string, Buffer> };
+
+/**
+ * R-5. Parses SHA256SUMS strictly and cross-checks it with manifest.json. Problems (never silently tolerated): malformed or non-canonical lines, duplicate names, names that alias
+ * each other (case-insensitive), path components, an inventory that disagrees with the manifest's own artifact list, an unlisted .json file on disk, a mandatory artifact that is
+ * present but unlisted, and any checksum that does not match the bytes read. A mandatory artifact that is absent from both disk and inventory is NOT a problem here: the evaluator
+ * rejects its absence with its own reason. Only bytes whose checksum matched are returned.
+ */
+export function verifyMandatoryInventory(directory: string): VerifiedInventory {
+  const problems: string[] = [];
+  const bytes = new Map<string, Buffer>();
+  const listed = new Map<string, string>();
+  const canonical = new Set<string>();
+  let sums: string;
+  try { sums = readFileSync(path.join(directory, "SHA256SUMS"), "utf8"); } catch { return { problems: ["SHA256SUMS:unreadable"], bytes }; }
+  const lines = sums.endsWith("\n") ? sums.slice(0, -1).split("\n") : sums.split("\n");
+  for (const line of lines) {
+    const match = SUM_LINE.exec(line);
+    if (match === null) { problems.push("SHA256SUMS:malformed_line"); continue; }
+    const [, hash, name] = match;
+    const key = name.toLowerCase();
+    if (listed.has(name)) problems.push(`SHA256SUMS:duplicate:${name}`);
+    else if (canonical.has(key)) problems.push(`SHA256SUMS:alias:${name}`);
+    listed.set(name, hash); canonical.add(key);
+  }
+  let manifestArtifacts: unknown;
+  try { manifestArtifacts = (JSON.parse(readFileSync(path.join(directory, "manifest.json"), "utf8")) as { artifacts?: unknown }).artifacts; } catch { manifestArtifacts = undefined; }
+  if (!Array.isArray(manifestArtifacts)) problems.push("manifest.json:artifacts_unreadable");
+  else {
+    const fromManifest = new Map<string, string>();
+    for (const entry of manifestArtifacts as { name?: unknown; sha256?: unknown }[]) {
+      if (entry === null || typeof entry !== "object" || typeof entry.name !== "string" || typeof entry.sha256 !== "string") { problems.push("manifest.json:malformed_entry"); continue; }
+      if (fromManifest.has(entry.name)) problems.push(`manifest.json:duplicate:${entry.name}`);
+      fromManifest.set(entry.name, entry.sha256);
+    }
+    for (const [name, hash] of fromManifest) if (listed.get(name) !== hash) problems.push(`inventory_conflict:${name}`);
+    for (const name of listed.keys()) if (name !== "manifest.json" && !fromManifest.has(name)) problems.push(`inventory_conflict:${name}`);
+  }
+  try {
+    for (const entry of readdirSync(directory)) if (entry.endsWith(".json") && !listed.has(entry)) problems.push(`unlisted_artifact:${entry}`);
+  } catch { problems.push("directory:unreadable"); }
+  for (const name of MANDATORY_ARTIFACTS) {
+    const file = path.join(directory, name);
+    if (!existsSync(file)) continue;
+    const hash = listed.get(name);
+    if (hash === undefined) { problems.push(`unlisted_mandatory:${name}`); continue; }
+    try {
+      if (!lstatSync(file).isFile()) { problems.push(`not_a_regular_file:${name}`); continue; }
+      const data = readFileSync(file);
+      if (createHash("sha256").update(data).digest("hex") !== hash) { problems.push(`checksum_mismatch:${name}`); continue; }
+      bytes.set(name, data);
+    } catch { problems.push(`unreadable:${name}`); }
+  }
+  return { problems, bytes };
+}
+
+const parseBytes = (data: Buffer | undefined): unknown => { if (data === undefined) return undefined; try { return JSON.parse(data.toString("utf8")); } catch { return undefined; } };
+const DUPLICATE_KEY_CHECKED = MANDATORY_ARTIFACTS;
+
+/** Gathers the evaluator's input from a finalized evidence directory. Anything unreadable or unverified becomes the matching null/flag, never a guess. */
 export function gatherTallyInput(directory: string): TallyCheckInput {
-  const telemetry = readJson(path.join(directory, "telemetry.json")) as { ring?: { plane?: unknown } } | undefined;
+  const inventory = verifyMandatoryInventory(directory);
+  const readJson = (name: string): unknown => parseBytes(inventory.bytes.get(name));
+  const telemetry = readJson("telemetry.json") as { ring?: { plane?: unknown } } | undefined;
   const ring = Array.isArray(telemetry?.ring?.plane) ? (telemetry!.ring!.plane as { final?: unknown; data?: { outcomes?: unknown } }[]) : [];
   const finals = ring.filter((tick) => tick !== null && typeof tick === "object" && tick.final === true);
   const tick = finals.length > 0 ? finals[finals.length - 1] : ring.length > 0 ? ring[ring.length - 1] : undefined;
-  const externalDoc = readJson(path.join(directory, "external.json")) as { counters?: unknown } | undefined;
-  const accounting = readJson(path.join(directory, "accounting.json")) as { journal?: { journalSha256?: unknown; overflow?: unknown; lines?: unknown } | string } | undefined;
+  const externalDoc = readJson("external.json") as { counters?: unknown } | undefined;
+  const accounting = readJson("accounting.json") as { anomalyTotal?: unknown; journal?: { journalSha256?: unknown; overflow?: unknown; lines?: unknown } | string } | undefined;
 
   let journalByKind: Record<string, number> | null = null;
   let journalIncomplete = false;
@@ -65,19 +127,19 @@ export function gatherTallyInput(directory: string): TallyCheckInput {
       journalByKind = counts;
     } catch { journalByKind = null; }
   }
-  // kind-ledger.json is MANDATORY for criterion 9: absent is passed on as undefined (-> REJECT), present-but-unparseable as a malformed value (-> ERROR).
-  const ledgerPath = path.join(directory, "kind-ledger.json");
-  const kindLedger = existsSync(ledgerPath) ? (readJson(ledgerPath) ?? { unreadable: true }) : undefined;
-  const processes = readJson(path.join(directory, "processes.json")) as { plane?: unknown; boundary?: unknown; app?: unknown } | undefined;
+  // kind-ledger.json is MANDATORY for criterion 9: absent (or unverified: see the inventory) is passed on as undefined (-> REJECT / ERROR), present-but-unparseable as a malformed value (-> ERROR).
+  const kindLedger = inventory.bytes.has("kind-ledger.json") ? (readJson("kind-ledger.json") ?? { unreadable: true }) : undefined;
+  const processes = readJson("processes.json") as { plane?: unknown; boundary?: unknown; app?: unknown } | undefined;
   const planeFin = processes !== undefined && processes !== null && typeof processes.plane === "object" && processes.plane !== null ? processes.plane : undefined; // the string "no_fin" is not a fin
-  const serverLevel = readJson(path.join(directory, "server-level.json"));
-  const core = readJson(path.join(directory, "core.json"));
-  const manifest = readJson(path.join(directory, "manifest.json"));
+  const serverLevel = readJson("server-level.json");
+  const core = readJson("core.json");
+  const manifest = readJson("manifest.json");
   const level = serverLevel === undefined || core === undefined || manifest === undefined ? undefined : { serverLevel, core, manifest };
-  const connections = readJson(path.join(directory, "connections.json"));
+  const connections = readJson("connections.json");
   const duplicateKeys: string[] = [...duplicateJournal];
   for (const name of DUPLICATE_KEY_CHECKED) {
-    try { for (const entry of findDuplicateObjectKeys(readFileSync(path.join(directory, name), "utf8"))) duplicateKeys.push(`${name}${entry}`); } catch { /* an unreadable file is handled where it is used */ }
+    const data = inventory.bytes.get(name);
+    if (data !== undefined) for (const entry of findDuplicateObjectKeys(data.toString("utf8"))) duplicateKeys.push(`${name}${entry}`);
   }
   return {
     tally: tick === undefined ? { unreadable: true } : tick.data?.outcomes ?? null,
@@ -85,6 +147,7 @@ export function gatherTallyInput(directory: string): TallyCheckInput {
     journalByKind, journalIncomplete,
     external: externalDoc?.counters ?? null,
     kindLedger, planeFin, level, duplicateKeys, connections, boundaryFin: processes?.boundary ?? undefined, appFin: processes?.app ?? undefined,
+    inventoryProblems: inventory.problems, anomalyTotal: accounting?.anomalyTotal,
   };
 }
 
@@ -93,6 +156,8 @@ export function m1TallyCheck(cli: TallyCli, root: string = EVIDENCE_ROOT, now = 
   let directory: string;
   try { directory = resolveEvidenceDirectory(cli.serverId, root); } catch { return refuse("server evidence id is not a plain run id"); }
   if (!existsSync(path.join(directory, "SHA256SUMS"))) return refuse("server evidence is missing or not finalized");
+  const malformedInventory = verifyMandatoryInventory(directory).problems.filter((problem) => problem.startsWith("SHA256SUMS:"));
+  if (malformedInventory.length > 0) return refuse(`server evidence inventory is not canonical: ${malformedInventory.slice(0, 3).join(",")}`);
   const tampered = verifyEvidenceDirectory(directory);
   if (tampered.length > 0) return refuse(`server evidence failed its checksums: ${tampered.slice(0, 3).join(",")}`);
 

@@ -24,6 +24,10 @@ export type EvidenceOptions = {
   journalLine?: (line: string, index: number) => string;
   /** Mutates the default content of one JSON artifact in place before it is written. */
   mutate?: Record<string, (content: Record<string, unknown>) => void>;
+  /** Overrides the manifest git state (default: the real commit, recorded as a clean tree: the test repository is routinely dirty). */
+  git?: { dirty?: boolean };
+  /** Files written next to the artifacts but never registered (an unlisted replacement). */
+  unlisted?: Record<string, string>;
 };
 
 export function writeFieldLikeEvidence(root: string, options: EvidenceOptions = {}): string {
@@ -31,7 +35,7 @@ export function writeFieldLikeEvidence(root: string, options: EvidenceOptions = 
   const remote = options.remote ?? remoteWorkload();
   const all = options.ledgerEvents ?? [...canary, ...remote];
   const evidence = new EvidenceRun("field-level", "ba0-l7-c1", new Date(), root);
-  const git = collectGitState();
+  const git = { ...collectGitState(), dirty: false, dirtyFileCount: 0, untrackedFileCount: 0, ...(options.git ?? {}) };
   const tick = { type: "tick", role: "plane", tickSeq: 9, tMonoMs: 1, final: options.final ?? true, data: { outcomes: options.omitTally ? null : tallyOf([...canary, ...remote]) } };
   const fins = receiptFins(remote);
   const level = levelEvidence(remote, 3, git.gitSha);
@@ -56,8 +60,13 @@ export function writeFieldLikeEvidence(root: string, options: EvidenceOptions = 
   const transformedText: Record<string, string> = {};
   for (const name of transformed) { transformedText[name] = options.rawTransform![name](JSON.stringify(defaults[name])); delete defaults[name]; }
   for (const [name, content] of Object.entries(defaults)) evidence.addJsonArtifact(name, content);
-  for (const [name, raw] of Object.entries({ ...(options.rawArtifacts ?? {}), ...transformedText })) fs.writeFileSync(path.join(evidence.directory, name), raw);
+  // raw text artifacts (duplicate keys, truncation) are still REGISTERED, exactly as the run would have registered those bytes: only `unlisted` files escape the inventory
+  for (const [name, raw] of Object.entries({ ...(options.rawArtifacts ?? {}), ...transformedText })) {
+    fs.writeFileSync(path.join(evidence.directory, name), raw);
+    (evidence as unknown as { artifacts: { name: string; sha256: string; bytes: number }[] }).artifacts.push({ name, sha256: createHash("sha256").update(raw).digest("hex"), bytes: Buffer.byteLength(raw) });
+  }
   fs.writeFileSync(path.join(evidence.directory, "ledger-journal-field.ndjson"), text);
+  for (const [name, raw] of Object.entries(options.unlisted ?? {})) fs.writeFileSync(path.join(evidence.directory, name), raw);
   evidence.finalize({ git, environment: collectEnvironment(), target: null, workload: null, ceilings: null, thresholds: null, engine: "test", result: "SERVER-COMPLETE", resultReasons: [], metrics: {} });
   return evidence.id;
 }
