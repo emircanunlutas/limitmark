@@ -1,7 +1,121 @@
-# LimitMark — FQ1 Session Handoff
+# LimitMark — Session Handoff (canonical)
+
+**Reading order:** Part A (below) is the CURRENT state as of 2026-11-08 and supersedes everything after it. Part B (from "HISTORICAL" onward) is the preserved FQ1-era handoff written at HEAD `fbd5128`; its statements about HEAD, test counts and "next actions" are historical and are NOT current. Labels: **[VERIFIED]** = checked against Git/files while writing this handoff; **[RECORDED]** = taken from earlier session evidence, not re-run now; **[DECISION]** = owner decision; **[PROPOSAL]** = designed, not authorized; **[BLOCKER]**.
+
+# PART A — CURRENT STATE (2026-11-08, end of the "M1 Baseline Migration and Qualification Preparation" session)
+
+## A1. Repository and Git state [VERIFIED]
+- Path `C:\Users\Emir\Desktop\pentest-website`, branch `feat/capacity-engineering`, remote `origin` = github.com/emircanunlutas/limitmark. HEAD at the start of this handoff task: `3192163160de767a970dbeee6f19843618e8c9e2` (the handoff commit created by this task comes after it; `git log -1` is authoritative). Nothing was pushed: there is no `origin/feat/capacity-engineering` ref, and the branch is 99 commits ahead of local `master` and 101 ahead of `origin/master` (`git log <ref>..HEAD`). `master` is untouched.
+- Working tree: only untracked files. Tracked changes: none.
+- Untracked files: `GATE-11A-LOCAL-HARDENING-REPORT.md`, `GUARD-GENERATION-MARGIN-REVIEW.md`, `GUARD-GENERATION-RECOVERY-DESIGN.md`, `PRODUCTION-DESIGN-REPORT.md`, `PRODUCTION-READINESS-REPORT.md` (owner-facing reports, intentionally not committed), `audit-report.json`, `ba0-c1-tag.bundle`. The audit package directory `LimitMark-C1-Audit-Package/` exists on disk and is hidden from `git status` by `.git/info/exclude` (line 9) [VERIFIED]; it is untracked and protected.
+- **Protected, never stage/modify/delete/clean/reset:** `audit-report.json`, `ba0-c1-tag.bundle`, `LimitMark-C1-Audit-Package/`, the untracked reports above, the Wrangler OAuth session (**never run `wrangler logout`**). No push. No force operations.
+- Commit trailer: `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`. Stage by explicit path.
+- Recent commits (newest first; all local): `3192163` handoff update; `be90516` two-entry instrumentation approval package, N-1 design, M1 criteria status, export-key lifetimes/revocation design; `507ea6b` campaign ID max 31 (N-2) with tests; `531862e` origin-delivery-count tests on/off; `9929d65` migration registry wired into the three historical guards; `c3db7b5` handoff; `25e9649`/`cc5b112` private-target (RFC1918) tests; `9b23a6b` M1 decisions package; `2511a8a` proposed wiring patch; `7c43775` migration registry (44 PENDING); `040292b` outcome tally wired into plane runtime; `3156a68` readiness note; `b9cb337`/`3369f81`/`82045e3` tally module and cross-checks; `bc32500` baseline v2 acceptance package, M1 design, cloud plan, export-key plan; `3ae37bd` independent readiness; `ed07dd3` baseline v2 file review + export signing design v2; `e4f8267` hygiene fixes (dockerignore, fault-hook guard allowlist); `b3b52ab`, `f91b277`, `17d9218`, `6212ccf`, `ba65541`, `655d58a`, `1720e9f` production security corrections.
+
+## A2. Product intent (unchanged) [DECISION]
+LimitMark is intended to become an **independent Customer Defense Plane**, not a Cloudflare-dependent add-on. Principle: **"Every layer assumes the layer before it may have failed."** Cloudflare is optional and additive; Cloudflare security decisions are never credited to LimitMark. The defense/data plane must keep working when the control plane is unavailable. Onboarding should stay simple. Primary qualification objective: legitimate-user continuity under adverse traffic.
+Four separate workstreams, never to be conflated:
+1. **Independent L1/L2 defense qualification (M1)** — the existing application-plane defense.
+2. **Future L3/network isolation and volumetric (n3/t4) capabilities** — NOT implemented.
+3. **Cloudflare Workers / Vercel inquiry-admission qualification** — separate track.
+4. **Production provisioning and lifecycle gates (9, 10, 11A, 12, 17)** — all closed.
+
+## A3. What the code actually implements [VERIFIED from earlier code inspection; absences confirmed]
+- **L1 `a7.shape-gate`** (`defense/`): stateless shape/grammar gate; 22 reject reasons plus 3 semantic and 2 lane reasons; fail-closed.
+- **L2 `a7.journey-lanes`**: global credited/unverified token buckets, Bloom-filter token provenance; no per-sender input, no spill, no refunds. The only reviewed shed is `mutation/unverified/lane_budget`.
+- **Origin boundary**: Slice 2 Boundary/App hop proofs; claims application non-bypass only.
+- **Field-run infrastructure**: level `ba0-l7-c1` (60 s, ≤25 req/s, 1 worker, cycle GET `/`, `/gizlilik`, `/test-talep-et`, POST `/api/public-inquiries`), correlated lifecycle ledger/collector, per-layer accounting and reconciliation (identities E1..E11), legitimate-user canary (JCR 100%, window p95 ≤ 4×baseline + 150 ms), resource ceilings (CPU 80%, memory 15% available, ELD p99 250 ms, RSS 512 MB, fds 70%), recovery quiet period 135 s, 1 s ticks.
+- **NOT implemented (confirmed absent):** L3 network isolation; n3/t4 volumetric layers; TLS handling in the plane; per-source limiting; adaptive control; quarantine. Do not claim them.
+
+## A4. Instrumentation [VERIFIED present; results RECORDED]
+- Files: `lab/defense/outcome-counters.ts` (source of truth for tests), identical in-tree copy `defense/core/outcome-counters.ts` (a test pins equality after import-path normalization), `lab/defense/plane-outcome-check.ts` (identities I1–I12, `compareToLedger`), `lab/defense/outcome-benchmark.ts`, wiring in `defense/plane/runtime.ts` (commit `040292b`). Tests: `tests/defense-outcome-counters.test.ts`, `tests/defense-plane-instrumentation.test.ts`.
+- Behavior: counters exist only when plane telemetry ticks run (tickMs integer 100..10000); `countingEmit` observes each event and returns the same sequence number; `observe` swallows exceptions and counts faults; ticks gain an `outcomes` snapshot (null when disabled). Closed key spaces (hostile values land in `unknown`), positional reject-reason keys (`r00…`), dot-joined L2 keys, snapshot < 8 000 bytes, no nonce/address/header/path content (evidence-scanner compatible).
+- Evidence: instrumentation on/off equivalence on a real plane process (identical statuses, identical ordered event stream); origin receipts = plane egress attempts − failures, on and off; mutation check (a wrapper returning `seq+1` fails 7 field-run tests); `lab:ba0` and `lab:ba0:origin` outputs identical before/after wiring (0 differing lines after normalizing run ids/timings, 27 and 67 lines); overhead ≈ 49 ns/event, paired end-to-end delta ≈ −0.0023 ms (noise). **Limits:** equivalence shown on a 15-request workload and the existing field-run suite, not on a Linux field host; tally does not see pre-parser traffic or kernel drops (`not_measured`); a fault inside `observe` is counted but not surfaced to a verdict.
+- **Proposed only (not implemented):** the N-1 status overlay (A8), the export-key v2 verifier (A9).
+
+## A5. Baseline migration — CRITICAL [VERIFIED]
+- Historical baselines: `64ccc9d` (canary continuity), `dcf10af8` (salvo diagnostics), `aff793e` (salvo). Three byte-identity guards diff whole trees (`defense`, `src`, `workers`, `lab/policy`, `lab/evidence`, listed lab/defense files) against those commits: `tests/lab-ba0-canary-continuity.test.ts`, `tests/lab-ba0-salvo-diagnostics.test.ts`, `tests/lab-ba0-salvo.test.ts`. Any edit OR new file in those trees is drift. Untracked files are invisible to git-diff tests — always re-run in a clean checkout after committing.
+- Original mechanism: `tests/support/reviewed-patches.ts` (6 defense files). New mechanism: append-only versioned `tests/support/reviewed-migrations.ts` (+ `tests/reviewed-migrations.test.ts`) with 44 entries and `withoutReviewedChanges` / `classifyDrift` / `assertMigrationBoundary`, wired into the three guards in `9929d65` (`PROPOSED-BASELINE-MIGRATION-TEST-WIRING.patch` retained as record).
+- **Counts [VERIFIED by grep now]: 44 entries, 44 `PENDING`, 0 `APPROVED`. By hold: 28 `none`, 11 `shared-production-module`, 5 `guard-export`.** Composition: 2 instrumentation entries (need an independent second review), 26 other acceptance candidates (two conditions open: OIDC claim-check confirmation, telemetry label-set re-check), 11 shared-production-module entries (independent review required), 5 guard-export entries (hold pending the export-key decision and implementation; they will change again).
+- Classification: **authorized** (APPROVED and effective), **pending** (PENDING — exempts nothing), **modifiedAfterReview** (working blob differs from the reviewed blob), **unreviewed** (changed path in no entry). An entry is effective only if APPROVED **and** carries `authorization` **and** `scope` **and** a valid `reviewedBlob`; it must bind the historical blob (same at all three baselines, or null for added files) and the reviewed replacement blob (git hash-object) plus LF-normalized `reviewedSha256`. Unbound approval, wrong reviewed blob, wrong historical blob, edit after review, and unregistered changes all keep failing (tested on throwaway repos).
+- Measured closure matrix: approving only the 2 instrumentation entries closes the `aff793e` guard; the 28 non-held entries leave the 16 held files failing in the other two guards; all 44 close all three.
+- **Expected current failures (clean checkout):** `historical qualification is immutable` (test 947), `files that decide admission… byte-identical to the baseline commit` (1193), `exact aff793e historical C1/C2 parameters… immutable` (1236). They are red because no entry is APPROVED. This is by design; do NOT approve hashes, edit historical evidence, or weaken the guards to make them green.
+- Review sequence (no bulk approval): (1) the 2 instrumentation entries — package in `INSTRUMENTATION-MIGRATION-APPROVAL.md` with recommended authorization/scope strings and a reviewer-independence caveat (the author is also the reviewer there, so a second reader is advisable); (2) the 26 accept candidates by `reviewId` group (`BASELINE-V2-ACCEPTANCE-PACKAGE.md`, `BASELINE-V2-FILE-REVIEW.md`); (3) the 11 shared-production-module entries with independent review; (4) the 5 guard-export entries after the export-key decision. Approval is made by the owner editing the registry.
+
+## A6. M1 decisions [DECISION unless noted]
+- M1 = independent **L1/L2 application-plane** qualification at `ba0-l7-c1`. Never claim L1/L2/L3.
+- **N-1:** overlay approach selected (Option B); **implementation NOT yet authorized**.
+- **N-2:** campaign ID max length **31**, implemented (`507ea6b`, `lab/defense/campaign-id.ts`; boundary tests 30/31/32 + malformed).
+- Historical level identities, ordering and verdicts stay unchanged.
+- The synthetic origin's existing responses govern the first M1 fixture: 200 and attributed 503 only; 302/303 and 403/404 are NOT claimed as covered.
+- Criteria 7–9 remain **PENDING final approval**. Linux parity is outstanding. No external qualification traffic has been authorized.
+
+### Exact M1 criteria (from `M1-CRITERIA.md`)
+**1–6 are IN FORCE (numbers from the reviewed `ba0-field-v1`; wording is a restatement in `QUALIFICATION-M1-DESIGN.md`):**
+1. Legitimate users: JCR = 100% in every required group (baseline, window, residual, recovery); window p95 ≤ 4 × baseline p95 + 150 ms; no canary 5xx; every step 200 with expected content.
+2. Accounting: identities E1..E11 hold; ingress = sum of terminal outcomes; zero unresolved; no unexplained request; no unattributed 503; the only shed is `mutation/unverified/lane_budget`; zero bypass.
+3. Exposure: continuous proof holds in every tick; no external accept before ARMED.
+4. Resources never exceed ceilings: host CPU ≤ 80% (3 ticks), available memory ≥ 15%, plane ELD p99 ≤ 250 ms (3 ticks), RSS ≤ 512 MB, fds ≤ 70%; generator schedule-lag p99 ≤ 50 ms and ELD p99 ≤ 100 ms (otherwise INVALID, not a defense failure).
+5. Recovery: after load stops, quiet period 135 s, then recovery journeys all succeed; residual journeys all succeed.
+(`M1-CRITERIA.md` labels this group "Criteria 1–6" but prints only five numbered items. **Discrepancy [VERIFIED]:** there is no printed criterion 6; do not invent one. Resolve with the owner, e.g. relabel as 1–5 or identify the intended sixth.)
+
+**7–9 as currently written (PENDING; verbatim from `QUALIFICATION-M1-DESIGN.md`):**
+7. NEW, repeatability: three independent runs on fresh state (same commit, parameters, fixture cycle) all VALID, with identical shed reason sets and per-run shed share within ±5 percentage points of the median. A single VALID run is a smoke result, not M1.
+8. NEW, status allow-list (finding N-1): every client-visible status must be in the predeclared set {200, 302/303 per fixture, 503 attributed to the allowed shed, 403/404 only where the fixture expects them}; any other status is INVALID. This needs a verdict-path change (migration event) and is a prerequisite, not part of the run.
+9. NEW, unexplained differences: plane outcome tally (82045e3) vs collector ledger equal per event kind, once wiring is approved (`PROPOSED-INSTRUMENTATION-WIRING.patch`). Until then this criterion is reported `not_measured`, and M1 cannot claim it.
+
+**Proposed revisions (PENDING, not approved):** 7 unchanged in substance. 8 changed to follow the response-contract decision: every client-visible status in both the generator view and the server view ∈ {200, 503}, every 503 attributed to `mutation/unverified/lane_budget`, any other status → M1-INVALID, implemented as an overlay verdict that never alters the existing qualification verdict; coverage of 302/303 and 403/404 not claimed. 9 changed because instrumentation now exists: tally and ledger agree per event kind (`compareToLedger` empty), tally satisfies its identities; absent tally or non-zero `faults`/`unknown` → **failed**, not skipped (wiring applied in `040292b`; its migration entries are PENDING). Approval of 7–9 fixes an acceptance rule only; it authorizes no run, resource or traffic.
+
+## A7. (reserved — see A5 for migration)
+
+## A8. N-1 overlay [PROPOSAL; design in `N1-STATUS-CONTRACT-DESIGN.md`]
+Reason for the overlay: a new level id would require edits to four byte-pinned files (`field-thresholds.ts`, `workloads.ts`, `reconcile.ts`, `ba0-field-reconcile.ts`), and `reconcile.ts` must not be modified. The overlay lives in NEW files (`lab/defense/m1-status-contract.ts`, `lab/defense/ba0-m1-reconcile.ts`), first calls the unchanged final-verdict path, writes a separate `m1-verdict.json` (`M1-STATUS-CONTRACT-VALID|INVALID`, scope-labelled). Required properties: never upgrade INVALID; never remove existing reasons; evaluation failure never becomes acceptance; record explicitly whether evaluation occurred; historical reconciliation semantics preserved; independently testable. Checks: generator and server status keys ⊆ {200, 503}; `status503.unexplained == 0`; only cause `mutation.unverified.lane_budget`; base verdict VALID. **Six acceptance criteria (A–F):** A clean fixture → VALID; B each of 302/303/400/403/404/413/429/500/502/504/unknown injected in either view → INVALID (11×2); C unattributed or differently-caused 503 → INVALID; D non-VALID base verdict never upgraded, base reason stays visible; E all-404 origin → INVALID; F historical guards/`finalFrom` outputs unchanged, no pinned file changed. **Open before implementation:** explicit authorization; empirical local-chain histogram confirming {200, 503} before pinning; the "evaluation occurred" marker field name; whether the evaluation-failure state is a distinct verdict label (the design says failure never accepts, but the exact label is unspecified).
+
+## A9. Export-key and lifecycle security [PROPOSAL unless noted]
+Docs: `EXPORT-REQUEST-SIGNING-DESIGN.md` (v2), `EXPORT-KEY-IMPLEMENTATION-PLAN.md`, `EXPORT-KEY-REVOCATION-DESIGN.md`. **Approved architectural principles [DECISION]:** dedicated export-request key (not the lifecycle operator key); planned rotation overlap ≤ 24 h; two staging keys; legacy v1 verifier retained in the first commit; fail closed. **Not authorized:** any implementation; any guard-boundary change. Design: Ed25519, domain-separated v2 tuple binding key fingerprint, environment and `expiresAtMs`; individual request expiry exactly 120 s (+ ±120 s freshness); key validity cap 24 h hard / 8 h default — **the cap is a proposal awaiting owner decision**; at most 2 keys; config-selected verifier. Revocation: deployment-based, "effective when the updated verifier is serving" (never "instantaneous"); DO-backed revocation rejected (changes guard DDL pinned by the R06 rehearsal); short-lived keys + deployment recommended. Four quantities kept distinct: key validity, planned overlap, request expiry, emergency revocation latency. Open owner decisions: validity cap; whether staging must rehearse a failed deployment; two-person record per export vs per key issuance.
+**Gates:** Production **NO-GO**. Gates 9, 10 and 11A **closed**. Gate 12 (production initialization) **not executed and closed**: a first initialization consumed without a receipt can latch the production guard, so the design correction is unauthorized (see `PRODUCTION-READINESS-REPORT.md`, untracked). Gate 17/launch **closed**: `availableProductionRateLimitProviders` empty, production DB must present a publicly verifiable certificate with `sslmode=verify-full`, Vercel OIDC exchange unverified against real infrastructure, initialization/key provisioning/rollback rehearsal not done (`GATE-11A-LOCAL-HARDENING-REPORT.md`, untracked). Production admission Worker and admin gateway are not deployed (RECORDED from the FQ1-era inspection; not re-checked now).
+
+## A10. Test evidence
+Latest actual results (RECORDED from the end of the last session; HEAD has changed since only by documentation — `git diff --stat be90516 HEAD` = FQ1-SESSION-HANDOFF.md only, +3 lines [VERIFIED] — so code-level results are unchanged but were NOT re-run for this handoff):
+- `npx tsc --noEmit`: exit 0.
+- `npm run test:workers`: exit 0.
+- Focused (counters, plane instrumentation, reviewed-migrations, reviewed-patches, private-target, campaign-id, lab-ba0-field-run): 46/46 pass.
+- Clean-checkout `npm test` at `be90516`: **1903 tests, 1858 pass, 3 fail, exit 1** — exactly the three historical-immutability guards (947, 1193, 1236). Still accurate for the code at HEAD.
+- Main working tree additionally shows 8 repository-scan failures caused by the untracked `LimitMark-C1-Audit-Package/` (RECORDED earlier; not re-measured in the last segment). They are NOT clean-checkout regressions.
+- `lab:ba0:field -- --selftest`: SELFTEST-OK (13 artifacts, 0 refused). `lab:ba0`: BASELINE-VALID (JCR 20/20). `lab:ba0:origin`: APP-NON-BYPASS-VALID. These are simulated/local runs, not Linux field qualification.
+- **Linux parity (`lab:parity`) has NOT run successfully.** The Docker daemon was not running; nothing was started or pulled. The field runner refuses non-Linux hosts, so no real field run exists. No simulated result may be described as real Linux qualification. Journey thresholds, resource sampling and recovery are verified only through simulated runs.
+- Known quirk: one pre-existing cancelled/flaky resend test in `npm test`; do not edit it. Tooling: no `gh`, no python; heredocs with quotes/backticks break — use the Write tool; git worktrees need a `node_modules` junction (PowerShell `New-Item -ItemType Junction`; remove via `(Get-Item).Delete()` before `git worktree remove`).
+
+## A11. Cloud qualification preparation [PROPOSAL; docs: `INDEPENDENT-QUALIFICATION-READINESS.md`, `QUALIFICATION-M1-DESIGN.md`, `QUALIFICATION-CLOUD-PLAN.md`, `M1-CRITERIA.md`, `M1-DECISIONS-PACKAGE.md`]
+- Preferred candidate: Google Cloud `europe-west3`; two-VM private-address isolated topology (RFC1918 accepted by the target policy and plane ingress bind — tested); separate origin and defense roles; independent canary and monitoring.
+- **Unverified/blocked:** quotas and credit eligibility not verified; provider acceptable-use text was not retrievable → **external stress testing is BLOCKED** until a human confirms the policy; budget alerts are not hard spending limits.
+- **Four-layer independent stop** (systemd RuntimeMaxSec/shutdown timer; cloud max-run-duration [to verify]; billing-automation backstop; operator kill switch): designed, **not implemented or rehearsed**.
+- **No provisioning is authorized.** Smallest trustworthy M1 = three repeatable VALID runs of the existing `ba0-l7-c1` cycle on an isolated private pair with criteria 1–9; larger-scale or volumetric qualification is a later, separate milestone. No traffic-generation or bypass procedure is designed here.
+
+## A12. Restrictions carried forward
+Production NO-GO; Gates 9, 10, 11A closed; no live deployment; no cloud provisioning; no external attack/load traffic; no production activation; no key rotation or initialization; no remote push; no unauthorized security-boundary change; protected files preserved; Wrangler session preserved (no logout). Allowed: local read-only inspection, documentation, tests, local commits. CLAUDE.md requires owner approval for security boundaries, historical evidence/baselines, force-push, credentials, broad refactors.
+
+## A13. Next-session plan (ordered)
+1. Verify state: `git status`, `git log -5`, confirm 44 PENDING / 0 APPROVED, read this file, `M1-CRITERIA.md`, `INSTRUMENTATION-MIGRATION-APPROVAL.md`.
+2. Obtain an independent review of the two instrumentation entries (this author cannot be the independent reviewer); owner decides on approval and edits the registry (`status`, `authorization`, `scope`). Re-run the three guards in a clean checkout.
+3. Prepare the smallest acceptable migration batch: the 26 accept candidates by `reviewId` group, with the two open conditions (OIDC claim-check, telemetry label-set) resolved first.
+4. Present criteria 7–9 (A6) for final owner approval; fix the criteria 1–6 numbering discrepancy noted in A6.
+5. Review the N-1 overlay contract (A8); implement only after explicit authorization and the empirical histogram.
+6. Establish Linux parity prerequisites (Docker/Linux host availability; `lab:parity`); do not start Docker without a decision.
+7. Prepare M1 execution readiness (stop mechanism build/rehearsal, AUP human review, quotas/prices) without provisioning or generating traffic.
+8. Preserve every production and security restriction; avoid broad feature development before the first isolated qualification milestone is ready.
+
+## A14. Unresolved items and unverified claims
+- Criteria "1–6" prints only five items (A6). Gate 12/17 status is taken from untracked reports and the runbook, not re-derived. The 8 audit-package failures and production/gateway non-deployment were not re-measured. Docker state not re-checked. The owner's N-1 "overlay selected" is recorded from the owner's handoff instruction; the prior session had presented it as a recommendation. Remote state of the branch is unknown (no remote-tracking ref).
+- Reviewer independence for the two instrumentation entries is not satisfied by the author.
+- A7 above is intentionally empty (numbering retained to avoid renumbering references).
+
+---
+
+# PART B — HISTORICAL: FQ1-era handoff (written at HEAD `fbd5128`; superseded by Part A)
 
 Written 2026-11-08 at the end of the "Shared Admission Reliability: Deployment Preflight" session.
-Repo: `C:\Users\Emir\Desktop\pentest-website`, branch `feat/capacity-engineering`, HEAD `fbd512808a7d5194da0d79730ad05b68b85c201b`.
+Repo: `C:\Users\Emir\Desktop\pentest-website`, branch `feat/capacity-engineering`, HEAD at that time `fbd512808a7d5194da0d79730ad05b68b85c201b`.
 Lab domain: `lab.limitmark.com`. GCP project: `limitmark-field-qual`. Cloudflare account: `a779e0b2506f4ed0272e6eff7bc91449`.
 Statements are labelled **[DIRECT]** (observed output/logs/DB/test result), **[INFERRED]** (control-flow reasoning), or **[UNVERIFIED]**.
 Gaps in my knowledge are stated as gaps. Earlier-session details that I could not re-verify from this session's summary are marked as such.
