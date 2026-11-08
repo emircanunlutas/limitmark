@@ -89,3 +89,6 @@ Spend = (VM hours x hourly rate x 2 hosts) + external egress + disk. Plan repeat
                                                  exposure proof: only the reviewed plane IPv4:port listens non-loopback
  billing alert + hard cap (project)   VM TTL shutdown (independent of harness)   dead-man firewall flip on missed heartbeats
 ```
+
+## Correction (2026-11-08, later)
+Section 6 item (4) and the P0 list claimed a legitimate-user latency threshold was missing. The reviewed field level already predeclares `canary.jcrMinimum = 1` and `canary.windowLatency = { p95Factor 4, p95AddedMs 150 }`. Remaining gaps are in `QUALIFICATION-M1-DESIGN.md` section 4.
