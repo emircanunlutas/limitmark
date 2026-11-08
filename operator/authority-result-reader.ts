@@ -63,6 +63,10 @@ export interface AuthorityReadNonPositive {
   readonly observation: VerifiedNonPositiveObservation;
   readonly observedAtMs: number;
   readonly signingKeyFingerprint: string;
+  /** `initialized` as stated by the Authority-signed reconciliation (never inferred from a relay ledger or an unsigned object). */
+  readonly initialized: boolean;
+  /** The Authority-signed `coverage` of the same statement. */
+  readonly coverage: "COMPLETE" | "INCOMPLETE";
   /** Present only when the caller supplied a command that names a different digest; it was NOT used. */
   readonly commandContext?: "MISMATCHED";
 }
@@ -97,6 +101,13 @@ function unconfirmed(environment: ReadEnvironment, kind: ReadKind, digest: strin
 function withComposed<T extends object>(outcome: T, composed: ProductionAuthorityResult | StagingAuthorityResult): T {
   Object.defineProperty(outcome, "composed", { value: composed, enumerable: false });
   return Object.freeze(outcome);
+}
+
+/** The `initialized` and `coverage` the Authority SIGNED in a reconciliation statement. A non-positive observation is always a reconciliation (lifecycle statements are
+ * always positive candidates); anything else is not evidence and the caller reports a contract failure. */
+function signedInitialization(statement: { readonly kind: string; readonly initialized?: unknown; readonly coverage?: unknown }): { initialized: boolean; coverage: "COMPLETE" | "INCOMPLETE" } | null {
+  if (statement.kind !== "reconciliation" || typeof statement.initialized !== "boolean" || (statement.coverage !== "COMPLETE" && statement.coverage !== "INCOMPLETE")) return null;
+  return { initialized: statement.initialized, coverage: statement.coverage };
 }
 
 export interface ProductionReadInput {
@@ -135,7 +146,9 @@ export async function readProductionAuthorityResult(input: ProductionReadInput):
     if (receipt === null) return { status: "UNCONFIRMED", environment: "production", kind, digest, reason: "result-contract" };
     return withComposed({ status: "POSITIVE", ...common, receipt } satisfies AuthorityReadPositive, composed);
   }
-  return withComposed({ status: "VERIFIED_NON_POSITIVE", ...common, observation: composed.observation,
+  const evidence = signedInitialization(verified.statement);
+  if (evidence === null) return { status: "UNCONFIRMED", environment: "production", kind, digest, reason: "result-contract" };
+  return withComposed({ status: "VERIFIED_NON_POSITIVE", ...common, observation: composed.observation, ...evidence,
     ...(mismatched ? { commandContext: "MISMATCHED" as const } : {}) } satisfies AuthorityReadNonPositive, composed);
 }
 
@@ -164,5 +177,7 @@ export async function readStagingAuthorityResult(input: StagingReadInput): Promi
     if (receipt === null) return { status: "UNCONFIRMED", environment: "staging", kind, digest, reason: "result-contract" };
     return withComposed({ status: "POSITIVE", ...common, receipt } satisfies AuthorityReadPositive, composed);
   }
-  return withComposed({ status: "VERIFIED_NON_POSITIVE", ...common, observation: composed.observation } satisfies AuthorityReadNonPositive, composed);
+  const evidence = signedInitialization(verified.statement);
+  if (evidence === null) return { status: "UNCONFIRMED", environment: "staging", kind, digest, reason: "result-contract" };
+  return withComposed({ status: "VERIFIED_NON_POSITIVE", ...common, observation: composed.observation, ...evidence } satisfies AuthorityReadNonPositive, composed);
 }

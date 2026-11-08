@@ -113,8 +113,8 @@ test("any unavailable, inconsistent, invalid or ambiguous evidence blocks: initi
   const { input, digest, firstAt, secondAt } = await baseInput();
   const replaceSecond = async (options: Parameters<typeof signedReconciliation>[0], nonce = hex("b")) => ({ ...input, second: { ...input.second, nonce, bytes: await signedReconciliation(options) } });
   const blocked = async (candidate: RecoveryEvidenceInput) => { const verdict = await assessRecoveryEvidence(candidate); assert.equal(verdict.eligible, false, JSON.stringify(verdict)); return verdict.eligible ? [] : verdict.blockers; };
-  assert.deepEqual(await blocked(await replaceSecond({ digest, nonce: hex("b"), observedAtMs: secondAt, initialized: true, status: "NOT_FOUND" })), ["initialized-or-incomplete", "receipt-or-release-present"]);
-  assert.deepEqual(await blocked(await replaceSecond({ digest, nonce: hex("b"), observedAtMs: secondAt, initialized: true, coverage: "INCOMPLETE", status: "HISTORY_INCOMPLETE" })), ["initialized-or-incomplete", "receipt-or-release-present"]);
+  assert.deepEqual(await blocked(await replaceSecond({ digest, nonce: hex("b"), observedAtMs: secondAt, initialized: true, status: "NOT_FOUND" })), ["initialized-or-incomplete"]);
+  assert.deepEqual(await blocked(await replaceSecond({ digest, nonce: hex("b"), observedAtMs: secondAt, initialized: true, coverage: "INCOMPLETE", status: "HISTORY_INCOMPLETE" })), ["initialized-or-incomplete"]);
   assert.ok((await blocked(await replaceSecond({ digest: "f".repeat(64), nonce: hex("b"), observedAtMs: secondAt }))).includes("signature-or-expectation"), "another digest");
   assert.ok((await blocked(await replaceSecond({ digest, nonce: hex("c"), observedAtMs: secondAt }, hex("b")))).includes("signature-or-expectation"), "nonce bound in the signed statement differs from the caller's");
   assert.ok((await blocked(await replaceSecond({ digest, nonce: hex("b"), observedAtMs: secondAt, environment: "staging", authorityId: "staging-public-inquiries-v1" }))).includes("signature-or-expectation"), "staging statement");

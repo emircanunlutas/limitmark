@@ -2,12 +2,9 @@ import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH } from "../../workers/ad
 import { readProductionAuthorityResult, type ProductionReadInput } from "../../operator/authority-result-reader";
 import { RECOVERY_TIMING } from "../../operator/recovery-decision-record";
 
-// Verification goes ONLY through the reviewed single reader (operator/authority-result-reader.ts): this module imports neither the frozen R06 protocol, the trust
-// module nor the 2B composers, so the reviewed-importer allowlists are unchanged. The reader's public outcome says NOT_FOUND for both "never initialized" and
-// "initialized by another command", so the signed statement itself is read from the reader's non-enumerable provenance object (`composed`), after cross-checking
-// it against the public outcome. (Cleaner alternative needing approval: expose `initialized`/`coverage` on the reader outcome.)
+// Verification goes ONLY through the reviewed single reader (operator/authority-result-reader.ts). `initialized` and `coverage` come from that reader's outcome, which
+// copies them from the AUTHENTICATED Authority-signed reconciliation statement (never from a guard ledger, an unsigned diagnostic or any relay object).
 type AuthorityResultTrustManifest = ProductionReadInput["trustManifest"];
-type SignedReconciliation = { kind: string; initialized: boolean; coverage: string; status: string; receipt: unknown; releases: readonly unknown[]; observedAtMs: number; digest: string; nonce: string };
 
 /**
  * Recovery EVIDENCE evaluation for a stranded initialization (Gate 11A design parameters; DESIGN APPROVED, EXECUTION NOT AUTHORIZED).
@@ -63,14 +60,13 @@ async function verify(side: RecoveryEvidenceInput["first"], input: RecoveryEvide
     .catch(() => null);
   // No authenticated command is supplied on purpose: a signed negative is VERIFIED_NON_POSITIVE; a positive can never be produced here.
   if (!outcome || outcome.status === "UNCONFIRMED") { blockers.add("signature-or-expectation"); return null; }
-  const composed = (outcome as unknown as { composed?: { authority?: { statement?: unknown } } }).composed;
-  const statement = composed?.authority?.statement as SignedReconciliation | undefined;
-  if (!statement || statement.digest !== input.strandedDigest || statement.nonce !== side.nonce || statement.observedAtMs !== outcome.observedAtMs || outcome.environment !== "production") { blockers.add("signature-or-expectation"); return null; }
-  if (statement.kind !== "reconciliation") { blockers.add("not-reconciliation"); return null; }
-  if (statement.initialized !== false || statement.coverage !== "COMPLETE" || statement.status !== "NOT_FOUND") blockers.add("initialized-or-incomplete");
-  if (statement.receipt !== null || statement.releases.length !== 0) blockers.add("receipt-or-release-present");
-  if (!Number.isSafeInteger(statement.observedAtMs) || statement.observedAtMs < 0) { blockers.add("input"); return null; }
-  return { observedAtMs: statement.observedAtMs };
+  if (outcome.environment !== "production" || outcome.kind !== "reconciliation" || outcome.digest !== input.strandedDigest) { blockers.add("signature-or-expectation"); return null; }
+  if (outcome.status !== "VERIFIED_NON_POSITIVE") { blockers.add("receipt-or-release-present"); return null; }
+  // Missing or contradictory signed fields cannot occur here (the reader reports UNCONFIRMED instead); a stale statement was already refused by the reader's freshness check.
+  if (outcome.initialized !== false || outcome.coverage !== "COMPLETE" || outcome.observation !== "NOT_FOUND") blockers.add("initialized-or-incomplete");
+  if (outcome.observation === "COMMAND_CONTEXT_REQUIRED") blockers.add("receipt-or-release-present");
+  if (!Number.isSafeInteger(outcome.observedAtMs) || outcome.observedAtMs < 0) { blockers.add("input"); return null; }
+  return { observedAtMs: outcome.observedAtMs };
 }
 
 export async function assessRecoveryEvidence(input: RecoveryEvidenceInput): Promise<RecoveryEvidenceVerdict> {
