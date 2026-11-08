@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createProductionAdmissionClient, VercelRequestOidcTokenProvider, type ProductionOidcTokenProvider } from "./admission-client.server";
+import { assessProductionDatabaseTls, assessProductionTelemetry } from "./production-launch-policy";
 import { getDatabase } from "./db/database.server";
 import { importIngressPublicKeys, importRequestBindingKey, type IngressVerificationPolicy } from "./ingress-verifier.server";
 import { PostgresInquiryRepository } from "./inquiry-repository";
@@ -11,7 +12,7 @@ import { CloudflareTurnstileVerifier } from "./turnstile";
 
 export type ProductionRuntimeEnvironment = PublicSubmissionEnvironment & { [key: string]: string | undefined };
 export type ProductionRuntimeResult =
-  | { enabled: false; reason: "runtime" | "configuration" | "invalid" }
+  | { enabled: false; reason: "runtime" | "configuration" | "invalid" | "database-tls" | "telemetry" }
   | { enabled: true; dependencies: PublicInquiryHandlerDependencies };
 
 /** Any of these on the production runtime means a laboratory/Google identity configuration leaked into it. The production factory refuses to run. */
@@ -36,6 +37,9 @@ export async function createProductionRuntimeDependencies(
   }
   const configuration = getPublicSubmissionConfiguration(environment, options.providers ?? availableProductionRateLimitProviders);
   if (!configuration.enabled) return { enabled: false, reason: "configuration" };
+  // Launch policy (local, offline): verified PostgreSQL TLS and OpenTelemetry metrics off. Both fail closed; neither loosens any other gate.
+  if (!assessProductionTelemetry(environment).ok) return { enabled: false, reason: "telemetry" };
+  if (!assessProductionDatabaseTls(configuration.databaseUrl, [environment, process.env]).ok) return { enabled: false, reason: "database-tls" };
   const request = options.request ?? fetch;
   try {
     const ingressPolicy: IngressVerificationPolicy = {

@@ -24,7 +24,7 @@ async function validEnvironment(): Promise<ProductionRuntimeEnvironment> {
   void publicKeyBytes;
   return {
     NODE_ENV: "production", VERCEL: "1", VERCEL_ENV: "production", VERCEL_PROJECT_ID: "prj_limitmark", VERCEL_DEPLOYMENT_ID: "dpl_reviewed",
-    REQUEST_SUBMISSION_MODE: "postgres", ENABLE_PERSISTENT_SUBMISSIONS: "true", DATABASE_URL: "postgresql://synthetic:unused@db.example.test/app",
+    REQUEST_SUBMISSION_MODE: "postgres", ENABLE_PERSISTENT_SUBMISSIONS: "true", DATABASE_URL: "postgresql://synthetic:unused@db.example.test/app?sslmode=verify-full",
     RATE_LIMIT_PROVIDER: "cloudflare-do", PUBLIC_ORIGIN_PROTECTION: "required", PUBLIC_ORIGIN_SECRET: secret(1),
     INGRESS_PROTOCOL: INGRESS_VERSION, INGRESS_AUDIENCE: "prj_limitmark",
     INGRESS_PUBLIC_KEYS: JSON.stringify([{ role: "current", keyId: "current", publicKey: encodeBase64url(raw), activatesAtMs: 0 }]),
