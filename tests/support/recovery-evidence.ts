@@ -1,4 +1,3 @@
-import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH } from "../../workers/admission-service/authority";
 import { readProductionAuthorityResult, type ProductionReadInput } from "../../operator/authority-result-reader";
 import { RECOVERY_TIMING } from "../../operator/recovery-decision-record";
 

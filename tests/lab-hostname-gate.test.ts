@@ -58,7 +58,7 @@ test("laboratory: a missing or invalid signed envelope is rejected after the gat
   assert.equal(await lab({ ...labHeaders, [INGRESS_HEADER]: "a.b" }), 400);
 });
 test("laboratory exemption requires the explicit cloud-run-lab runtime (request input cannot select it)", async () => {
-  const { LIMITMARK_RUNTIME: _omitted, ...nonLab } = labEnv;
+  const nonLab: Record<string, string | undefined> = Object.fromEntries(Object.entries(labEnv).filter(([name]) => name !== "LIMITMARK_RUNTIME"));
   assert.equal(await lab(labHeaders, {}, nonLab), 503);
   assert.equal(await lab({ ...labHeaders, "x-limitmark-runtime": "cloud-run-lab" }, {}, nonLab), 503);
 });

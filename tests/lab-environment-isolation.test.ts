@@ -42,7 +42,7 @@ const IDENTITY = { production: PRODUCTION_ATTESTATION_IDENTITY, staging: STAGING
 const command = (environment: Env, issued = T0, release = RELEASE, authority: string = AUTHORITY[environment], confirm = environment === "production"): AuthorityInitializationCommand =>
   [AUTHORITY_OPERATOR_COMMAND_VERSION, "initialize", environment, authority as typeof ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, release, KEY_ID, issued, confirm];
 const strip = (text: string): string => text.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
-const json = (path: string): any => JSON.parse(strip(readFileSync(path, "utf8")));
+const json = (path: string) => JSON.parse(strip(readFileSync(path, "utf8")));
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 function rig(environment: Env) {
@@ -185,17 +185,17 @@ test("lab templates reference no Production or staging resource, and the environ
   for (const field of fields) assert.match(gates.lab[field], /lab/u, field);
   // tampering is rejected
   for (const mutate of [
-    (g: any) => { g.production.provisioningOpen = true; },
-    (g: any) => { g.lab.provisioningOpen = true; },
-    (g: any) => { g.lab.productionProvisioningImplied = true; },
-    (g: any) => { g.lab.requestBucket = g.production.requestBucket; },
-    (g: any) => { g.lab.authorityObject = g.staging.authorityObject; },
-    (g: any) => { g.lab.publicHostname = "*.limitmark.com"; },
-    (g: any) => { g.lab.admissionHostname = "limitmark.com"; },
-    (g: any) => { delete g.lab; },
-    (g: any) => { g.dev = clone(g.lab); },
-    (g: any) => { g.lab.extra = true; },
-    (g: any) => { g.crossEnvironmentCredentialReuseAllowed = true; },
+    (g: typeof gates) => { g.production.provisioningOpen = true; },
+    (g: typeof gates) => { g.lab.provisioningOpen = true; },
+    (g: typeof gates) => { g.lab.productionProvisioningImplied = true; },
+    (g: typeof gates) => { g.lab.requestBucket = g.production.requestBucket; },
+    (g: typeof gates) => { g.lab.authorityObject = g.staging.authorityObject; },
+    (g: typeof gates) => { g.lab.publicHostname = "*.limitmark.com"; },
+    (g: typeof gates) => { g.lab.admissionHostname = "limitmark.com"; },
+    (g: typeof gates) => { delete g.lab; },
+    (g: typeof gates) => { g.dev = clone(g.lab); },
+    (g: typeof gates) => { g.lab.extra = true; },
+    (g: typeof gates) => { g.crossEnvironmentCredentialReuseAllowed = true; },
   ]) { const g = clone(gates); mutate(g); assert.throws(() => validateLifecycleEnvironmentGates(g)); }
   assert.throws(() => validateLabEnvironmentGate({ ...gates.lab, rotationImplemented: true }));
   assert.equal(LAB_RESOURCES.publicHostname, "lab.limitmark.com");
@@ -352,7 +352,7 @@ test("signer bindings are per environment: any other environment's binding leave
 test("runtime secret policy forbids lab credentials in every non-signer runtime and rejects a credential shared across environments", () => {
   const matrix = json("deployment/secret-matrix.json");
   assert.ok(matrix.collisionSensitive.includes("AUTHORITY_LAB_ATTESTATION_PRIVATE_KEY"));
-  for (const [name, policy] of Object.entries<any>(matrix.runtimes)) {
+  for (const [name, policy] of Object.entries(matrix.runtimes as Record<string, { forbiddenSecrets: string[] }>)) {
     assert.ok(policy.forbiddenSecrets.includes("AUTHORITY_LAB_OPERATOR_PRIVATE_KEY"), `${name} forbids the lab operator private key`);
     if (name !== "admissionService") assert.ok(policy.forbiddenSecrets.includes("AUTHORITY_LAB_ATTESTATION_PRIVATE_KEY"), `${name} forbids the lab attestation private key`);
   }

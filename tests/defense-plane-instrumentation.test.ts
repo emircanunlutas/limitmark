@@ -111,7 +111,7 @@ test("enabled: the tally equals the events the plane emitted, satisfies every ac
 
 test("failure isolation inside the plane wiring: a tally that throws on every event changes no emitted event or status", async () => {
   // In-process proof with the very wrapper the runtime installs (countingEmit): same emitter, healthy vs throwing tally.
-  const seen = (tally: OutcomeCounters) => { const out: number[] = []; const emit = countingEmit(tally, (event: { kind: string }) => { out.push(out.length + 1); return out.length; }); const r = [emit({ kind: "L1_PASSED" }), emit({ kind: "x" }), emit({ kind: "L1_REJECTED" })]; return [out, r]; };
+  const seen = (tally: OutcomeCounters) => { const out: number[] = []; const emit = countingEmit(tally, () => { out.push(out.length + 1); return out.length; }); const r = [emit({ kind: "L1_PASSED" }), emit({ kind: "x" }), emit({ kind: "L1_REJECTED" })]; return [out, r]; };
   assert.deepEqual(seen(new OutcomeCounters({ injectedFault: () => { throw new Error("boom"); } })), seen(new OutcomeCounters()));
 });
 

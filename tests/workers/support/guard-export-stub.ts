@@ -12,4 +12,5 @@ export class Inert extends WorkerEntrypoint {
   async attestReconciliation(): Promise<never> { calls += 1; throw new Error("inert-called"); }
   async getCalls(): Promise<number> { return calls; }
 }
-export default { fetch(): Response { return Response.json({ calls }); } };
+const stub = { fetch(): Response { return Response.json({ calls }); } };
+export default stub;

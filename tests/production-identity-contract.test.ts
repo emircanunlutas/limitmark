@@ -8,7 +8,7 @@ import { INGRESS_VERSION, encodeBase64url } from "../src/lib/ingress-protocol";
 // Production identity isolation: (a) the production admission Worker entry exports no lab (or staging) class, (b) the Vercel production project contract
 // forbids the laboratory selector/credentials/Google-lab identity, (c) the runtime factory enforces the same names. The lab environment keeps its own entry.
 
-const json = async (path: string) => JSON.parse(await readFile(new URL(`../${path}`, import.meta.url), "utf8")) as Record<string, any>;
+const json = async (path: string) => JSON.parse(await readFile(new URL(`../${path}`, import.meta.url), "utf8"));
 const code = (source: string) => source.replace(/\/\*[\s\S]*?\*\//gu, "").replace(/^\s*\/\/.*$/gmu, "");
 
 test("the production admission entry module exports exactly the four production names and the default; no lab or staging class", async () => {
@@ -40,7 +40,7 @@ test("the Vercel production project contract pins the forbidden names, and the v
   assert.deepEqual(forbidden.namePrefixes, ["LAB_", "GOOGLE_"]);
   const resolved = structuredClone(contract); resolved.productionApplicationProject.expectedProjectId = "prj_prod"; resolved.previewApplicationProject.expectedProjectId = "prj_preview";
   assert.equal(validateVercelProjectContract(resolved), true, "the contract (with project ids resolved) validates");
-  const mutate = (change: (copy: Record<string, any>) => void) => { const copy = structuredClone(resolved); change(copy); return validateVercelProjectContract(copy); };
+  const mutate = (change: (copy: typeof contract) => void) => { const copy = structuredClone(resolved); change(copy); return validateVercelProjectContract(copy); };
   assert.equal(mutate((c) => { delete c.productionApplicationProject.forbiddenEnvironmentConfiguration; }), false);
   assert.equal(mutate((c) => { c.productionApplicationProject.forbiddenEnvironmentConfiguration.exactNames = ["LIMITMARK_RUNTIME"]; }), false);
   assert.equal(mutate((c) => { c.productionApplicationProject.forbiddenEnvironmentConfiguration.namePrefixes = ["LAB_"]; }), false);

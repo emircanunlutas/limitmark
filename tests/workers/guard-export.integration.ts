@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 import { build } from "esbuild";
 import { localFiles } from "../support/worker-bundle";
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare, type V4MiniflareOptions } from "miniflare";

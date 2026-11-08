@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { loadBundledGuard } from "./support/worker-bundle";
@@ -139,7 +139,7 @@ test("output is deterministic, self-verifying, and any edit of rows, derived fie
   assert.ok(first.endsWith("}\n") && !first.includes("\n  "), "single canonical line");
   assert.equal(verifyGuardLedgerExport(first, PRODUCTION).contentSha256, JSON.parse(first).contentSha256);
   const document = JSON.parse(first);
-  const tampered: Array<[string, (value: Record<string, any>) => void]> = [
+  const tampered: Array<[string, (value: typeof document) => void]> = [
     ["status edited", (value) => { value.ledger.claims[0].status = "SUCCESS"; }],
     ["latch removed", (value) => { value.ledger.latch = null; }],
     ["claim added", (value) => { value.ledger.claims.push({ digest: "a".repeat(64), operation: "initialize", status: "SUCCESS" }); }],

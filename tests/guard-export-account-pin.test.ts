@@ -6,7 +6,7 @@ import { validateLifecycleMailboxConfig } from "../deployment/lifecycle-private-
 
 // CLOUDFLARE_ACCOUNT_ID is a REQUIRED production guard-export identity pin: present, exact, equal to the config account, no default and no bypass.
 const ACCOUNT = "a".repeat(32);
-const template = async () => JSON.parse(await readFile(new URL("../deployment/lifecycle-mailbox.template.jsonc", import.meta.url), "utf8")) as Record<string, any>;
+const template = async () => JSON.parse(await readFile(new URL("../deployment/lifecycle-mailbox.template.jsonc", import.meta.url), "utf8"));
 async function rendered(vars: Record<string, unknown> = {}, accountId: unknown = ACCOUNT) {
   const config = await template();
   config.account_id = accountId; config.main = "../workers/lifecycle-mailbox/index.ts";
@@ -23,7 +23,7 @@ test("the template ships the pin as an unresolved placeholder equal to the accou
 
 test("rendered config validation: the pin must be present, a 32-hex id, and exactly the config account", async () => {
   const good = await rendered();
-  const refused = (config: Record<string, any>, pattern?: RegExp) => (pattern ? assert.throws(() => validateLifecycleMailboxConfig(config, false), pattern) : assert.throws(() => validateLifecycleMailboxConfig(config, false)));
+  const refused = (config: unknown, pattern?: RegExp) => (pattern ? assert.throws(() => validateLifecycleMailboxConfig(config, false), pattern) : assert.throws(() => validateLifecycleMailboxConfig(config, false)));
   assert.doesNotThrow(() => validateLifecycleMailboxConfig(good, false));
   const missing = await rendered(); delete missing.vars.CLOUDFLARE_ACCOUNT_ID;
   refused(missing, /unsafe-lifecycle-guard/u);
