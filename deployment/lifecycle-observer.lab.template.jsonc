@@ -7,6 +7,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "triggers": { "crons": [] },
+  "vars": { "LIFECYCLE_OBSERVER_ENVIRONMENT": "lab" },
   "r2_buckets": [
     { "binding": "REQUEST_BUCKET", "bucket_name": "limitmark-lifecycle-requests-lab" },
     { "binding": "RESULT_BUCKET", "bucket_name": "limitmark-lifecycle-results-lab" }

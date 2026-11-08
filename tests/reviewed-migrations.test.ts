@@ -163,3 +163,28 @@ test("the three historical guards are wired to the registry (and stay wired): th
     assert.doesNotMatch(source, /withoutReviewedPatches\(/u, `${file}: no direct use of the narrower helper`);
   }
 });
+
+test("exact-file approval is not dependency closure and not deployment authorization: the pending dependencies of the two approved entries stay pending, and no approval is inherited through imports", () => {
+  const byPath = new Map(REVIEWED_MIGRATIONS.map((entry) => [entry.path, entry]));
+  const dependencies: Record<string, string[]> = {
+    "workers/admin-gateway/index.ts": ["src/lib/ingress-protocol.ts", "workers/shared/bounded-jwks.ts"],
+    "workers/lab-operator-lifecycle-executor.ts": ["src/lib/ingress-protocol.ts", "workers/admission-service/authority.ts", "workers/admission-service/operator-command.ts"],
+  };
+  for (const [approved, pending] of Object.entries(dependencies)) {
+    assert.equal(byPath.get(approved)?.status, "APPROVED", approved);
+    for (const dependency of pending) {
+      const entry = byPath.get(dependency);
+      assert.ok(entry !== undefined, `${dependency} is registered`);
+      assert.equal(entry.status, "PENDING", `${dependency}: approving ${approved} does not approve its import`);
+      assert.equal(isEffective(entry), false, dependency);
+    }
+  }
+  // the classification (used by every guard) is per file: the dependencies appear as pending drift in every guard that covers them
+  for (const [name, baseline, paths] of GUARDS.slice(0, 2)) {
+    const result = classifyDrift(root, baseline, paths);
+    for (const dependency of new Set(Object.values(dependencies).flat())) assert.ok(result.pending.includes(dependency), `${name}: ${dependency} is still pending drift`);
+  }
+  // the registry carries no deployment authority: no field of any entry names deployment, and the approval scopes say so explicitly
+  for (const entry of REVIEWED_MIGRATIONS.filter((candidate) => NEW_APPROVALS.includes(candidate.path))) assert.match(entry.scope, /no deployment or production enablement/u);
+  assert.deepEqual(Object.keys(REVIEWED_MIGRATIONS[0]).sort(), ["authorization", "change", "historicalBlob", "hold", "path", "reviewId", "reviewedBlob", "reviewedSha256", "scope", "status"]);
+});

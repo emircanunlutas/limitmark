@@ -78,7 +78,7 @@ async function start(operatorPublicKey: string, attestation: { privatePkcs8: str
       serviceBindings: { LIFECYCLE_EXECUTOR: { name: "executor" },
         LIFECYCLE_READER: { name: "admission", entrypoint: "LabAuthorityLifecycleReadOnly" } } },
     { name: "observer", scriptPath: paths.observer, modules: true, compatibilityDate: date, unsafeRegisterWorker: false,
-      routes: ["observer.local/*"],
+      routes: ["observer.local/*"], bindings: { LIFECYCLE_OBSERVER_ENVIRONMENT: "lab" },
       r2Buckets: buckets, serviceBindings: { LIFECYCLE_READER: { name: "admission", entrypoint: "LabAuthorityLifecycleReadOnly" } } },
     { name: "executor", scriptPath: paths.executor, modules: true, compatibilityDate: date, unsafeRegisterWorker: false,
       bindings: { AUTHORITY_OPERATOR_PUBLIC_KEY: operatorPublicKey, OPERATOR_EXECUTOR_ENVIRONMENT: "lab" },

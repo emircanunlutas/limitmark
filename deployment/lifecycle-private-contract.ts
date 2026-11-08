@@ -314,7 +314,7 @@ const labBuckets = [
 const labReader = { binding: "LIFECYCLE_READER", service: LAB_RESOURCES.admissionWorker, entrypoint: "LabAuthorityLifecycleReadOnly" };
 
 function labBase(value: unknown, kind: "mailbox" | "observer", template: boolean): StagingScheduleState {
-  const extra = kind === "mailbox" ? ["durable_objects", "migrations", "vars"] : [];
+  const extra = kind === "mailbox" ? ["durable_objects", "migrations", "vars"] : ["vars"];
   if (!exact(value, [...common, ...extra])) throw new Error("unsafe-lifecycle-config");
   const scheduleState = stagingScheduleState(value.triggers);
   if (value.$schema !== "../node_modules/wrangler/config-schema.json" ||
@@ -328,6 +328,7 @@ function labBase(value: unknown, kind: "mailbox" | "observer", template: boolean
     { binding: "LIFECYCLE_EXECUTOR", service: LAB_RESOURCES.executorWorker, entrypoint: "LabOperatorLifecycleExecutor" }, labReader,
   ] : [labReader];
   if (JSON.stringify(value.services) !== JSON.stringify(expectedServices)) throw new Error("unsafe-lifecycle-services");
+  if (kind === "observer" && (!exact(value.vars, ["LIFECYCLE_OBSERVER_ENVIRONMENT"]) || value.vars.LIFECYCLE_OBSERVER_ENVIRONMENT !== "lab")) throw new Error("unsafe-lifecycle-observer-environment");
   if (kind === "mailbox") {
     if (JSON.stringify(value.durable_objects) !== JSON.stringify({ bindings: [{ name: "DISPATCH_GUARD", class_name: "LabLifecycleDispatchGuard" }] }) ||
         JSON.stringify(value.migrations) !== JSON.stringify([{ tag: "lab-guard-v1", new_sqlite_classes: ["LabLifecycleDispatchGuard"] }]) ||
