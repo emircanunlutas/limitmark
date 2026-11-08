@@ -24,10 +24,10 @@ async function material() {
   return { body: JSON.stringify({ keys: [jwk] }), token };
 }
 
-test("the resolver invokes its fetch as a method, so a receiver-sensitive native fetch fails closed", async () => {
+test("the shared resolver calls a receiver-sensitive fetch as a plain function (regression: it used to invoke it as a method)", async () => {
   const { body, token } = await material();
   const verifier = createGoogleOidcVerifier(policy, { now: () => nowSeconds * 1_000, fetch: workersLikeFetch(body) });
-  await assert.rejects(verifier.verify(token, nowSeconds * 1_000), /jwks-unavailable/u);
+  assert.equal((await verifier.verify(token, nowSeconds * 1_000)).email, policy.serviceAccountEmail);
 });
 
 test("a plain-function wrapper (the lab fix) satisfies the receiver check and verification succeeds", async () => {

@@ -132,7 +132,13 @@ async function configure(environment: AdmissionServiceEnvironment, authorityId: 
     releases.push({ role: "previous", releaseId: previousValues[0]!, keyId: previousValues[1]!, rpcKey: await importAdmissionRpcKey(previousValues[2]!),
       activatedAtMs: Number(previousValues[3]), retireAtMs: Number(previousValues[4]) });
   }
-  const authority = environment.AUTHORITY.getByName(authorityId);
+  // A Durable Object stub is a request-scoped I/O object in workerd: one created while serving request A cannot be used by request B
+  // ("Cannot perform I/O on behalf of a different request"). The handler built here is cached across requests, so the authority resolves a fresh
+  // stub (same namespace, same object name) inside each call, i.e. within the current request. Only immutable configuration is cached.
+  const authority = {
+    claimPre: (input: Parameters<PublicInquiryAdmissionAuthority["claimPre"]>[0]) => environment.AUTHORITY.getByName(authorityId).claimPre(input),
+    consumePost: (input: Parameters<PublicInquiryAdmissionAuthority["consumePost"]>[0]) => environment.AUTHORITY.getByName(authorityId).consumePost(input),
+  };
   if (environment.ADMISSION_IDENTITY_MODE === "google-lab") {
     if (environment.VERCEL_OIDC_ISSUER || environment.VERCEL_OIDC_AUDIENCE || environment.VERCEL_OIDC_SUBJECT ||
         environment.VERCEL_OWNER_ID || environment.VERCEL_PROJECT_ID ||
@@ -145,18 +151,11 @@ async function configure(environment: AdmissionServiceEnvironment, authorityId: 
       serviceAccountEmail: environment.GOOGLE_SERVICE_ACCOUNT_EMAIL,
       serviceAccountSubject: environment.GOOGLE_SERVICE_ACCOUNT_SUBJECT,
     };
-    // A Durable Object stub is a request-scoped I/O object in workerd: one created while serving request A cannot be used by request B
-    // ("Cannot perform I/O on behalf of a different request"). This handler is cached across requests, so the lab authority resolves a fresh
-    // stub (same namespace, same object name) inside each call, i.e. within the current request. Only immutable configuration is cached.
-    const labAuthority = {
-      claimPre: (input: Parameters<PublicInquiryAdmissionAuthority["claimPre"]>[0]) => environment.AUTHORITY.getByName(authorityId).claimPre(input),
-      consumePost: (input: Parameters<PublicInquiryAdmissionAuthority["consumePost"]>[0]) => environment.AUTHORITY.getByName(authorityId).consumePost(input),
-    };
     return createLaboratoryAdmissionService({ releases, oidcPolicy: policy, oidcVerifier: createGoogleOidcVerifier(policy, {
       // Workers' native fetch throws "Illegal invocation" when called with any `this` other than the global (the JWKS resolver stores
       // and invokes it as a method). Wrap it so it is always called as a plain function.
       fetch: (input, init) => fetch(input, init),
-    }), authority: labAuthority });
+    }), authority });
   }
   if (environment.ADMISSION_IDENTITY_MODE !== undefined && environment.ADMISSION_IDENTITY_MODE !== "vercel") throw new Error("identity-mode");
   const policy: VercelOidcPolicy = { issuer: environment.VERCEL_OIDC_ISSUER, audience: environment.VERCEL_OIDC_AUDIENCE,
@@ -168,7 +167,8 @@ export class AdmissionServiceWorker extends WorkerEntrypoint<AdmissionServiceEnv
   override async fetch(request: Request): Promise<Response> {
     try {
       if (!runtimeSecretsValid(this.env)) throw new Error("admission-secret-policy");
-      handlerPromise ??= configure(this.env); return await (await handlerPromise)(request);
+      handlerPromise ??= configure(this.env).catch((error) => { handlerPromise = undefined; throw error; });
+      return await (await handlerPromise)(request);
     }
     catch { return Response.json({ decision: "unavailable" }, { status: 503 }); }
   }
