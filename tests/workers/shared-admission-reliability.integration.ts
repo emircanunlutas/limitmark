@@ -112,7 +112,7 @@ async function main(): Promise<void> {
   process.env.WRANGLER_SEND_METRICS = "false";
   let mf: Miniflare | undefined;
   try {
-    for (const [name, entry] of [["admission", "workers/admission-service/index.ts"], ["gateway", "tests/workers/support/admin-gateway-entry.ts"]] as const) {
+    for (const [name, entry] of [["admission", "workers/admission-service/index.ts"], ["gateway", "workers/admin-gateway/index.ts"]] as const) {
       const built = await build({ entryPoints: [resolve(root, entry)], outfile: paths[name], bundle: true, write: false, plugins: [localFiles], platform: "browser",
         format: "esm", target: "es2022", conditions: ["workerd", "worker", "browser"], external: ["cloudflare:workers"], logLevel: "silent" });
       await writeFile(paths[name], built.outputFiles[0].contents);
