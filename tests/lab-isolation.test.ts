@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -73,15 +74,47 @@ test("only the lab:ba0 script runs defense-plane code; no other non-test script 
   }
 });
 
+// Reviewed lab-only OPERATOR tooling that legitimately carries the laboratory resource-name prefix. Exact files, exact needle, nothing else:
+// every other needle is still rejected in these files, and every other file is still rejected for every needle. None of these files is imported or
+// named by application, Worker, operator or script code (asserted below) and none is a deployable runtime artifact; the two rendered configs are
+// git-ignored operator-local renders of tracked lab templates (they exist only on an operator machine after a lab render).
+const LAB_OPERATOR_TOOLING_NEEDLE = "limitmark-lab-";
+const LAB_OPERATOR_TOOLING_FILES: readonly string[] = Object.freeze([
+  "deployment/lab-e2e/legitimate-user-baseline.mjs",   // tracked lab E2E client; carries the user-agent string "limitmark-lab-e2e/1"
+  "deployment/admission-service.lab.jsonc",            // git-ignored local render of admission-service.lab.template.jsonc
+  "deployment/public-signer.cloud-run-lab.jsonc",      // git-ignored local render of public-signer.cloud-run-lab.template.jsonc
+]);
+const posix = (file: string) => path.relative(root, file).split(path.sep).join("/");
+
 test("no runtime file references lab-only identifiers (proof schema, lab paths, lab environment)", () => {
-  const needles = ["limitmark_lab_proof", "disposable_database_marker", "TEST_DATABASE_PROOF", "artifacts/lab", "lab/policy", "lab/postgres", "lab/evidence", "limitmark-lab-"];
+  const needles = ["limitmark_lab_proof", "disposable_database_marker", "TEST_DATABASE_PROOF", "artifacts/lab", "lab/policy", "lab/postgres", "lab/evidence", LAB_OPERATOR_TOOLING_NEEDLE];
   const offenders: string[] = [];
   // package.json holds the sanctioned `lab:*` launch scripts; the next test pins what they may run.
   for (const file of runtimeFiles.filter((candidate) => path.basename(candidate) !== "package.json")) {
     const text = readIfPresent(file);
-    for (const needle of needles) if (text.includes(needle)) offenders.push(`${path.relative(root, file)}: ${needle}`);
+    const reviewedTooling = LAB_OPERATOR_TOOLING_FILES.includes(posix(file));
+    for (const needle of needles) {
+      if (text.includes(needle) && !(reviewedTooling && needle === LAB_OPERATOR_TOOLING_NEEDLE)) offenders.push(`${path.relative(root, file)}: ${needle}`);
+    }
   }
   assert.deepEqual(offenders, []);
+});
+
+test("the reviewed lab operator tooling exemption is exact, tracked-or-ignored as expected, and unreachable from runtime code", () => {
+  assert.equal(new Set(LAB_OPERATOR_TOOLING_FILES).size, LAB_OPERATOR_TOOLING_FILES.length);
+  for (const file of LAB_OPERATOR_TOOLING_FILES) {
+    assert.match(file, /^deployment\/[A-Za-z0-9._/-]+\.(?:mjs|jsonc)$/u, "an exact file path under deployment/, no glob");
+  }
+  const tracked = execFileSync("git", ["ls-files", "--", ...LAB_OPERATOR_TOOLING_FILES], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean);
+  assert.deepEqual(tracked, ["deployment/lab-e2e/legitimate-user-baseline.mjs"], "only the lab E2E client is tracked; rendered configs must never be committed");
+  for (const file of LAB_OPERATOR_TOOLING_FILES.filter((candidate) => !tracked.includes(candidate))) {
+    execFileSync("git", ["check-ignore", "-q", "--", file], { cwd: root });   // throws unless the rendered file is git-ignored
+  }
+  const naming = /legitimate-user-baseline|admission-service\.lab\.jsonc|public-signer\.cloud-run-lab\.jsonc/u;
+  const referencedByRuntimeCode = runtimeFiles.map(posix)
+    .filter((file) => !LAB_OPERATOR_TOOLING_FILES.includes(file) && /^(?:src|workers|operator|scripts|defense)\//u.test(file))
+    .filter((file) => naming.test(readIfPresent(path.join(root, file))));
+  assert.deepEqual(referencedByRuntimeCode, [], "no application, Worker, operator or script code names the lab tooling");
 });
 
 test("no runtime file imports test support code", () => {
@@ -91,7 +124,16 @@ test("no runtime file imports test support code", () => {
 
 test("the production dependency set is unchanged: lab tooling adds no runtime dependency", () => {
   const manifest = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as { dependencies: Record<string, string>; devDependencies: Record<string, string>; scripts: Record<string, string> };
-  assert.deepEqual(Object.keys(manifest.dependencies).sort(), ["drizzle-orm", "jose", "next", "postgres", "react", "react-dom", "server-only", "zod"]);
+  // The reviewed runtime dependency set. Each addition beyond the original eight was reviewed on its own; any other package fails here.
+  //   @opentelemetry/{api,exporter-metrics-otlp-proto,sdk-metrics}: commit 1409e7c "optional OpenTelemetry metrics export". Reviewed 2026-11-08:
+  //     imported only by src/lib/public-inquiry-otel.server.ts, inert (no-op recorder) unless PUBLIC_INQUIRY_OTEL_METRICS === "true", exact pins,
+  //     time series capped at 4. Not a lab dependency.
+  //   @vercel/oidc: production Vercel OIDC token provider (commit ab49021). Reviewed 2026-11-08: exact pin 4.0.7, imported only by
+  //     src/lib/admission-client.server.ts, header-gated (see tests/production-dependency-set.test.ts for the lockfile and importer pins).
+  assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
+    "@opentelemetry/api", "@opentelemetry/exporter-metrics-otlp-proto", "@opentelemetry/sdk-metrics", "@vercel/oidc",
+    "drizzle-orm", "jose", "next", "postgres", "react", "react-dom", "server-only", "zod",
+  ]);
   for (const name of Object.keys({ ...manifest.dependencies, ...manifest.devDependencies })) assert.doesNotMatch(name, /k6|artillery|autocannon|loadtest|locust|vegeta|wrk|testcontainers/i, name);
 });
 
