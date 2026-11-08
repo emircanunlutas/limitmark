@@ -15,6 +15,15 @@ test("the parity build context excludes the owner-held C1 audit package by its E
   for (const entry of entries) assert.ok(!/^\*+\/?$/u.test(entry) && !/^L[^/]*\*/u.test(entry) && !/^\*{1,2}\/?\*?$/u.test(entry), `no catch-all pattern: ${entry}`);
 });
 
+test("the other owner-held audit artifacts are excluded by exact root-relative name, each exactly once, and none is a tracked file", () => {
+  const tracked = new Set(execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean));
+  for (const name of ["LimitMark-C1-Audit-Package.zip", "audit-input", "audit-report.json", "ba0-c1-tag.bundle"]) {
+    assert.equal(entries.filter((entry) => entry === name).length, 1, `exactly one exact entry: ${name}`);
+    assert.equal([...tracked].some((file) => file === name || file.startsWith(`${name}/`)), false, `${name} is untracked, so excluding it hides no source`);
+  }
+  for (const entry of entries) assert.ok(!entry.startsWith("/") && !entry.includes(".."), `no absolute or parent path: ${entry}`);
+});
+
 test("the audit package is excluded from the working-tree digest inputs the same way the context is (the image provenance does not cover it)", () => {
   const provenance = readFileSync(path.join(root, "lab", "linux", "provenance.ts"), "utf8");
   assert.match(provenance, /Dockerfile\.dockerignore/u, "provenance documents that the build context is defined by the Dockerfile-specific ignore file");
