@@ -27,12 +27,12 @@ const PATHS_DCF10AF8 = ["defense", "src", "workers", "lab/policy", "lab/defense/
   "lab/defense/n2-measurement.ts", "lab/defense/external-reducer.ts", "lab/defense/external-accounting.ts", "lab/defense/canary.ts", "lab/defense/field-canary.ts", "lab/defense/collector.ts",
   "lab/defense/exposure-proof.ts", "lab/evidence"];
 const PATHS_AFF793E = ["defense", "lab/defense/n2-measurement.ts"];
-const GUARDS: Array<[string, string, string[], number]> = [["64ccc9d", MIGRATION_BASELINES[0], PATHS_64CCC9D, 44], ["dcf10af8", MIGRATION_BASELINES[1], PATHS_DCF10AF8, 44], ["aff793e", MIGRATION_BASELINES[2], PATHS_AFF793E, 2]];
+const GUARDS: Array<[string, string, string[], number]> = [["64ccc9d", MIGRATION_BASELINES[0], PATHS_64CCC9D, 42], ["dcf10af8", MIGRATION_BASELINES[1], PATHS_DCF10AF8, 42], ["aff793e", MIGRATION_BASELINES[2], PATHS_AFF793E, 0]];
 
 const approve = (registry: readonly ReviewedMigration[], which: (entry: ReviewedMigration) => boolean): ReviewedMigration[] =>
   registry.map((entry) => (which(entry) ? { ...entry, status: "APPROVED" as const, authorization: "TEST-ONLY decision reference", scope: "TEST-ONLY scope" } : { ...entry }));
 
-test("registry shape: a closed, versioned list of exact files, nothing approved, every entry current against the working tree", () => {
+test("registry shape: a closed, versioned list of exact files, only the two owner-approved instrumentation entries approved, every entry current against the working tree", () => {
   assert.equal(MIGRATION_REGISTRY_VERSION, 1);
   assert.equal(REVIEWED_MIGRATIONS.length, 44);
   assert.equal(new Set(REVIEWED_MIGRATIONS.map((entry) => entry.path)).size, 44);
@@ -44,26 +44,34 @@ test("registry shape: a closed, versioned list of exact files, nothing approved,
     assert.equal(sha256Lf(readFileSync(path.join(root, entry.path), "utf8")), entry.reviewedSha256, `${entry.path}: the entry records the CURRENT file (re-review after any edit)`);
     assert.equal(git(root, ["hash-object", entry.path]).trim(), entry.reviewedBlob, `${entry.path}: reviewedBlob is the current committed blob`);
     assert.match(entry.reviewedBlob, /^[0-9a-f]{40}$/u, entry.path);
-    assert.equal(entry.authorization, null, `${entry.path}: PENDING carries no authorization`);
-    assert.equal(entry.scope, "", `${entry.path}: PENDING carries no scope`);
-    assert.equal(isEffective(entry), false, `${entry.path}: PENDING never exempts`);
+    if (entry.status === "PENDING") {
+      assert.equal(entry.authorization, null, `${entry.path}: PENDING carries no authorization`);
+      assert.equal(entry.scope, "", `${entry.path}: PENDING carries no scope`);
+      assert.equal(isEffective(entry), false, `${entry.path}: PENDING never exempts`);
+    } else {
+      assert.equal(isEffective(entry), true, `${entry.path}: an APPROVED entry binds authorization, scope and reviewed blob`);
+    }
     for (const baseline of MIGRATION_BASELINES) {
       let blob: string | null = null;
       try { blob = git(root, ["rev-parse", `${baseline}:${entry.path}`]).trim(); } catch { blob = null; }
       assert.equal(blob, entry.historicalBlob, `${entry.path}@${baseline.slice(0, 7)}: one historical blob for all three baselines`);
     }
   }
-  assert.deepEqual(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "APPROVED"), [], "NOTHING is approved; approving an entry is a reviewed edit of this assertion");
+  // Approving any further entry is a reviewed edit of this assertion. Exactly the two instrumentation entries are approved (owner decision D1, 2026-11-08), with this exact authorization and scope.
+  assert.deepEqual(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "APPROVED").map((entry) => [entry.path, entry.reviewId, entry.authorization, entry.scope]), [
+    ["defense/core/outcome-counters.ts", "INSTRUMENTATION/D1", "Owner decision D1 (instrumentation wiring, conditional approval) + INSTRUMENTATION-MIGRATION-APPROVAL.md, 040292b", "observational outcome tally only: new module + runtime.ts wiring that tallies emitted events; no defense policy, threshold, status or event-order change"],
+    ["defense/plane/runtime.ts", "INSTRUMENTATION/D1", "Owner decision D1 (instrumentation wiring, conditional approval) + INSTRUMENTATION-MIGRATION-APPROVAL.md, 040292b", "observational outcome tally only: new module + runtime.ts wiring that tallies emitted events; no defense policy, threshold, status or event-order change"],
+  ]);
   const holds = (hold: string) => REVIEWED_MIGRATIONS.filter((entry) => entry.hold === hold).length;
   assert.deepEqual([holds("none"), holds("shared-production-module"), holds("guard-export")], [28, 11, 5]);
 });
 
-test("real repository: every file that differs from each baseline is registered and unmodified since review (no unreviewed drift), and all of it is still PENDING", () => {
+test("real repository: every file that differs from each baseline is registered and unmodified since review (no unreviewed drift), and everything except the two approved instrumentation entries is still PENDING", () => {
   for (const [name, baseline, paths, expected] of GUARDS) {
     const result = classifyDrift(root, baseline, paths);
     assert.deepEqual(result.unreviewed, [], `${name}: unreviewed drift`);
     assert.deepEqual(result.modifiedAfterReview, [], `${name}: modified after review`);
-    assert.deepEqual(result.authorized, [], `${name}: nothing is authorized yet`);
+    assert.deepEqual([...result.authorized].sort(), ["defense/core/outcome-counters.ts", "defense/plane/runtime.ts"], `${name}: exactly the two approved instrumentation entries are authorized`);
     assert.equal(result.pending.length, expected, `${name}: pending drift`);
   }
 });
