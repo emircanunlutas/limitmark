@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { M1_EXIT, m1Reconcile, parseM1Arguments } from "../lab/defense/ba0-m1-reconcile";
 import { reconcileLevel } from "../lab/defense/ba0-field-reconcile";
 import { GENERATOR_REPORT_SCHEMA, type GeneratorReport } from "../lab/defense/generator-report";
-import { M1_ALLOWED_STATUSES, evaluateStatusOverlay, m1Accepted, overlayIsWellFormed, type OverlayInput } from "../lab/defense/m1-status-contract";
+import { BASE_VERDICT_VALID, M1_ALLOWED_STATUSES, evaluateStatusOverlay, m1Accepted, overlayIsWellFormed, type OverlayInput } from "../lab/defense/m1-status-contract";
 import { SERVER_LEVEL_SCHEMA, type ServerLevelEvidence } from "../lab/defense/reconcile";
 import { EvidenceRun, REPOSITORY_ROOT, collectEnvironment, collectGitState } from "../lab/evidence/manifest";
 
@@ -24,6 +24,11 @@ const sorted = (values: string[]): string[] => [...values].sort();
 test("pinned allow-list is exactly {200, 503} (302/303 and 403/404 are not claimed)", () => {
   assert.deepEqual([...M1_ALLOWED_STATUSES], ["200", "503"]);
   assert.equal(Object.isFrozen(M1_ALLOWED_STATUSES), true);
+});
+
+test("the required base verdict is derived from the verdict module and equals the historical VALID label; the overlay files never spell it (the lab-wide producer scan stays green)", () => {
+  assert.equal(BASE_VERDICT_VALID, VALID);
+  for (const file of ["m1-status-contract.ts", "ba0-m1-reconcile.ts"]) assert.equal(fs.readFileSync(path.join(REPOSITORY_ROOT, "lab", "defense", file), "utf8").includes(`"${VALID}"`), false, file);
 });
 
 // ---- A: clean fixture

@@ -19,7 +19,10 @@
  * Not claimed: any coverage of 302/303 or 403/404 (the fixture never produces them), network or transport behaviour, or anything outside the
  * application plane.
  */
-import type { FinalVerdict } from "./field-verdict";
+import { decideFinal, type FinalVerdict } from "./field-verdict";
+
+/** The base verdict that M1 requires. It is taken from the one module that produces final verdicts (never re-spelled here: the overlay consumes verdicts, it never produces one). */
+export const BASE_VERDICT_VALID: FinalVerdict = decideFinal({ status: "complete", failureClass: null, reasons: [] }, []).verdict;
 
 export const M1_STATUS_CONTRACT_ID = "m1-status-contract-v1";
 /** Pinned. Confirmed empirically on the real plane -> Boundary -> App chain with the reviewed fixture cycle (200 and 503 only). */
@@ -40,7 +43,7 @@ export type OverlayInput = {
   serverStatus503: unknown;
 };
 
-const VERDICTS: ReadonlySet<string> = new Set<FinalVerdict>(["EXTERNAL-L7-QUALIFICATION-VALID", "INVALID", "ABORTED"]);
+const VERDICTS: ReadonlySet<string> = new Set<FinalVerdict>([BASE_VERDICT_VALID, "INVALID", "ABORTED"]);
 const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -89,7 +92,7 @@ export function evaluateStatusOverlay(input: OverlayInput): StatusOverlay {
     if (shed.total !== shed.expectedShed) reasons.push("m1.shed_total_not_expected");
     if ((generator["503"] ?? 0) !== shed.expectedShed) reasons.push("m1.generator_503_not_attributed");
     if ((server["503"] ?? 0) !== shed.total) reasons.push("m1.server_503_histogram_inconsistent");
-    if (base !== "EXTERNAL-L7-QUALIFICATION-VALID") reasons.push("m1.base_verdict_not_valid");
+    if (base !== BASE_VERDICT_VALID) reasons.push("m1.base_verdict_not_valid");
     return reasons.length === 0 ? { evaluated: true, outcome: "PASS", reasons: [] } : { evaluated: true, outcome: "REJECT", reasons };
   } catch {
     return { evaluated: false, outcome: "ERROR", reasons: ["m1.evaluation_failed"] };
@@ -110,5 +113,5 @@ export function overlayIsWellFormed(overlay: unknown): overlay is StatusOverlay 
 
 /** M1 acceptance of the status contract: base VALID and a well-formed, evaluated PASS. Everything else is not accepted. */
 export function m1Accepted(baseVerdict: unknown, overlay: unknown): boolean {
-  return baseVerdict === "EXTERNAL-L7-QUALIFICATION-VALID" && overlayIsWellFormed(overlay) && overlay.outcome === "PASS" && overlay.evaluated === true;
+  return baseVerdict === BASE_VERDICT_VALID && overlayIsWellFormed(overlay) && overlay.outcome === "PASS" && overlay.evaluated === true;
 }
