@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
-  MIGRATION_BASELINES, MIGRATION_REGISTRY_VERSION, REVIEWED_MIGRATIONS, assertMigrationBoundary, classifyDrift, withoutReviewedChanges, type ReviewedMigration,
+  MIGRATION_BASELINES, MIGRATION_REGISTRY_VERSION, REVIEWED_MIGRATIONS, assertMigrationBoundary, classifyDrift, isEffective, withoutReviewedChanges, type ReviewedMigration,
 } from "./support/reviewed-migrations";
 
 /**
@@ -30,7 +30,7 @@ const PATHS_AFF793E = ["defense", "lab/defense/n2-measurement.ts"];
 const GUARDS: Array<[string, string, string[], number]> = [["64ccc9d", MIGRATION_BASELINES[0], PATHS_64CCC9D, 44], ["dcf10af8", MIGRATION_BASELINES[1], PATHS_DCF10AF8, 44], ["aff793e", MIGRATION_BASELINES[2], PATHS_AFF793E, 2]];
 
 const approve = (registry: readonly ReviewedMigration[], which: (entry: ReviewedMigration) => boolean): ReviewedMigration[] =>
-  registry.map((entry) => (which(entry) ? { ...entry, status: "APPROVED" as const } : { ...entry }));
+  registry.map((entry) => (which(entry) ? { ...entry, status: "APPROVED" as const, authorization: "TEST-ONLY decision reference", scope: "TEST-ONLY scope" } : { ...entry }));
 
 test("registry shape: a closed, versioned list of exact files, nothing approved, every entry current against the working tree", () => {
   assert.equal(MIGRATION_REGISTRY_VERSION, 1);
@@ -42,6 +42,11 @@ test("registry shape: a closed, versioned list of exact files, nothing approved,
     assert.ok(entry.historicalBlob === null || /^[0-9a-f]{40}$/u.test(entry.historicalBlob), entry.path);
     assert.equal(entry.change === "added", entry.historicalBlob === null, entry.path);
     assert.equal(sha256Lf(readFileSync(path.join(root, entry.path), "utf8")), entry.reviewedSha256, `${entry.path}: the entry records the CURRENT file (re-review after any edit)`);
+    assert.equal(git(root, ["hash-object", entry.path]).trim(), entry.reviewedBlob, `${entry.path}: reviewedBlob is the current committed blob`);
+    assert.match(entry.reviewedBlob, /^[0-9a-f]{40}$/u, entry.path);
+    assert.equal(entry.authorization, null, `${entry.path}: PENDING carries no authorization`);
+    assert.equal(entry.scope, "", `${entry.path}: PENDING carries no scope`);
+    assert.equal(isEffective(entry), false, `${entry.path}: PENDING never exempts`);
     for (const baseline of MIGRATION_BASELINES) {
       let blob: string | null = null;
       try { blob = git(root, ["rev-parse", `${baseline}:${entry.path}`]).trim(); } catch { blob = null; }
@@ -77,11 +82,13 @@ test("the mechanism distinguishes authorized, pending, modified-after-review and
     for (const name of ["a", "b", "c", "d"]) writeFileSync(path.join(dir, `defense/${name}.ts`), `export const ${name} = 1;\n`);
     writeFileSync(path.join(dir, "defense/e.ts"), "export const e = 1;\n");
     const reviewedHash = (file: string) => sha256Lf(readFileSync(path.join(dir, file), "utf8"));
+    const reviewedBlob = (file: string) => run("hash-object", file).trim();
+    const bind = { authorization: "T/decision", scope: "T/scope" };
     const registry: ReviewedMigration[] = [
-      { path: "defense/a.ts", change: "modified", historicalBlob: blob("defense/a.ts"), reviewedSha256: reviewedHash("defense/a.ts"), reviewId: "T/a", hold: "none", status: "APPROVED" },
-      { path: "defense/b.ts", change: "modified", historicalBlob: blob("defense/b.ts"), reviewedSha256: reviewedHash("defense/b.ts"), reviewId: "T/b", hold: "none", status: "PENDING" },
-      { path: "defense/c.ts", change: "modified", historicalBlob: blob("defense/c.ts"), reviewedSha256: reviewedHash("defense/c.ts"), reviewId: "T/c", hold: "none", status: "APPROVED" },
-      { path: "defense/e.ts", change: "added", historicalBlob: null, reviewedSha256: reviewedHash("defense/e.ts"), reviewId: "T/e", hold: "none", status: "APPROVED" },
+      { path: "defense/a.ts", change: "modified", historicalBlob: blob("defense/a.ts"), reviewedSha256: reviewedHash("defense/a.ts"), reviewedBlob: reviewedBlob("defense/a.ts"), reviewId: "T/a", hold: "none", status: "APPROVED", ...(bind) },
+      { path: "defense/b.ts", change: "modified", historicalBlob: blob("defense/b.ts"), reviewedSha256: reviewedHash("defense/b.ts"), reviewedBlob: reviewedBlob("defense/b.ts"), reviewId: "T/b", hold: "none", status: "PENDING", ...({ authorization: null, scope: "" }) },
+      { path: "defense/c.ts", change: "modified", historicalBlob: blob("defense/c.ts"), reviewedSha256: reviewedHash("defense/c.ts"), reviewedBlob: reviewedBlob("defense/c.ts"), reviewId: "T/c", hold: "none", status: "APPROVED", ...(bind) },
+      { path: "defense/e.ts", change: "added", historicalBlob: null, reviewedSha256: reviewedHash("defense/e.ts"), reviewedBlob: reviewedBlob("defense/e.ts"), reviewId: "T/e", hold: "none", status: "APPROVED", ...(bind) },
     ];
     writeFileSync(path.join(dir, "defense/c.ts"), "export const c = 'edited again after review';\n"); // c: changed after its review
     run("add", "-A"); // an added file must be known to git for `git diff <baseline>` to list it (in the real repository added files are committed)
@@ -93,13 +100,21 @@ test("the mechanism distinguishes authorized, pending, modified-after-review and
     assert.deepEqual(remaining, ["defense/b.ts", "defense/d.ts"]);
     // an APPROVED entry whose file changed after review fails its reviewed half
     assert.throws(() => assertMigrationBoundary(dir, baseline, registry), /exactly the reviewed/u);
+    // an APPROVED entry WITHOUT authorization or scope exempts nothing and fails the boundary assertion
+    const unbound = registry.map((entry) => (entry.path === "defense/a.ts" ? { ...entry, authorization: null, scope: "" } : entry));
+    assert.ok(classifyDrift(dir, baseline, ["defense", "src"], unbound).pending.includes("defense/a.ts"));
+    assert.ok(git(dir, ["diff", "--name-only", baseline, "--", ...withoutReviewedChanges(["defense", "src"], unbound)]).includes("defense/a.ts"));
+    assert.throws(() => assertMigrationBoundary(dir, baseline, unbound), /must bind reviewedBlob, authorization and scope/u);
+    // a wrong reviewed blob (same sha256 claim, different committed content identity) is modified-after-review, never authorized
+    const wrongBlob = registry.map((entry) => (entry.path === "defense/a.ts" ? { ...entry, reviewedBlob: "1".repeat(40) } : entry));
+    assert.ok(classifyDrift(dir, baseline, ["defense", "src"], wrongBlob).modifiedAfterReview.includes("defense/a.ts"));
     // a wrong historical half classifies as unreviewed, never as authorized
     const wrongHistory = registry.map((entry) => (entry.path === "defense/a.ts" ? { ...entry, historicalBlob: "0".repeat(40) } : entry));
     assert.ok(classifyDrift(dir, baseline, ["defense", "src"], wrongHistory).unreviewed.includes("defense/a.ts"));
     // approving everything that is registered and clean leaves only the genuinely unreviewed file
     writeFileSync(path.join(dir, "defense/c.ts"), "export const c = 1;\n");
     run("add", "-A");
-    const clean = registry.map((entry) => ({ ...entry, status: "APPROVED" as const }));
+    const clean = registry.map((entry) => ({ ...entry, status: "APPROVED" as const, ...bind }));
     assert.deepEqual(git(dir, ["diff", "--name-only", baseline, "--", ...withoutReviewedChanges(["defense", "src"], clean)]).split("\n").filter(Boolean), ["defense/d.ts"]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -115,5 +130,15 @@ test("closure evidence on the real repository: which approvals empty which histo
   for (const [name, baseline, paths] of GUARDS) {
     assert.deepEqual(diff(baseline, paths, everything), [], `${name}: with all 44 approved the guard's diff is empty`);
     assertMigrationBoundary(root, baseline, everything);
+  }
+});
+
+test("the three historical guards are wired to the registry (and stay wired): they exclude through withoutReviewedChanges and assert the migration boundary", () => {
+  for (const file of ["lab-ba0-canary-continuity.test.ts", "lab-ba0-salvo-diagnostics.test.ts", "lab-ba0-salvo.test.ts"]) {
+    const source = readFileSync(path.join(__dirname, file), "utf8");
+    assert.match(source, /withoutReviewedChanges\(/u, file);
+    assert.match(source, /assertMigrationBoundary\(root, /u, file);
+    assert.match(source, /assertReviewedPatchBoundary\(root, /u, `${file}: the reviewed-patch boundary is still asserted`);
+    assert.doesNotMatch(source, /withoutReviewedPatches\(/u, `${file}: no direct use of the narrower helper`);
   }
 });
