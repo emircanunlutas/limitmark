@@ -1,36 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EventKindLedger, KIND_LEDGER_KINDS, KIND_LEDGER_SCHEMA } from "../lab/defense/event-kind-ledger";
-import { evaluateTallyAgainstLedger, type TallyCheckInput } from "../lab/defense/m1-tally-check";
-import { OutcomeCounters, type CountedEvent } from "../lab/defense/outcome-counters";
+import { evaluateTallyAgainstLedger, findDuplicateObjectKeys, tallyCheckWellFormed, type TallyCheckInput } from "../lab/defense/m1-tally-check";
+import { OutcomeCounters } from "../lab/defense/outcome-counters";
+import { enroll, ledgerArtifact, levelEvidence, noExternal, pass, planeFinOf, validInput, workload, type E } from "./support/m1-tally-fixture";
 
-// Per-kind collector ledger (criterion 9, additive). The tally side is the real OutcomeCounters; the ledger side is the real EventKindLedger fed numbered events.
+// Per-kind collector ledger and the criterion 9 false-PASS closure (F-1..F-4). The tally side is the real OutcomeCounters, the ledger side the real EventKindLedger.
 
-type E = CountedEvent & { kind: string };
-const pass = (status: number): E[] => [
-  { kind: "INGRESS_ACCEPTED" }, { kind: "L1_ENTERED" }, { kind: "L1_PASSED" }, { kind: "L2_ENTERED" }, { kind: "L2_DECIDED", class: "open", lane: "open", outcome: "admitted" },
-  { kind: "EGRESS_ATTEMPTED" }, { kind: "PROOF_ISSUED" }, { kind: "EGRESS_RESPONDED", status }, { kind: "INGRESS_RESPONDED", status },
-];
 const events = (): E[] => [...pass(200), ...pass(200), ...pass(200), { kind: "L2_ENROLLED" }, { kind: "L2_ENROLL_SKIPPED" }];
-const numbered = (list: E[]) => list.map((event, index) => ({ ...event, seq: index + 1, nonce: "n" }));
-const noExternal = { accepted: 0, strippedHeaders: 0, reduced: 0, l1: { entered: 0, passed: 0, rejected: 0, shed: 0, error: 0 }, l2: { entered: 0, decided: 0 }, egress: { attempted: 0, responded: 0, failed: 0 }, proofsIssued: 0, statusHistogram: {}, clientAborted: 0 };
-const countsOf = (list: E[]): Record<string, number> => { const out: Record<string, number> = {}; for (const e of list) out[e.kind] = (out[e.kind] ?? 0) + 1; return out; };
-
-function ledgerOf(list: unknown[]) {
-  const ledger = new EventKindLedger();
-  for (const event of list) ledger.observe(event);
-  return ledger.artifact({ received: list.length, lastSeq: list.length, droppedReported: 0 });
-}
-function input(list: E[] = events()): TallyCheckInput {
-  const counters = new OutcomeCounters();
-  for (const e of list) counters.observe(e);
-  const artifact = ledgerOf(numbered(list));
-  return { tally: counters.snapshot(), tallyFromFinalTick: true, journalByKind: countsOf(list), journalIncomplete: false, external: noExternal, kindLedger: artifact, planeChannel: { lastSeq: list.length, dropped: 0 } };
-}
-const reasonsOf = (i: TallyCheckInput) => evaluateTallyAgainstLedger(i).reasons;
+const reasonsOf = (i: TallyCheckInput): string[] => evaluateTallyAgainstLedger(i).reasons;
+const clone = <T,>(value: T): T => structuredClone(value);
+const plain = (value: unknown): Record<string, unknown> => value as Record<string, unknown>;
 
 test("ledger: exact integer counts per kind, ENROLL kinds included, deterministic", () => {
-  const a = ledgerOf(numbered(events())); const b = ledgerOf(numbered(events()));
+  const a = ledgerArtifact(events()); const b = ledgerArtifact(events());
   assert.deepEqual(a, b);
   assert.equal(a.schema, KIND_LEDGER_SCHEMA);
   assert.equal(a.counts.INGRESS_ACCEPTED, 3); assert.equal(a.counts.L2_ENROLLED, 1); assert.equal(a.counts.L2_ENROLL_SKIPPED, 1);
@@ -51,55 +34,164 @@ test("ledger: gaps, duplicates, reorders, unsupported kinds and malformed events
   assert.equal(a.unsupported, 1); assert.equal(a.malformed, 9); assert.equal(a.anonymous, 1); assert.equal(a.lastSeq, 5);
 });
 
-test("agreement with the tally, the plane anchor, the journal and the reducer -> PASS from the kind ledger", () => {
-  const result = evaluateTallyAgainstLedger(input());
-  assert.deepEqual(result, { evaluated: true, outcome: "PASS", reasons: [], differences: [], unobservable: [], ledgerSource: "kind-ledger" });
-});
-
-test("remote-lane traffic: ENROLL kinds are verified through the kind ledger (the journal holds none of them)", () => {
-  const list = events();
-  const i = input(list);
-  // simulate remote lane: the reducer counted every observable kind, the journal holds nothing
-  const remote = { ...noExternal, accepted: 3, l1: { entered: 3, passed: 3, rejected: 0, shed: 0, error: 0 }, l2: { entered: 3, decided: 3 }, egress: { attempted: 3, responded: 3, failed: 0 }, proofsIssued: 3, statusHistogram: { "200": 3 } };
-  const result = evaluateTallyAgainstLedger({ ...i, journalByKind: { L2_ENROLLED: 1 }, external: remote });
-  assert.deepEqual(result.reasons.filter((r) => r.includes("unobservable")), []);
-  assert.equal(result.ledgerSource, "kind-ledger");
-});
-
-test("mutations: every deliberate inconsistency is rejected with its own reason", () => {
-  const base = input();
-  const art = base.kindLedger as Record<string, unknown>;
-  const counts = art.counts as Record<string, number>;
-  const mutate = (patch: Record<string, unknown>, countsPatch: Record<string, number> = {}): TallyCheckInput => ({ ...base, kindLedger: { ...art, ...patch, counts: { ...counts, ...countsPatch } } });
-  assert.ok(reasonsOf(mutate({}, { L2_ENROLLED: 0 })).includes("m1.tally.difference_l2_enrolled"));
-  assert.ok(reasonsOf(mutate({}, { L1_ENTERED: counts.L1_ENTERED + 1 })).includes("m1.tally.difference_l1_entered"));
-  assert.ok(reasonsOf(mutate({ missingSeqs: 1, lastSeq: 30 })).includes("m1.tally.ledger_sequence_gap"));
-  assert.ok(reasonsOf(mutate({ duplicatesOrReordered: 1 })).includes("m1.tally.ledger_duplicates_or_reordered"));
-  assert.ok(reasonsOf(mutate({ malformed: 1 })).includes("m1.tally.ledger_malformed_events"));
-  assert.ok(reasonsOf(mutate({ unsupported: 1, lastSeq: 30 })).includes("m1.tally.ledger_unsupported_kinds"));
-  assert.ok(reasonsOf(mutate({ total: 99 })).includes("m1.tally.ledger_internally_inconsistent"));
-  assert.ok(reasonsOf(mutate({ lastSeq: 40 })).includes("m1.tally.ledger_internally_inconsistent"));
-  assert.ok(reasonsOf(mutate({ firstSeq: 2 })).includes("m1.tally.ledger_internally_inconsistent"));
-  // anchors
-  assert.ok(reasonsOf({ ...base, planeChannel: { lastSeq: 30, dropped: 0 } }).includes("m1.tally.ledger_anchor_mismatch"));
-  assert.ok(reasonsOf({ ...base, planeChannel: { lastSeq: 29, dropped: 2 } }).includes("m1.tally.ledger_anchor_mismatch"));
-  assert.ok(reasonsOf({ ...base, planeChannel: undefined }).includes("m1.tally.ledger_completeness_unanchored"));
-  // journal and reducer cross-checks
-  assert.ok(reasonsOf({ ...base, journalByKind: { ...(base.journalByKind as Record<string, number>), L1_ENTERED: 9 } }).includes("m1.tally.ledger_vs_reducer_l1_entered"));
-  // tally side
-  assert.ok(evaluateTallyAgainstLedger({ ...base, tally: { ...(base.tally as object), faults: 1 } }).reasons.includes("m1.tally.faults_nonzero"));
-  assert.ok(evaluateTallyAgainstLedger({ ...base, tally: { ...(base.tally as object), unknown: 1 } }).reasons.includes("m1.tally.unknown_nonzero"));
-});
-
-test("malformed kind ledger shapes are ERROR (never PASS); an absent one falls back to the stricter unobservable rule", () => {
-  const base = input();
-  const art = base.kindLedger as Record<string, unknown>;
-  for (const bad of ["x", 3, [], { unreadable: true }, { ...art, schema: "other" }, { ...art, counts: { L1_ENTERED: 1 } }, { ...art, counts: { ...(art.counts as object), L1_ENTERED: 1.5 } }, { ...art, total: -1 }, { ...art, firstSeq: 0 }]) {
-    const result = evaluateTallyAgainstLedger({ ...base, kindLedger: bad });
-    assert.equal(result.outcome, "ERROR", JSON.stringify(bad)?.slice(0, 50));
+test("complete valid evidence -> PASS, with the source named", () => {
+  for (const list of [events(), workload(), [...pass(200), ...enroll]]) {
+    const result = evaluateTallyAgainstLedger(validInput(list));
+    assert.deepEqual(result, { evaluated: true, outcome: "PASS", reasons: [], differences: [], ledgerSource: "kind-ledger" });
+    assert.equal(tallyCheckWellFormed(result), true);
   }
-  assert.equal(evaluateTallyAgainstLedger({ ...base, planeChannel: "x" }).outcome, "ERROR");
-  const fallback = evaluateTallyAgainstLedger({ ...base, kindLedger: undefined, external: { ...noExternal, accepted: 1, l1: { entered: 1, passed: 0, rejected: 0, shed: 0, error: 0 } } });
-  assert.equal(fallback.ledgerSource, "journal-and-reducer");
-  assert.ok(fallback.reasons.includes("m1.tally.ledger_unobservable_l2_enrolled"));
+});
+
+// ---------------------------------------------------------------------------------------------- F-1: closed tally key set
+test("F-1: a tally with ANY expected key missing is rejected for that key (previously PASS for PROOF_ISSUED, L2_ENROLLED, L2_ENROLL_SKIPPED, PARSER_REJECTED); no key is read as zero", () => {
+  const base = validInput(events());
+  for (const kind of KIND_LEDGER_KINDS) {
+    const tally = clone(plain(base.tally)); delete plain(tally.events)[kind];
+    const result = evaluateTallyAgainstLedger({ ...base, tally });
+    assert.notEqual(result.outcome, "PASS", `deleting ${kind}`);
+    assert.ok(result.reasons.includes(`m1.tally.tally_key_missing_${kind.toLowerCase()}`) || result.outcome === "ERROR", `${kind}: ${result.reasons.join(",")}`);
+  }
+  const emptyEvents = clone(plain(base.tally)); emptyEvents.events = {};
+  assert.equal(evaluateTallyAgainstLedger({ ...base, tally: emptyEvents }).outcome, "REJECT");
+});
+
+test("F-1: an unexpected extra key (even with value zero) is rejected; so are invalid values", () => {
+  const base = validInput(events());
+  const extra = clone(plain(base.tally)); plain(extra.events).BOGUS = 0;
+  assert.ok(reasonsOf({ ...base, tally: extra }).includes("m1.tally.tally_key_unexpected"));
+  for (const bad of [-1, 1.5, NaN, Infinity, 2 ** 60, "3", null, undefined, true]) {
+    const tally = clone(plain(base.tally)); plain(tally.events).L1_ENTERED = bad;
+    assert.equal(evaluateTallyAgainstLedger({ ...base, tally }).outcome, "ERROR", String(bad));
+  }
+});
+
+test("F-1: duplicate JSON keys are detected in the raw text (JSON.parse would keep the last silently) and reject", () => {
+  assert.deepEqual(findDuplicateObjectKeys('{"a":1,"b":{"c":1,"c":2}}'), ["$.b:c"]);
+  assert.deepEqual(findDuplicateObjectKeys('{"a":[{"x":1},{"x":2}],"b":"a\\"a","c":{"d":1}}'), [], "same key in different objects, escapes, nesting: no false positive");
+  assert.deepEqual(findDuplicateObjectKeys('{"events":{"L1_ENTERED":1,"L1_ENTERED":0}}'), ["$.events:L1_ENTERED"]);
+  assert.deepEqual(findDuplicateObjectKeys("not json"), []);
+  assert.ok(reasonsOf({ ...validInput(events()), duplicateKeys: ["telemetry.json$.events:L1_ENTERED"] }).includes("m1.tally.duplicate_json_keys"));
+});
+
+// ---------------------------------------------------------------------------------------------- F-2: the kind ledger is mandatory
+test("F-2: an absent kind ledger is REJECT in every circumstance (no weaker fallback), and a malformed or inconsistent one never passes", () => {
+  const base = validInput(events());
+  for (const absent of [undefined, null]) {
+    const result = evaluateTallyAgainstLedger({ ...base, kindLedger: absent });
+    assert.deepEqual([result.outcome, result.reasons, result.ledgerSource], ["REJECT", ["m1.tally.kind_ledger_absent"], "none"]);
+  }
+  // remote traffic accepted and no enrollment key in the tally: the old fallback passed; now it rejects
+  const remote = { ...noExternal, accepted: 1, l1: { entered: 1, passed: 0, rejected: 0, shed: 0, error: 0 } };
+  assert.equal(evaluateTallyAgainstLedger({ ...base, kindLedger: undefined, external: remote }).outcome, "REJECT");
+  const art = plain(base.kindLedger);
+  for (const bad of ["x", 3, [], { unreadable: true }, { ...art, schema: "other" }, { ...art, counts: { L1_ENTERED: 1 } }, { ...art, counts: { ...plain(art.counts), L1_ENTERED: 1.5 } }, { ...art, total: -1 }, { ...art, firstSeq: 0 }, { ...art, collector: undefined }, { ...art, collector: { received: 1 } }]) {
+    assert.equal(evaluateTallyAgainstLedger({ ...base, kindLedger: bad }).outcome, "ERROR", JSON.stringify(bad)?.slice(0, 50));
+  }
+  const c = (patch: Record<string, unknown>, countsPatch: Record<string, number> = {}) => ({ ...base, kindLedger: { ...art, ...patch, counts: { ...plain(art.counts), ...countsPatch } } });
+  assert.ok(reasonsOf(c({ total: 99 })).includes("m1.tally.ledger_internally_inconsistent"));
+  assert.ok(reasonsOf(c({ lastSeq: 40 })).includes("m1.tally.ledger_internally_inconsistent"));
+  assert.ok(reasonsOf(c({ firstSeq: 2 })).includes("m1.tally.ledger_internally_inconsistent"));
+});
+
+// ---------------------------------------------------------------------------------------------- F-3: the channel accounting contract
+test("F-3: every channel identity is enforced; each contradiction rejects (previously PASS for emitted/unacknowledged/queued/collector.received)", () => {
+  const base = validInput(events());
+  const fin = (patch: Record<string, unknown>, channelPatch: Record<string, unknown> = {}) => ({ ...base, planeFin: { ...plain(base.planeFin), ...patch, channel: { ...plain(plain(base.planeFin).channel), ...channelPatch } } });
+  const n = 29;
+  assert.ok(reasonsOf(fin({}, { emitted: 99 })).includes("m1.tally.channel_emitted_vs_lastseq"));
+  assert.ok(reasonsOf(fin({}, { sent: n - 1 })).includes("m1.tally.channel_emitted_identity"));
+  assert.ok(reasonsOf(fin({}, { queued: 1 })).includes("m1.tally.channel_emitted_identity"));
+  assert.ok(reasonsOf(fin({}, { unacknowledged: 7 })).includes("m1.tally.channel_unacknowledged_identity"));
+  assert.ok(reasonsOf(fin({}, { received: n - 1, unacknowledged: 1 })).includes("m1.tally.channel_not_quiescent"));
+  assert.ok(reasonsOf(fin({ drained: false })).includes("m1.tally.channel_not_quiescent"));
+  assert.ok(reasonsOf(fin({}, { dropped: 2, emitted: n + 2, lastSeq: n + 2 })).includes("m1.tally.channel_dropped_nonzero"));
+  assert.ok(reasonsOf(fin({}, { lastSeq: n + 1, emitted: n + 1, sent: n + 1, received: n + 1 })).includes("m1.tally.ledger_anchor_mismatch"));
+  assert.ok(reasonsOf(fin({}, { received: n - 3, unacknowledged: 3 })).includes("m1.tally.channel_received_vs_collector"));
+  // the collector's own counters
+  const art = plain(base.kindLedger); const col = (patch: Record<string, number>) => ({ ...base, kindLedger: { ...art, collector: { ...plain(art.collector), ...patch } } });
+  assert.ok(reasonsOf(col({ received: 3 })).includes("m1.tally.collector_received_vs_ledger"));
+  assert.ok(reasonsOf(col({ received: 3 })).includes("m1.tally.collector_received_vs_emitted"));
+  assert.ok(reasonsOf(col({ lastSeq: 5 })).includes("m1.tally.collector_lastseq_mismatch"));
+  assert.ok(reasonsOf(col({ droppedReported: 4 })).includes("m1.tally.collector_dropped_reported"));
+  // missing final anchors: unanchored, never completeness by default; malformed anchors are ERROR
+  for (const absent of [undefined, null]) assert.ok(reasonsOf({ ...base, planeFin: absent }).includes("m1.tally.ledger_completeness_unanchored"));
+  for (const bad of ["no_fin", 3, { drained: true }, { drained: true, channel: {} }, { drained: "yes", channel: plain(base.planeFin).channel }, { drained: true, channel: { ...plain(plain(base.planeFin).channel), sent: -1 } }, { drained: true, channel: { ...plain(plain(base.planeFin).channel), lastSeq: 1.5 } }]) {
+    assert.equal(evaluateTallyAgainstLedger({ ...base, planeFin: bad }).outcome, "ERROR", JSON.stringify(bad)?.slice(0, 60));
+  }
+});
+
+test("channel loss and ordering faults reach REJECT from the evaluator (transit loss, trailing loss, shared anchor, duplicates, reorders)", () => {
+  const list = [...pass(200), ...pass(200)];
+  const tally = (() => { const c = new OutcomeCounters(); for (const e of list) c.observe(e); return c.snapshot(); })();
+  const withLedger = (ledger: EventKindLedger, n: number, fin = planeFinOf(list.length)) => ({ ...validInput(list), tally, kindLedger: ledger.artifact({ received: n, lastSeq: n, droppedReported: 0 }), planeFin: fin });
+  const lose = (skip: (i: number) => boolean, dup = false) => { const l = new EventKindLedger(); let n = 0; list.forEach((e, i) => { if (skip(i)) return; n++; l.observe({ ...e, seq: i + 1, nonce: "n" }); if (dup && i === 5) l.observe({ ...e, seq: i + 1, nonce: "n" }); }); return { l, n }; };
+  const mid = lose((i) => i === 3); // one event lost in transit
+  assert.ok(reasonsOf(withLedger(mid.l, mid.n)).includes("m1.tally.ledger_sequence_gap"));
+  const tail = lose((i) => i === list.length - 1); // trailing loss: the plane anchor says 18
+  assert.ok(reasonsOf(withLedger(tail.l, tail.n)).includes("m1.tally.ledger_anchor_mismatch"));
+  const dup = lose(() => false, true);
+  assert.ok(reasonsOf(withLedger(dup.l, dup.n + 1)).includes("m1.tally.ledger_duplicates_or_reordered"));
+  const reorder = new EventKindLedger(); list.forEach((e, i) => reorder.observe({ ...e, seq: i === 4 ? 6 : i === 5 ? 5 : i + 1, nonce: "n" }));
+  assert.ok(reasonsOf(withLedger(reorder, list.length)).some((r) => r === "m1.tally.ledger_duplicates_or_reordered" || r === "m1.tally.ledger_sequence_gap"));
+});
+
+// ---------------------------------------------------------------------------------------------- F-4: a completed, non-empty level
+test("F-4: an empty level (previously PASS) and missing, incomplete or contradictory level evidence reject", () => {
+  const empty = evaluateTallyAgainstLedger(validInput([]));
+  assert.equal(empty.outcome, "REJECT");
+  assert.ok(empty.reasons.includes("m1.tally.level_empty"), empty.reasons.join(","));
+  // zero events everywhere while the plane's anchor says events were emitted
+  assert.ok(reasonsOf({ ...validInput([]), planeFin: planeFinOf(18) }).includes("m1.tally.ledger_anchor_mismatch"));
+  const base = validInput(events());
+  for (const absent of [undefined, null]) assert.ok(reasonsOf({ ...base, level: absent }).includes("m1.tally.level_evidence_missing"));
+  const lvl = (mutate: (l: ReturnType<typeof levelEvidence>) => void) => { const l = clone(levelEvidence()); mutate(l); return { ...base, level: l }; };
+  assert.ok(reasonsOf(lvl((l) => { l.core.level.id = "ba0-other"; })).includes("m1.tally.level_identity_mismatch"));
+  assert.ok(reasonsOf(lvl((l) => { l.serverLevel.serverSide.status = "stopped"; })).includes("m1.tally.level_not_complete"));
+  assert.ok(reasonsOf(lvl((l) => { l.serverLevel.serverSide.failureClass = "defense" as unknown as null; })).includes("m1.tally.level_not_complete"));
+  assert.ok(reasonsOf(lvl((l) => { (l.serverLevel.serverSide.reasons as unknown[]).push({ code: "x" }); })).includes("m1.tally.level_not_complete"));
+  assert.ok(reasonsOf(lvl((l) => { l.core.machine.phasesCompleted = false; })).includes("m1.tally.level_not_complete"));
+  assert.ok(reasonsOf(lvl((l) => { l.manifestResult = "SERVER-ABORTED"; })).includes("m1.tally.level_not_complete"));
+  for (const bad of ["x", 3, { serverLevel: {}, core: {}, manifestResult: "SERVER-COMPLETE" }, { ...levelEvidence(), manifestResult: 3 }, { ...levelEvidence(), serverLevel: { ...levelEvidence().serverLevel, schema: "v0" } }]) {
+    assert.equal(evaluateTallyAgainstLedger({ ...base, level: bad }).outcome, "ERROR", JSON.stringify(bad)?.slice(0, 50));
+  }
+});
+
+// ---------------------------------------------------------------------------------------------- cross records and the lower bound
+test("the journal and reducer cross-checks still reject; enrollment kinds use a lower bound only and equality with the tally still applies", () => {
+  const base = validInput(events());
+  const j = base.journalByKind as Record<string, number>;
+  assert.ok(reasonsOf({ ...base, journalByKind: { ...j, L1_ENTERED: 9 } }).includes("m1.tally.ledger_vs_reducer_l1_entered"));
+  const art = plain(base.kindLedger); const counts = plain(art.counts) as Record<string, number>;
+  const remote = { ...noExternal, accepted: 3, l1: { entered: 3, passed: 3, rejected: 0, shed: 0, error: 0 }, l2: { entered: 3, decided: 3 }, egress: { attempted: 3, responded: 3, failed: 0 }, proofsIssued: 3, statusHistogram: { "200": 3 } };
+  const remoteBase = { ...base, journalByKind: { L2_ENROLLED: 1, L2_ENROLL_SKIPPED: 1 }, external: remote };
+  assert.equal(evaluateTallyAgainstLedger(remoteBase).outcome, "PASS");
+  // a ledger enrollment count above the journal is allowed by the bound but the tally must equal it
+  const inflated = { ...remoteBase, kindLedger: { ...art, counts: { ...counts, L2_ENROLLED: 5 } } };
+  assert.ok(reasonsOf(inflated).includes("m1.tally.difference_l2_enrolled"));
+  // tally and ledger both lacking an enrollment the journal recorded: caught by the lower bound
+  assert.ok(reasonsOf({ ...remoteBase, journalByKind: { L2_ENROLLED: 4, L2_ENROLL_SKIPPED: 1 } }).includes("m1.tally.ledger_vs_reducer_l2_enrolled"));
+});
+
+test("tally-side faults still reject: faults, unknown, final tick, absent tally", () => {
+  const base = validInput(events());
+  assert.ok(reasonsOf({ ...base, tally: { ...plain(base.tally), faults: 1 } }).includes("m1.tally.faults_nonzero"));
+  assert.ok(reasonsOf({ ...base, tally: { ...plain(base.tally), unknown: 1 } }).includes("m1.tally.unknown_nonzero"));
+  assert.ok(reasonsOf({ ...base, tallyFromFinalTick: false }).includes("m1.tally.not_final_tick"));
+  assert.deepEqual(reasonsOf({ ...base, tally: undefined }), ["m1.tally.tally_missing"]);
+});
+
+test("hostile combinations of incomplete evidence never PASS and never throw", () => {
+  const base = validInput(events());
+  const fields = ["tally", "journalByKind", "external", "kindLedger", "planeFin", "level"] as const;
+  for (const field of fields) for (const value of [undefined, null, 0, "", [], {}, "x"]) {
+    const input = { ...base, [field]: value } as unknown as TallyCheckInput;
+    assert.notEqual(evaluateTallyAgainstLedger(input).outcome, "PASS", `${field}=${JSON.stringify(value)}`);
+  }
+  for (let mask = 1; mask < 2 ** fields.length; mask++) {
+    const input: Record<string, unknown> = { ...base };
+    fields.forEach((field, index) => { if (mask & (1 << index)) input[field] = undefined; });
+    assert.notEqual(evaluateTallyAgainstLedger(input as unknown as TallyCheckInput).outcome, "PASS", `mask ${mask}`);
+  }
+  const thrower = { get tally(): unknown { throw new Error("boom"); } } as unknown as TallyCheckInput;
+  assert.equal(evaluateTallyAgainstLedger(thrower).outcome, "ERROR");
 });

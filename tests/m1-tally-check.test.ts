@@ -4,37 +4,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { TALLY_EXIT, gatherTallyInput, m1TallyCheck, parseTallyArguments } from "../lab/defense/ba0-m1-tally-check";
-import { EXTERNAL_UNOBSERVABLE_KINDS, evaluateTallyAgainstLedger, externalKindCounts, tallyCheckWellFormed, type TallyCheckInput } from "../lab/defense/m1-tally-check";
-import { OutcomeCounters, type CountedEvent } from "../lab/defense/outcome-counters";
+import { evaluateTallyAgainstLedger, externalKindCounts, tallyCheckWellFormed, type TallyCheckInput } from "../lab/defense/m1-tally-check";
+import { OutcomeCounters } from "../lab/defense/outcome-counters";
+import { enroll, journalOf, ledgerArtifact, levelEvidence, noExternal, pass, planeFinOf, shed, tallyOf, validInput, workload, type E } from "./support/m1-tally-fixture";
 import { EvidenceRun, REPOSITORY_ROOT, collectEnvironment, collectGitState } from "../lab/evidence/manifest";
 
-// Criterion 9: the plane's own tally versus the collector ledger, per event kind. The tally side here is the REAL OutcomeCounters class fed real event shapes;
-// the ledger side is built from the same events so the "agree" case is true by construction and every mutation below is a deliberate disagreement.
-
-type E = CountedEvent & { kind: string };
-const pass = (status: number): E[] => [
-  { kind: "INGRESS_ACCEPTED" }, { kind: "L1_ENTERED" }, { kind: "L1_PASSED" }, { kind: "L2_ENTERED" }, { kind: "L2_DECIDED", class: "open", lane: "open", outcome: "admitted" },
-  { kind: "EGRESS_ATTEMPTED" }, { kind: "PROOF_ISSUED" }, { kind: "EGRESS_RESPONDED", status }, { kind: "INGRESS_RESPONDED", status },
-];
-const shed: E[] = [
-  { kind: "INGRESS_ACCEPTED" }, { kind: "L1_ENTERED" }, { kind: "L1_PASSED" }, { kind: "L2_ENTERED" },
-  { kind: "L2_DECIDED", class: "mutation", lane: "unverified", outcome: "shed", shedReason: "lane_budget" }, { kind: "INGRESS_RESPONDED", status: 503 },
-];
-const enroll: E[] = [...pass(200), { kind: "L2_ENROLLED" }];
-const workload = (): E[] => [...pass(200), ...pass(200), ...enroll, ...shed, ...shed];
-
-function tallyOf(events: E[], options: { injectedFault?: () => void } = {}) {
-  const counters = new OutcomeCounters(options);
-  for (const event of events) counters.observe(event);
-  return counters.snapshot();
-}
-const journalOf = (events: E[]): Record<string, number> => { const out: Record<string, number> = {}; for (const event of events) out[event.kind] = (out[event.kind] ?? 0) + 1; return out; };
-const noExternal = { accepted: 0, strippedHeaders: 0, reduced: 0, l1: { entered: 0, passed: 0, rejected: 0, shed: 0, error: 0 }, l2: { entered: 0, decided: 0 }, egress: { attempted: 0, responded: 0, failed: 0 }, proofsIssued: 0, statusHistogram: {}, clientAborted: 0 };
-const agree = (events: E[] = workload()): TallyCheckInput => ({ tally: tallyOf(events), tallyFromFinalTick: true, journalByKind: journalOf(events), journalIncomplete: false, external: noExternal });
+// Criterion 9: the plane's own tally versus the collector ledger, per event kind. Fixtures are shared (tests/support/m1-tally-fixture.ts): the tally side is the REAL
+// OutcomeCounters class, the ledger side the REAL EventKindLedger, so the "agree" case is true by construction and every mutation is a deliberate disagreement.
+const agree = (events: E[] = workload()): TallyCheckInput => validInput(events);
 
 test("agreement: the real tally of a mixed workload equals the ledger per kind, every identity holds -> PASS", () => {
   const result = evaluateTallyAgainstLedger(agree());
-  assert.deepEqual(result, { evaluated: true, outcome: "PASS", reasons: [], differences: [], unobservable: [], ledgerSource: "journal-and-reducer" });
+  assert.deepEqual(result, { evaluated: true, outcome: "PASS", reasons: [], differences: [], ledgerSource: "kind-ledger" });
   assert.equal(tallyCheckWellFormed(result), true);
 });
 
@@ -71,24 +52,24 @@ test("a non-zero faults count or a non-zero unknown count fails acceptance, with
 
 test("every disagreement is reported explicitly per kind with both numbers; nothing is absorbed", () => {
   const events = workload();
-  const journal = journalOf(events);
-  journal.INGRESS_RESPONDED -= 2; journal.L2_DECIDED -= 1; // events the channel dropped before the collector saw them
-  const result = evaluateTallyAgainstLedger({ ...agree(), journalByKind: journal });
+  const ledger = ledgerArtifact(events); // events the channel dropped before the collector saw them: the ledger holds fewer
+  const counts = { ...ledger.counts, INGRESS_RESPONDED: ledger.counts.INGRESS_RESPONDED - 2, L2_DECIDED: ledger.counts.L2_DECIDED - 1 };
+  const result = evaluateTallyAgainstLedger({ ...agree(), kindLedger: { ...ledger, counts } });
   assert.equal(result.outcome, "REJECT");
   assert.deepEqual(result.differences, [
     { kind: "INGRESS_RESPONDED", plane: journalOf(events).INGRESS_RESPONDED, ledger: journalOf(events).INGRESS_RESPONDED - 2 },
     { kind: "L2_DECIDED", plane: journalOf(events).L2_DECIDED, ledger: journalOf(events).L2_DECIDED - 1 },
   ].sort((a, b) => Object.keys(tallyOf(events).events).indexOf(a.kind) - Object.keys(tallyOf(events).events).indexOf(b.kind)));
   assert.ok(result.reasons.includes("m1.tally.difference_ingress_responded") && result.reasons.includes("m1.tally.difference_l2_decided"));
-  const extra = evaluateTallyAgainstLedger({ ...agree(), journalByKind: { ...journalOf(events), EGRESS_FAILED: 3 } });
+  const extra = evaluateTallyAgainstLedger({ ...agree(), kindLedger: { ...ledger, counts: { ...ledger.counts, EGRESS_FAILED: 3 } } });
   assert.ok(extra.reasons.includes("m1.tally.difference_egress_failed"), "a ledger count the plane never tallied is also a difference");
 });
 
 test("a tally that violates its own identity fails even when it matches the ledger", () => {
   const snapshot = tallyOf(workload());
   const broken = { ...snapshot, events: { ...snapshot.events, L1_PASSED: snapshot.events.L1_PASSED + 1 } };
-  const journal = { ...journalOf(workload()), L1_PASSED: broken.events.L1_PASSED };
-  const result = evaluateTallyAgainstLedger({ ...agree(), tally: broken, journalByKind: journal });
+  const ledger = ledgerArtifact(workload());
+  const result = evaluateTallyAgainstLedger({ ...agree(), tally: broken, kindLedger: { ...ledger, counts: { ...ledger.counts, L1_PASSED: broken.events.L1_PASSED } } });
   assert.equal(result.outcome, "REJECT");
   assert.ok(result.reasons.some((reason) => reason.startsWith("m1.tally.identity_i")), result.reasons.join(","));
 });
@@ -108,7 +89,7 @@ test("incomplete or unavailable ledger evidence is ERROR, never agreement by def
   assert.equal(evaluateTallyAgainstLedger({ ...agree(), journalByKind: { INGRESS_ACCEPTED: -1 } }).outcome, "ERROR");
 });
 
-test("remote traffic: ledger = journal (canary) + external counters; the two kinds the reducer does not count are reported UNOBSERVABLE, never assumed equal", () => {
+test("remote traffic: ledger = journal (canary) + external counters; the enrollment kinds are checked through the kind ledger, never assumed", () => {
   const canary = [...pass(200), ...enroll];
   const remote = [...pass(200), ...pass(200), ...shed, ...shed, ...shed];
   const all = [...canary, ...remote];
@@ -119,14 +100,15 @@ test("remote traffic: ledger = journal (canary) + external counters; the two kin
     accepted: k.INGRESS_ACCEPTED, l1: { entered: k.L1_ENTERED, passed: k.L1_PASSED, rejected: 0, shed: 0, error: 0 }, l2: { entered: k.L2_ENTERED, decided: k.L2_DECIDED },
     egress: { attempted: k.EGRESS_ATTEMPTED, responded: k.EGRESS_RESPONDED, failed: 0 }, proofsIssued: k.PROOF_ISSUED, statusHistogram, clientAborted: 0,
   };
-  const result = evaluateTallyAgainstLedger({ tally: tallyOf(all), tallyFromFinalTick: true, journalByKind: journalOf(canary), journalIncomplete: false, external });
-  assert.equal(result.outcome, "REJECT");
-  assert.deepEqual(result.differences, [], "every observable kind agrees");
-  assert.deepEqual(result.unobservable, [...EXTERNAL_UNOBSERVABLE_KINDS]);
-  assert.deepEqual(result.reasons, ["m1.tally.ledger_unobservable_l2_enrolled", "m1.tally.ledger_unobservable_l2_enroll_skipped"]);
-  // a real disagreement on top of the limit is still reported
-  const dropped = evaluateTallyAgainstLedger({ tally: tallyOf(all), tallyFromFinalTick: true, journalByKind: journalOf(canary), journalIncomplete: false, external: { ...external, l1: { ...external.l1, passed: external.l1.passed - 1 } } });
-  assert.ok(dropped.reasons.includes("m1.tally.difference_l1_passed"));
+  const input = { ...agree(all), journalByKind: journalOf(canary), external };
+  const result = evaluateTallyAgainstLedger(input);
+  assert.equal(result.outcome, "PASS", result.reasons.join(","));
+  // a real disagreement on top is still reported
+  const dropped = evaluateTallyAgainstLedger({ ...input, external: { ...external, l1: { ...external.l1, passed: external.l1.passed - 1 } } });
+  assert.ok(dropped.reasons.includes("m1.tally.ledger_vs_reducer_l1_passed"));
+  // an enrollment count in the ledger BELOW the journal's own is impossible
+  const low = evaluateTallyAgainstLedger({ ...input, journalByKind: { ...journalOf(canary), L2_ENROLLED: 2 } });
+  assert.ok(low.reasons.includes("m1.tally.ledger_vs_reducer_l2_enrolled"));
   assert.ok(externalKindCounts(external) !== null);
 });
 
@@ -140,11 +122,14 @@ test("hostile inputs never throw and never pass", () => {
 // ---- the CLI over a finalized evidence directory written the way the field run writes it
 const testRoot = (): string => { const root = path.join(REPOSITORY_ROOT, "artifacts", "lab", `evidence-test-m1tally-${process.pid}-${Math.random().toString(16).slice(2, 8)}`); fs.mkdirSync(root, { recursive: true }); return root; };
 
-function fieldLikeEvidence(root: string, events: E[], options: { final?: boolean; omitTally?: boolean; journalMutator?: (text: string) => string; overflow?: boolean; ledgerEvents?: E[] } = {}): string {
+function fieldLikeEvidence(root: string, events: E[], options: { final?: boolean; omitTally?: boolean; journalMutator?: (text: string) => string; overflow?: boolean; ledgerEvents?: E[]; omitKindLedger?: boolean; kindLedgerEvents?: E[]; level?: boolean } = {}): string {
   const evidence = new EvidenceRun("field-level", "ba0-l7-c1", new Date(), root);
   const tick = { type: "tick", role: "plane", tickSeq: 9, tMonoMs: 1, final: options.final ?? true, data: { outcomes: options.omitTally ? null : tallyOf(events) } };
   evidence.addJsonArtifact("telemetry.json", { ring: { plane: [{ ...tick, tickSeq: 8, final: false, data: { outcomes: null } }, tick], boundary: [], app: [] } });
   evidence.addJsonArtifact("external.json", { counters: noExternal });
+  if (!options.omitKindLedger) evidence.addJsonArtifact("kind-ledger.json", ledgerArtifact(options.kindLedgerEvents ?? events));
+  evidence.addJsonArtifact("processes.json", { plane: planeFinOf((options.kindLedgerEvents ?? events).length), boundary: "no_fin", app: "no_fin" });
+  if (options.level !== false) { const level = levelEvidence(); evidence.addJsonArtifact("server-level.json", level.serverLevel); evidence.addJsonArtifact("core.json", level.core); }
   const ledger = options.ledgerEvents ?? events;
   let text = ledger.map((event, index) => JSON.stringify({ src: "p", rid: `r${index}`, seq: index + 1, k: event.kind })).join("\n") + "\n";
   if (options.journalMutator) text = options.journalMutator(text);
@@ -179,9 +164,12 @@ test("CLI failures: missing tally REJECT, non-final tick REJECT, journal digest 
     assert.deepEqual(tampered.result?.reasons, ["m1.tally.evidence_journal_incomplete"]);
     assert.equal(m1TallyCheck({ serverId: fieldLikeEvidence(root, workload(), { overflow: true }) }, root).exit, TALLY_EXIT.error);
     const events = workload();
-    const dropped = m1TallyCheck({ serverId: fieldLikeEvidence(root, events, { ledgerEvents: events.filter((event, index) => !(index === 8 && event.kind === "INGRESS_RESPONDED")) }) }, root);
+    const lost = events.filter((event, index) => !(index === 8 && event.kind === "INGRESS_RESPONDED"));
+    const dropped = m1TallyCheck({ serverId: fieldLikeEvidence(root, events, { ledgerEvents: lost, kindLedgerEvents: lost }) }, root);
     assert.equal(dropped.exit, TALLY_EXIT.reject);
-    assert.deepEqual(dropped.result?.differences.map((difference) => difference.kind), ["INGRESS_RESPONDED"], "the dropped ledger event is named explicitly");
+    assert.ok(dropped.result?.differences.map((difference) => difference.kind).includes("INGRESS_RESPONDED"), "the dropped ledger event is named explicitly");
+    assert.equal(m1TallyCheck({ serverId: fieldLikeEvidence(root, workload(), { omitKindLedger: true }) }, root).result?.reasons[0], "m1.tally.kind_ledger_absent");
+    assert.ok(m1TallyCheck({ serverId: fieldLikeEvidence(root, workload(), { level: false }) }, root).result?.reasons.includes("m1.tally.level_evidence_missing"));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

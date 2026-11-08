@@ -4,6 +4,8 @@ import net from "node:net";
 import path from "node:path";
 import { test } from "node:test";
 import { ba0FieldFingerprint, BA0_FIELD_V1, type Ba0FieldThresholds } from "../lab/defense/field-thresholds";
+import { gatherTallyInput } from "../lab/defense/ba0-m1-tally-check";
+import { evaluateTallyAgainstLedger } from "../lab/defense/m1-tally-check";
 import { FIELD_LEVELS, canaryScheduleLagP99, parseFieldArguments, runFieldLevel, type AuthorizationLike, type FieldRunOutcome, type FieldRunSeams } from "../lab/defense/ba0-field-run";
 import { DISPOSABLE_MARKER_CONTENT, type FieldEnvironment } from "../lab/defense/field-preflight";
 import { REPOSITORY_ROOT } from "../lab/evidence/manifest";
@@ -186,6 +188,9 @@ test("a full level runs PREFLIGHT -> ... -> DONE: ordered states, every finaliza
     assert.deepEqual([kindLedger.missingSeqs, kindLedger.duplicatesOrReordered, kindLedger.unsupported, kindLedger.malformed], [0, 0, 0, 0]);
     assert.equal(kindLedger.lastSeq, processes.plane.channel.lastSeq);
     assert.equal(processes.plane.channel.dropped, 0);
+    // the criterion 9 evaluator over the REAL evidence of this run: every enforced channel/collector identity holds against a real plane and collector
+    const tallyCheck = evaluateTallyAgainstLedger(gatherTallyInput(outcome.evidenceDirectory!));
+    assert.deepEqual([tallyCheck.outcome, tallyCheck.reasons], ["PASS", []], "a clean real run passes criterion 9 as a whole");
     await assertTornDown(r);
   } finally { r.cleanup(); }
 });

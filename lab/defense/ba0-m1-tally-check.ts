@@ -17,7 +17,7 @@ import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolv
 import { evidenceSafeError } from "../evidence/redact";
 import { BA0_FIELD_V1, ba0FieldFingerprint } from "./field-thresholds";
 import { FIELD_EXIT } from "./field-verdict";
-import { evaluateTallyAgainstLedger, tallyCheckWellFormed, type TallyCheckInput, type TallyCheckResult } from "./m1-tally-check";
+import { evaluateTallyAgainstLedger, findDuplicateObjectKeys, tallyCheckWellFormed, type TallyCheckInput, type TallyCheckResult } from "./m1-tally-check";
 
 export const TALLY_EXIT = Object.freeze({ pass: 0, reject: 1, refused: FIELD_EXIT.refused, error: FIELD_EXIT.error });
 const JOURNAL_FILE = "ledger-journal-field.ndjson";
@@ -31,6 +31,7 @@ export function parseTallyArguments(argv: readonly string[]): TallyCli {
 }
 
 const readJson = (file: string): unknown => { try { return JSON.parse(readFileSync(file, "utf8")); } catch { return undefined; } };
+const DUPLICATE_KEY_CHECKED = ["telemetry.json", "kind-ledger.json", "processes.json", "external.json", "server-level.json", "core.json", "manifest.json"] as const;
 
 /** Gathers the evaluator's input from a finalized evidence directory. Anything unreadable becomes the matching null/flag, never a guess. */
 export function gatherTallyInput(directory: string): TallyCheckInput {
@@ -62,17 +63,25 @@ export function gatherTallyInput(directory: string): TallyCheckInput {
       journalByKind = counts;
     } catch { journalByKind = null; }
   }
-  // Optional additive records. A present-but-unparseable file is passed on as a malformed value (-> ERROR), never silently dropped.
+  // kind-ledger.json is MANDATORY for criterion 9: absent is passed on as undefined (-> REJECT), present-but-unparseable as a malformed value (-> ERROR).
   const ledgerPath = path.join(directory, "kind-ledger.json");
   const kindLedger = existsSync(ledgerPath) ? (readJson(ledgerPath) ?? { unreadable: true }) : undefined;
-  const processes = readJson(path.join(directory, "processes.json")) as { plane?: { channel?: unknown } | string } | undefined;
-  const planeChannel = processes !== undefined && typeof processes.plane === "object" && processes.plane !== null ? processes.plane.channel : undefined;
+  const processes = readJson(path.join(directory, "processes.json")) as { plane?: unknown } | undefined;
+  const planeFin = processes !== undefined && typeof processes.plane === "object" && processes.plane !== null ? processes.plane : undefined; // the string "no_fin" is not a fin
+  const serverLevel = readJson(path.join(directory, "server-level.json"));
+  const core = readJson(path.join(directory, "core.json"));
+  const manifest = readJson(path.join(directory, "manifest.json")) as { result?: unknown } | undefined;
+  const level = serverLevel === undefined || core === undefined || typeof manifest?.result !== "string" ? undefined : { serverLevel, core, manifestResult: manifest.result };
+  const duplicateKeys: string[] = [];
+  for (const name of DUPLICATE_KEY_CHECKED) {
+    try { for (const entry of findDuplicateObjectKeys(readFileSync(path.join(directory, name), "utf8"))) duplicateKeys.push(`${name}${entry}`); } catch { /* an unreadable file is handled where it is used */ }
+  }
   return {
     tally: tick === undefined ? { unreadable: true } : tick.data?.outcomes ?? null,
     tallyFromFinalTick: finals.length > 0,
     journalByKind, journalIncomplete,
     external: externalDoc?.counters ?? null,
-    kindLedger, planeChannel,
+    kindLedger, planeFin, level, duplicateKeys,
   };
 }
 
@@ -85,7 +94,7 @@ export function m1TallyCheck(cli: TallyCli, root: string = EVIDENCE_ROOT, now = 
   if (tampered.length > 0) return refuse(`server evidence failed its checksums: ${tampered.slice(0, 3).join(",")}`);
 
   let result = evaluateTallyAgainstLedger(gatherTallyInput(directory));
-  if (!tallyCheckWellFormed(result)) result = { evaluated: false, outcome: "ERROR", reasons: ["m1.tally.evaluation_failed"], differences: [], unobservable: [], ledgerSource: "none" };
+  if (!tallyCheckWellFormed(result)) result = { evaluated: false, outcome: "ERROR", reasons: ["m1.tally.evaluation_failed"], differences: [], ledgerSource: "none" };
   const evidence = new EvidenceRun("m1-tally-check", "m1-tally-check", now, root);
   evidence.addJsonArtifact("m1-tally-check.json", {
     contract: "m1-tally-check-v1",
@@ -93,7 +102,6 @@ export function m1TallyCheck(cli: TallyCli, root: string = EVIDENCE_ROOT, now = 
     runId: cli.serverId,
     tallyCheck: { evaluated: result.evaluated, outcome: result.outcome, reasons: result.reasons },
     differences: result.differences,
-    unobservableKinds: result.unobservable,
     ledgerSource: result.ledgerSource,
     claims: { defenseQualification: "not_claimed", notClaimed: ["pre-parser traffic and kernel drops are not seen by the tally", "events lost on the plane channel before numbering are outside every record"] },
   });
