@@ -10,6 +10,7 @@ Status legend: **IN FORCE** = value already in reviewed code and not in question
 3. Exposure: continuous proof holds in every tick (only the reviewed plane IPv4:port listens non-loopback); no external accept before ARMED.
 4. Resources never exceed ceilings: host CPU ≤ 80% (3 ticks), available memory ≥ 15%, plane ELD p99 ≤ 250 ms (3 ticks), RSS ≤ 512 MB, fds ≤ 70%; generator schedule-lag p99 ≤ 50 ms and ELD p99 ≤ 100 ms (otherwise the run is INVALID, not a defense failure).
 5. Recovery: after the load stops, quiet period 135 s, then recovery journeys all succeed; residual journeys (restriction after load) all succeed.
+6. Telemetry: gapless 1 s ticks (gap tolerance 2.5 s).
 
 ## Response contract for this fixture — DECIDED (D4)
 The synthetic origin's reviewed implementation governs: the reviewed cycle produces **200** (GET routes, POST states) and **503** (attributed `mutation/unverified/lane_budget` shed). 302/303 and 403/404 are **not** claimed as covered, because no fixture or assertion exercises them. The broader response contract (other statuses exist in the origin's malformed-input paths) is preserved and unaffected.

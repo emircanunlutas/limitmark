@@ -5,7 +5,7 @@
 # PART A — CURRENT STATE (2026-11-08, end of the "M1 Baseline Migration and Qualification Preparation" session)
 
 ## A1. Repository and Git state [VERIFIED]
-- Path `C:\Users\Emir\Desktop\pentest-website`, branch `feat/capacity-engineering`, remote `origin` = github.com/emircanunlutas/limitmark. HEAD at the start of this handoff task: `3192163160de767a970dbeee6f19843618e8c9e2` (the handoff commit created by this task comes after it; `git log -1` is authoritative). Nothing was pushed: there is no `origin/feat/capacity-engineering` ref, and the branch is 99 commits ahead of local `master` and 101 ahead of `origin/master` (`git log <ref>..HEAD`). `master` is untouched.
+- Path `C:\Users\Emir\Desktop\pentest-website`, branch `feat/capacity-engineering`, remote `origin` = github.com/emircanunlutas/limitmark. HEAD when this handoff was written: `3192163160de767a970dbeee6f19843618e8c9e2`; the canonical rewrite commit `87b553c93e203a987144312f25926810cf9328b6` followed it and was the verified HEAD at the start of the next session (`git log -1` is authoritative). Nothing was pushed: there is no `origin/feat/capacity-engineering` ref, and the branch is 99 commits ahead of local `master` and 101 ahead of `origin/master` (`git log <ref>..HEAD`). `master` is untouched.
 - Working tree: only untracked files. Tracked changes: none.
 - Untracked files: `GATE-11A-LOCAL-HARDENING-REPORT.md`, `GUARD-GENERATION-MARGIN-REVIEW.md`, `GUARD-GENERATION-RECOVERY-DESIGN.md`, `PRODUCTION-DESIGN-REPORT.md`, `PRODUCTION-READINESS-REPORT.md` (owner-facing reports, intentionally not committed), `audit-report.json`, `ba0-c1-tag.bundle`. The audit package directory `LimitMark-C1-Audit-Package/` exists on disk and is hidden from `git status` by `.git/info/exclude` (line 9) [VERIFIED]; it is untracked and protected.
 - **Protected, never stage/modify/delete/clean/reset:** `audit-report.json`, `ba0-c1-tag.bundle`, `LimitMark-C1-Audit-Package/`, the untracked reports above, the Wrangler OAuth session (**never run `wrangler logout`**). No push. No force operations.
@@ -57,7 +57,7 @@ Four separate workstreams, never to be conflated:
 3. Exposure: continuous proof holds in every tick; no external accept before ARMED.
 4. Resources never exceed ceilings: host CPU ≤ 80% (3 ticks), available memory ≥ 15%, plane ELD p99 ≤ 250 ms (3 ticks), RSS ≤ 512 MB, fds ≤ 70%; generator schedule-lag p99 ≤ 50 ms and ELD p99 ≤ 100 ms (otherwise INVALID, not a defense failure).
 5. Recovery: after load stops, quiet period 135 s, then recovery journeys all succeed; residual journeys all succeed.
-(`M1-CRITERIA.md` labels this group "Criteria 1–6" but prints only five numbered items. **Discrepancy [VERIFIED]:** there is no printed criterion 6; do not invent one. Resolve with the owner, e.g. relabel as 1–5 or identify the intended sixth.)
+6. Telemetry: gapless 1 s ticks (gap tolerance 2.5 s). [Restored 2026-11-08 by owner decision D1: it is criterion 6 of `QUALIFICATION-M1-DESIGN.md` §3 and matches `telemetry.gapToleranceMs: 2_500` in `lab/defense/field-thresholds.ts`; it had been omitted when `M1-CRITERIA.md` was written. The earlier "no printed criterion 6" discrepancy is resolved; nothing was invented.]
 
 **7–9 as currently written (PENDING; verbatim from `QUALIFICATION-M1-DESIGN.md`):**
 7. NEW, repeatability: three independent runs on fresh state (same commit, parameters, fixture cycle) all VALID, with identical shed reason sets and per-run shed share within ±5 percentage points of the median. A single VALID run is a smoke result, not M1.
@@ -99,14 +99,14 @@ Production NO-GO; Gates 9, 10, 11A closed; no live deployment; no cloud provisio
 1. Verify state: `git status`, `git log -5`, confirm 44 PENDING / 0 APPROVED, read this file, `M1-CRITERIA.md`, `INSTRUMENTATION-MIGRATION-APPROVAL.md`.
 2. Obtain an independent review of the two instrumentation entries (this author cannot be the independent reviewer); owner decides on approval and edits the registry (`status`, `authorization`, `scope`). Re-run the three guards in a clean checkout.
 3. Prepare the smallest acceptable migration batch: the 26 accept candidates by `reviewId` group, with the two open conditions (OIDC claim-check, telemetry label-set) resolved first.
-4. Present criteria 7–9 (A6) for final owner approval; fix the criteria 1–6 numbering discrepancy noted in A6.
+4. Present criteria 7–9 (A6) for final owner approval; (criteria 1–6 numbering: resolved, criterion 6 restored, see A6.)
 5. Review the N-1 overlay contract (A8); implement only after explicit authorization and the empirical histogram.
 6. Establish Linux parity prerequisites (Docker/Linux host availability; `lab:parity`); do not start Docker without a decision.
 7. Prepare M1 execution readiness (stop mechanism build/rehearsal, AUP human review, quotas/prices) without provisioning or generating traffic.
 8. Preserve every production and security restriction; avoid broad feature development before the first isolated qualification milestone is ready.
 
 ## A14. Unresolved items and unverified claims
-- Criteria "1–6" prints only five items (A6). Gate 12/17 status is taken from untracked reports and the runbook, not re-derived. The 8 audit-package failures and production/gateway non-deployment were not re-measured. Docker state not re-checked. The owner's N-1 "overlay selected" is recorded from the owner's handoff instruction; the prior session had presented it as a recommendation. Remote state of the branch is unknown (no remote-tracking ref).
+- Criteria 1–6 numbering: RESOLVED (criterion 6, telemetry, restored from `QUALIFICATION-M1-DESIGN.md`; see A6). Gate 12/17 status is taken from untracked reports and the runbook, not re-derived. The 8 audit-package failures and production/gateway non-deployment were not re-measured. Docker state not re-checked. The owner's N-1 "overlay selected" is recorded from the owner's handoff instruction; the prior session had presented it as a recommendation. Remote state of the branch is unknown (no remote-tracking ref).
 - Reviewer independence for the two instrumentation entries is not satisfied by the author.
 - A7 above is intentionally empty (numbering retained to avoid renumbering references).
 
