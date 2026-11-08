@@ -42,7 +42,7 @@ export type VerifiedInventory = { problems: string[]; bytes: Map<string, Buffer>
  * present but unlisted, and any checksum that does not match the bytes read. A mandatory artifact that is absent from both disk and inventory is NOT a problem here: the evaluator
  * rejects its absence with its own reason. Only bytes whose checksum matched are returned.
  */
-export function verifyMandatoryInventory(directory: string): VerifiedInventory {
+export function verifyMandatoryInventory(directory: string, required: readonly string[] = MANDATORY_ARTIFACTS): VerifiedInventory {
   const problems: string[] = [];
   const bytes = new Map<string, Buffer>();
   const listed = new Map<string, string>();
@@ -75,7 +75,7 @@ export function verifyMandatoryInventory(directory: string): VerifiedInventory {
   try {
     for (const entry of readdirSync(directory)) if (entry.endsWith(".json") && !listed.has(entry)) problems.push(`unlisted_artifact:${entry}`);
   } catch { problems.push("directory:unreadable"); }
-  for (const name of MANDATORY_ARTIFACTS) {
+  for (const name of required) {
     const file = path.join(directory, name);
     if (!existsSync(file)) continue;
     const hash = listed.get(name);

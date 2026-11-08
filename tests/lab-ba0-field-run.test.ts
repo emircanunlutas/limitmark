@@ -5,6 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { ba0FieldFingerprint, BA0_FIELD_V1, type Ba0FieldThresholds } from "../lab/defense/field-thresholds";
 import { gatherTallyInput } from "../lab/defense/ba0-m1-tally-check";
+import { evaluateReceipts } from "../lab/defense/m1-receipt-check";
+import { gatherReceiptInput } from "../lab/defense/ba0-m1-receipt-check";
 import { evaluateTallyAgainstLedger } from "../lab/defense/m1-tally-check";
 import { FIELD_LEVELS, canaryScheduleLagP99, parseFieldArguments, runFieldLevel, type AuthorizationLike, type FieldRunOutcome, type FieldRunSeams } from "../lab/defense/ba0-field-run";
 import { DISPOSABLE_MARKER_CONTENT, type FieldEnvironment } from "../lab/defense/field-preflight";
@@ -191,6 +193,11 @@ test("a full level runs PREFLIGHT -> ... -> DONE: ordered states, every finaliza
     // the criterion 9 evaluator over the REAL evidence of this run: every enforced channel/collector identity holds against a real plane and collector
     const tallyCheck = evaluateTallyAgainstLedger(gatherTallyInput(outcome.evidenceDirectory!));
     assert.deepEqual([tallyCheck.outcome, tallyCheck.reasons], ["REJECT", ["m1.tally.params_not_code_pinned", "m1.tally.external_lane_inactive"]], "every channel, collector, level-binding, inventory and receipt check passes on real evidence; the rig runs time-scaled test parameters (not the code-pinned BA0_FIELD_V1) and has no remote peer, so criterion 9 correctly refuses it as an M1 level");
+    // receipt reconciliation over the REAL evidence: every exact identity (processes' own counters = ledger attribution, channels = attributed events, pipeline chain, plane egress = boundary arrivals, canary client = ledger) holds
+    const receipts = evaluateReceipts(gatherReceiptInput(outcome.evidenceDirectory!));
+    assert.deepEqual([receipts.outcome, receipts.reasons], ["PASS", []], JSON.stringify(receipts.identities.filter((identity) => !identity.ok)));
+    assert.ok(receipts.identities.length >= 30 && receipts.identities.every((identity) => identity.ok));
+    assert.equal(receipts.campaignAttribution, "not_established");
     await assertTornDown(r);
   } finally { r.cleanup(); }
 });
