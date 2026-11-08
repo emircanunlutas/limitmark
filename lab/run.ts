@@ -16,7 +16,8 @@ import { executeHttpWorkload, warmUp, type EngineResult } from "./load/engine";
 import { runK6 } from "./load/k6";
 import { executeClosedLoop } from "./load/closed-loop";
 import { fieldLevelForWorkload, ba0FieldFingerprint } from "./defense/field-thresholds";
-import { buildGeneratorReport, campaignIdPattern, workloadFingerprint } from "./defense/generator-report";
+import { isCampaignId, CAMPAIGN_ID_RULE } from "./defense/campaign-id";
+import { buildGeneratorReport, workloadFingerprint } from "./defense/generator-report";
 import { assertSameLabAppContainer, inspectLabContainer } from "./host/docker";
 import { runAppRestart } from "./failure/app-restart";
 import { runPostgresOutage, type OutageMode } from "./failure/postgres-outage";
@@ -253,7 +254,7 @@ async function main(): Promise<number> {
 async function runClosedLoopLevel(run: AuthorizedRun, args: ParsedArguments, git: ReturnType<typeof collectGitState>, startedAt: Date, refuse: (e: PolicyRefusal, label: string) => number): Promise<number> {
   const field = fieldLevelForWorkload(run.workload.id)?.thresholds;
   if (field === undefined) return refuse(new PolicyRefusal("limit-invalid", "closed-loop workload is not a reviewed field level"), "level-not-reviewed");
-  if (args.campaign === undefined || !campaignIdPattern.test(args.campaign)) return refuse(new PolicyRefusal("limit-invalid", "--campaign must be a plain label (lowercase letters, digits, hyphens; 6 to 41 characters)"), "bad-campaign");
+  if (!isCampaignId(args.campaign)) return refuse(new PolicyRefusal("limit-invalid", `--campaign must be ${CAMPAIGN_ID_RULE}`), "bad-campaign");
   if (args.engine !== undefined || args.manageApp || args.appContainer !== undefined || args.k6Netns !== undefined || args.thresholds !== undefined) {
     return refuse(new PolicyRefusal("limit-invalid", "a closed-loop level takes only --target, --workload and --campaign"), "bad-options");
   }

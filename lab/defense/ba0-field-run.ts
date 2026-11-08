@@ -21,6 +21,7 @@
  *
  * Exit codes: 0 complete, 1 invalid, 2 refused at preflight, 3 aborted, 4 error.
  */
+import { isCampaignId } from "./campaign-id";
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { validateIngressBind, type IngressBind } from "../../defense/core/ingress-class";
@@ -683,7 +684,7 @@ export function parseFieldArguments(argv: readonly string[]): FieldCli {
   if (flags.has("--selftest")) return { targetId: "", levelId: "", campaignId: "", dryRun: false, selftest: true };
   for (const name of ["--target", "--level", "--campaign"]) if (values[name] === undefined) throw new Error(`${name} is required`);
   if (!/^[a-z][a-z0-9-]{2,40}$/.test(values["--target"])) throw new Error("--target must be a reviewed target id");
-  if (!/^[a-z0-9][a-z0-9-]{5,40}$/.test(values["--campaign"])) throw new Error("--campaign must be a plain label");
+  if (!isCampaignId(values["--campaign"])) throw new Error("--campaign must be a plain label (6 to 31 characters)");
   if (!/^[a-z0-9][a-z0-9-]{2,30}$/.test(values["--level"])) throw new Error("--level must be a reviewed level id");
   return { targetId: values["--target"], levelId: values["--level"], campaignId: values["--campaign"], dryRun: flags.has("--dry-run"), selftest: false };
 }
