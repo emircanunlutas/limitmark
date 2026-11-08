@@ -44,6 +44,7 @@ import { Collector, type AppFin, type BoundaryFin, type PlaneFin } from "./colle
 import { ExternalReducer } from "./external-reducer";
 import { canaryCounts, deriveExternalAccounting, unverifiedMutationBound, type ExternalAccountingReport } from "./external-accounting";
 import { proveExposure, type ExposureResult, type TopologyPids } from "./exposure-proof";
+import { EventKindLedger } from "./event-kind-ledger";
 import { writeFieldEvidence, type CanarySummary, type FieldEvidenceBundle, type WriteResult } from "./field-evidence";
 import { runFieldJourney } from "./field-canary";
 import { FieldAppProcess, FieldBoundaryProcess } from "./field-processes";
@@ -219,6 +220,9 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
   collector.enableLaneStreams();
   const reducer = new ExternalReducer({ limits: t.external, allowedShed: t.allowedShed, now: clock, report: (code, rid, detail) => collector.externalAnomaly(code, rid, detail) });
   collector.enableExternalLane(reducer);
+  // Additive observation (criterion 9): a per-event-kind count taken where every plane event passes, upstream of the journal and the external reducer. It decides nothing.
+  const kindLedger = new EventKindLedger();
+  collector.observePlaneEvents((event) => kindLedger.observe(event));
   const monitor = new TickMonitor(t, clock);
   const root = new HopTrustRoot();
   const control = createSyntheticOrigin({ instance: "control", onObservation: (event) => collector.ingestOrigin(event) });
@@ -518,6 +522,8 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       ...(canaryContinuity ? { canaryContinuity } : {}),
     };
     const write = writeFieldEvidence(evidence, bundle);
+    // Written in isolation, after every historical artifact: a refusal here costs nothing else, and an absent ledger makes criterion 9 unevaluable (never accepted).
+    try { evidence.addJsonArtifact("kind-ledger.json", kindLedger.artifact(collector.channel)); } catch { /* absent */ }
     const status = serverSide.status;
     evidence.finalize({
       git, environment: collectEnvironment(),

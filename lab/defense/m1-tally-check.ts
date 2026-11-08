@@ -7,12 +7,16 @@
  * Outcomes follow the approved overlay vocabulary: PASS (evaluated, no reasons) | REJECT (evaluated, reasons) | ERROR (not evaluable, reasons). The tally
  * being ABSENT is REJECT (the evidence was read and the tally is not in it); evidence that cannot be read or is incomplete is ERROR. Neither is acceptance.
  *
- * WHAT THE LEDGER SIDE IS. Stored evidence holds the ledger in two places: the journal (every plane event of a request the collector owns: the canary and
- * anonymous events) and the external reducer's counters (every request of the remote generator). The per-kind ledger count is journal + external. The
- * reducer does not count `L2_ENROLLED` / `L2_ENROLL_SKIPPED`, so when the remote generator was accepted at all (external.accepted > 0) the ledger count of those
- * two kinds is NOT observable and the kind is reported `ledger_unobservable` -- a failure, never an assumed agreement. This is a limit of today's evidence
- * artifacts, reported as such.
+ * LEDGER SOURCES, strongest first.
+ *   1. `kind-ledger.json` (event-kind-ledger.ts): a per-kind count of EVERY plane event the collector ingested, with a gapless-sequence integrity record.
+ *      When present it is the ledger. It is checked for internal consistency, against the plane's own final channel stats (lastSeq / dropped), against
+ *      the plane tally, and against the two older independent records (journal + external reducer counters) kind by kind.
+ *   2. Without it (evidence written before the ledger existed): journal + external reducer counters. The reducer does not count `L2_ENROLLED` /
+ *      `L2_ENROLL_SKIPPED`, so when remote traffic was accepted those two kinds are `ledger_unobservable` -- a failure, never an assumed agreement.
+ * What is NOT claimed: events the plane never emitted (pre-parser traffic, kernel drops) and events lost on the plane's own bounded channel before
+ * numbering are outside any of these records; the ledger can only show the numbered events and flag the gaps it sees.
  */
+import { KIND_LEDGER_KINDS, KIND_LEDGER_SCHEMA } from "./event-kind-ledger";
 import type { OutcomeSnapshot } from "./outcome-counters";
 import { checkOutcomeIdentities, compareToLedger, type LedgerDifference } from "./plane-outcome-check";
 
@@ -20,10 +24,12 @@ export type TallyCheckResult = {
   evaluated: boolean;
   outcome: "PASS" | "REJECT" | "ERROR";
   reasons: string[];
-  /** Per kind where the plane's count and the observable ledger count disagree (explicit, never absorbed). */
+  /** Per kind where the plane's count and the ledger count disagree (explicit, never absorbed). */
   differences: LedgerDifference[];
-  /** Kinds whose ledger count cannot be observed from stored evidence while remote traffic was accepted. */
+  /** Kinds whose ledger count cannot be observed from stored evidence while remote traffic was accepted (only without a kind ledger). */
   unobservable: string[];
+  /** Which record was used as the ledger. */
+  ledgerSource: "kind-ledger" | "journal-and-reducer" | "none";
 };
 
 export type TallyCheckInput = {
@@ -37,6 +43,10 @@ export type TallyCheckInput = {
   journalIncomplete: boolean;
   /** `external.json.counters`, or null when unavailable. */
   external: unknown;
+  /** `kind-ledger.json`; undefined/null when the evidence has none (an older run). */
+  kindLedger?: unknown;
+  /** The plane's final channel stats (`processes.json` plane.channel: emitted / dropped / lastSeq), the authoritative sequence anchor; undefined/null when absent. */
+  planeChannel?: unknown;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -78,13 +88,32 @@ function readSnapshot(value: unknown): OutcomeSnapshot | null {
   return out as unknown as OutcomeSnapshot;
 }
 
+type KindLedger = { counts: Record<string, number>; total: number; firstSeq: number | null; lastSeq: number; missingSeqs: number; duplicatesOrReordered: number; unsupported: number; malformed: number };
+
+/** Strict shape check of kind-ledger.json: the exact closed key set, integer counts, nothing extra required to be trusted. */
+function readKindLedger(value: unknown): KindLedger | null {
+  if (!isRecord(value) || value.schema !== KIND_LEDGER_SCHEMA) return null;
+  const counts = countTable(value.counts);
+  if (counts === null || Object.keys(counts).length !== KIND_LEDGER_KINDS.length || !KIND_LEDGER_KINDS.every((kind) => Object.hasOwn(counts, kind))) return null;
+  const { total, firstSeq, lastSeq, missingSeqs, duplicatesOrReordered, unsupported, malformed } = value;
+  if (!isCount(total) || !isCount(lastSeq) || !isCount(missingSeqs) || !isCount(duplicatesOrReordered) || !isCount(unsupported) || !isCount(malformed)) return null;
+  if (!(firstSeq === null || (isCount(firstSeq) && firstSeq >= 1))) return null;
+  return { counts, total, firstSeq, lastSeq, missingSeqs, duplicatesOrReordered, unsupported, malformed };
+}
+
+function readPlaneChannel(value: unknown): { lastSeq: number; dropped: number } | null {
+  if (!isRecord(value) || !isCount(value.lastSeq) || !isCount(value.dropped)) return null;
+  return { lastSeq: value.lastSeq, dropped: value.dropped };
+}
+
 const IDENTITY_REASON: Record<string, string> = { I11: "m1.tally.unknown_nonzero", I12: "m1.tally.faults_nonzero" };
+const slug = (kind: string): string => kind.toLowerCase().replace(/[^a-z0-9_]/gu, "_").slice(0, 32);
 
 /** Never throws. */
 export function evaluateTallyAgainstLedger(input: TallyCheckInput): TallyCheckResult {
-  const error = (reason: string): TallyCheckResult => ({ evaluated: false, outcome: "ERROR", reasons: [reason], differences: [], unobservable: [] });
+  const error = (reason: string): TallyCheckResult => ({ evaluated: false, outcome: "ERROR", reasons: [reason], differences: [], unobservable: [], ledgerSource: "none" });
   try {
-    if (input.tally === null || input.tally === undefined) return { evaluated: true, outcome: "REJECT", reasons: ["m1.tally.tally_missing"], differences: [], unobservable: [] };
+    if (input.tally === null || input.tally === undefined) return { evaluated: true, outcome: "REJECT", reasons: ["m1.tally.tally_missing"], differences: [], unobservable: [], ledgerSource: "none" };
     const snapshot = readSnapshot(input.tally);
     if (snapshot === null) return error("m1.tally.evidence_malformed_tally");
     if (input.journalByKind === null) return error("m1.tally.evidence_journal_unavailable");
@@ -93,6 +122,9 @@ export function evaluateTallyAgainstLedger(input: TallyCheckInput): TallyCheckRe
     if (input.journalIncomplete) return error("m1.tally.evidence_journal_incomplete");
     const external = externalKindCounts(input.external);
     if (external === null) return error("m1.tally.evidence_malformed_external");
+    const haveLedger = input.kindLedger !== undefined && input.kindLedger !== null;
+    const kindLedger = haveLedger ? readKindLedger(input.kindLedger) : null;
+    if (haveLedger && kindLedger === null) return error("m1.tally.evidence_malformed_kind_ledger");
 
     const reasons: string[] = [];
     if (!input.tallyFromFinalTick) reasons.push("m1.tally.not_final_tick");
@@ -103,19 +135,56 @@ export function evaluateTallyAgainstLedger(input: TallyCheckInput): TallyCheckRe
       reasons.push(IDENTITY_REASON[key] ?? `m1.tally.identity_${key.toLowerCase()}_fails`);
     }
 
-    const unobservable = external.accepted > 0 ? EXTERNAL_UNOBSERVABLE_KINDS.filter((kind) => Object.hasOwn(snapshot.events, kind)) : [];
-    const ledger: Record<string, number> = Object.create(null);
-    for (const kind of Object.keys(snapshot.events)) ledger[kind] = (journal[kind] ?? 0) + (external.observable[kind] ?? 0);
-    // Unobservable kinds are excluded from the equality comparison and reported separately: their ledger count is not knowable, so agreement can neither be shown nor denied.
-    const comparable: OutcomeSnapshot = { ...snapshot, events: Object.fromEntries(Object.entries(snapshot.events).filter(([kind]) => !unobservable.includes(kind))) };
-    const differences = compareToLedger(comparable, ledger);
-    for (const difference of differences) reasons.push(`m1.tally.difference_${difference.kind.toLowerCase()}`);
-    for (const kind of unobservable) reasons.push(`m1.tally.ledger_unobservable_${kind.toLowerCase()}`);
-    // The journal must not hold plane event kinds the tally does not know: that would be ledger activity the plane never tallied.
-    for (const kind of Object.keys(journal)) if (!Object.hasOwn(snapshot.events, kind) && journal[kind] > 0) reasons.push(`m1.tally.ledger_kind_not_tallied_${kind.toLowerCase().replace(/[^a-z0-9_]/gu, "_").slice(0, 32)}`);
+    let differences: LedgerDifference[];
+    let unobservable: string[] = [];
+    let ledgerSource: TallyCheckResult["ledgerSource"];
+
+    if (kindLedger !== null) {
+      ledgerSource = "kind-ledger";
+      // 1. the ledger's own integrity
+      const sum = Object.values(kindLedger.counts).reduce((a, b) => a + b, 0);
+      const accepted = kindLedger.total + kindLedger.unsupported;
+      const consistent = sum === kindLedger.total && kindLedger.lastSeq === accepted + kindLedger.missingSeqs && (accepted === 0 ? kindLedger.firstSeq === null && kindLedger.lastSeq === 0 : kindLedger.firstSeq === 1);
+      if (!consistent) reasons.push("m1.tally.ledger_internally_inconsistent");
+      if (kindLedger.missingSeqs > 0) reasons.push("m1.tally.ledger_sequence_gap");
+      if (kindLedger.duplicatesOrReordered > 0) reasons.push("m1.tally.ledger_duplicates_or_reordered");
+      if (kindLedger.malformed > 0) reasons.push("m1.tally.ledger_malformed_events");
+      if (kindLedger.unsupported > 0) reasons.push("m1.tally.ledger_unsupported_kinds");
+      // 2. the authoritative anchor: the plane's own final channel stats. Without it completeness is NOT established (stated, not assumed).
+      const channel = input.planeChannel === undefined || input.planeChannel === null ? null : readPlaneChannel(input.planeChannel);
+      if (input.planeChannel !== undefined && input.planeChannel !== null && channel === null) return error("m1.tally.evidence_malformed_plane_channel");
+      if (channel === null) reasons.push("m1.tally.ledger_completeness_unanchored");
+      else if (kindLedger.lastSeq !== channel.lastSeq || kindLedger.missingSeqs !== channel.dropped) reasons.push("m1.tally.ledger_anchor_mismatch");
+      // 3. the plane tally against the ledger, kind by kind (the two L2 enrollment kinds included)
+      differences = compareToLedger(snapshot, kindLedger.counts);
+      for (const difference of differences) reasons.push(`m1.tally.difference_${slug(difference.kind)}`);
+      // 4. the older, independent records: ledger = journal (canary and anonymous events) + the reducer's remote-lane counts
+      for (const kind of KIND_LEDGER_KINDS) {
+        const own = journal[kind] ?? 0;
+        const remote = external.observable[kind];
+        const ok = remote !== undefined ? kindLedger.counts[kind] === own + remote
+          : external.accepted === 0 ? kindLedger.counts[kind] === own : kindLedger.counts[kind] >= own; // the reducer's remote contribution to this kind is unknown unless no remote traffic was accepted
+        if (!ok) reasons.push(`m1.tally.ledger_vs_reducer_${slug(kind)}`);
+      }
+      for (const kind of Object.keys(journal)) if (journal[kind] > 0 && !Object.hasOwn(kindLedger.counts, kind)) reasons.push(`m1.tally.ledger_kind_not_tallied_${slug(kind)}`);
+    } else {
+      ledgerSource = "journal-and-reducer";
+      unobservable = external.accepted > 0 ? EXTERNAL_UNOBSERVABLE_KINDS.filter((kind) => Object.hasOwn(snapshot.events, kind)) : [];
+      const ledger: Record<string, number> = Object.create(null);
+      for (const kind of Object.keys(snapshot.events)) ledger[kind] = (journal[kind] ?? 0) + (external.observable[kind] ?? 0);
+      // Unobservable kinds are excluded from the equality comparison and reported separately: their ledger count is not knowable, so agreement can neither be shown nor denied.
+      const comparable: OutcomeSnapshot = { ...snapshot, events: Object.fromEntries(Object.entries(snapshot.events).filter(([kind]) => !unobservable.includes(kind))) };
+      differences = compareToLedger(comparable, ledger);
+      for (const difference of differences) reasons.push(`m1.tally.difference_${slug(difference.kind)}`);
+      for (const kind of unobservable) reasons.push(`m1.tally.ledger_unobservable_${slug(kind)}`);
+      // The journal must not hold plane event kinds the tally does not know: that would be ledger activity the plane never tallied.
+      for (const kind of Object.keys(journal)) if (!Object.hasOwn(snapshot.events, kind) && journal[kind] > 0) reasons.push(`m1.tally.ledger_kind_not_tallied_${slug(kind)}`);
+    }
 
     const unique = [...new Set(reasons)];
-    return unique.length === 0 ? { evaluated: true, outcome: "PASS", reasons: [], differences: [], unobservable: [] } : { evaluated: true, outcome: "REJECT", reasons: unique, differences, unobservable: [...unobservable] };
+    return unique.length === 0
+      ? { evaluated: true, outcome: "PASS", reasons: [], differences: [], unobservable: [], ledgerSource }
+      : { evaluated: true, outcome: "REJECT", reasons: unique, differences, unobservable: [...unobservable], ledgerSource };
   } catch {
     return error("m1.tally.evaluation_failed");
   }

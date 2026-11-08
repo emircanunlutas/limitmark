@@ -62,11 +62,17 @@ export function gatherTallyInput(directory: string): TallyCheckInput {
       journalByKind = counts;
     } catch { journalByKind = null; }
   }
+  // Optional additive records. A present-but-unparseable file is passed on as a malformed value (-> ERROR), never silently dropped.
+  const ledgerPath = path.join(directory, "kind-ledger.json");
+  const kindLedger = existsSync(ledgerPath) ? (readJson(ledgerPath) ?? { unreadable: true }) : undefined;
+  const processes = readJson(path.join(directory, "processes.json")) as { plane?: { channel?: unknown } | string } | undefined;
+  const planeChannel = processes !== undefined && typeof processes.plane === "object" && processes.plane !== null ? processes.plane.channel : undefined;
   return {
     tally: tick === undefined ? { unreadable: true } : tick.data?.outcomes ?? null,
     tallyFromFinalTick: finals.length > 0,
     journalByKind, journalIncomplete,
     external: externalDoc?.counters ?? null,
+    kindLedger, planeChannel,
   };
 }
 
@@ -79,7 +85,7 @@ export function m1TallyCheck(cli: TallyCli, root: string = EVIDENCE_ROOT, now = 
   if (tampered.length > 0) return refuse(`server evidence failed its checksums: ${tampered.slice(0, 3).join(",")}`);
 
   let result = evaluateTallyAgainstLedger(gatherTallyInput(directory));
-  if (!tallyCheckWellFormed(result)) result = { evaluated: false, outcome: "ERROR", reasons: ["m1.tally.evaluation_failed"], differences: [], unobservable: [] };
+  if (!tallyCheckWellFormed(result)) result = { evaluated: false, outcome: "ERROR", reasons: ["m1.tally.evaluation_failed"], differences: [], unobservable: [], ledgerSource: "none" };
   const evidence = new EvidenceRun("m1-tally-check", "m1-tally-check", now, root);
   evidence.addJsonArtifact("m1-tally-check.json", {
     contract: "m1-tally-check-v1",
@@ -88,7 +94,8 @@ export function m1TallyCheck(cli: TallyCli, root: string = EVIDENCE_ROOT, now = 
     tallyCheck: { evaluated: result.evaluated, outcome: result.outcome, reasons: result.reasons },
     differences: result.differences,
     unobservableKinds: result.unobservable,
-    claims: { defenseQualification: "not_claimed", notClaimed: ["pre-parser traffic and kernel drops are not seen by the tally", "remote-lane enrollment events are not counted by the stored ledger"] },
+    ledgerSource: result.ledgerSource,
+    claims: { defenseQualification: "not_claimed", notClaimed: ["pre-parser traffic and kernel drops are not seen by the tally", "events lost on the plane channel before numbering are outside every record"] },
   });
   evidence.finalize({
     git: collectGitState(), environment: collectEnvironment(), target: null, workload: null, ceilings: null, thresholds: ba0FieldFingerprint(BA0_FIELD_V1), engine: "offline-m1-tally-check",

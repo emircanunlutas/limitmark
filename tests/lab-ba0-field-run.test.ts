@@ -178,6 +178,14 @@ test("a full level runs PREFLIGHT -> ... -> DONE: ordered states, every finaliza
     assert.equal(level.paramsFingerprintSha256, ba0FieldFingerprint(r.thresholds).sha256);
     const manifest = readJson(outcome, "manifest.json") as { result: string };
     assert.equal(manifest.result, "SERVER-COMPLETE", "never a final verdict");
+    // criterion 9: the additive per-kind ledger is written from the real run, gapless, and anchored to the plane's own final channel stats
+    const kindLedger = readJson(outcome, "kind-ledger.json") as { schema: string; total: number; lastSeq: number; missingSeqs: number; duplicatesOrReordered: number; unsupported: number; malformed: number };
+    const processes = readJson(outcome, "processes.json") as { plane: { channel: { lastSeq: number; dropped: number } } };
+    assert.equal(kindLedger.schema, "ba0-kind-ledger-v1");
+    assert.ok(kindLedger.total > 0);
+    assert.deepEqual([kindLedger.missingSeqs, kindLedger.duplicatesOrReordered, kindLedger.unsupported, kindLedger.malformed], [0, 0, 0, 0]);
+    assert.equal(kindLedger.lastSeq, processes.plane.channel.lastSeq);
+    assert.equal(processes.plane.channel.dropped, 0);
     await assertTornDown(r);
   } finally { r.cleanup(); }
 });

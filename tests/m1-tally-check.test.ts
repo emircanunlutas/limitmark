@@ -34,7 +34,7 @@ const agree = (events: E[] = workload()): TallyCheckInput => ({ tally: tallyOf(e
 
 test("agreement: the real tally of a mixed workload equals the ledger per kind, every identity holds -> PASS", () => {
   const result = evaluateTallyAgainstLedger(agree());
-  assert.deepEqual(result, { evaluated: true, outcome: "PASS", reasons: [], differences: [], unobservable: [] });
+  assert.deepEqual(result, { evaluated: true, outcome: "PASS", reasons: [], differences: [], unobservable: [], ledgerSource: "journal-and-reducer" });
   assert.equal(tallyCheckWellFormed(result), true);
 });
 
