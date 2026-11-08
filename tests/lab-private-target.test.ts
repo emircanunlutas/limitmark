@@ -35,5 +35,5 @@ test("a private literal still needs the same guards as any remote target: dispos
 import { validateIngressBind } from "../defense/core/ingress-class";
 test("the plane's reviewed ingress bind accepts a private literal and still refuses wildcard, link-local, multicast and non-literals", () => {
   assert.deepEqual({ ...validateIngressBind({ ip: "10.0.0.5", port: 8080 }) }, { ip: "10.0.0.5", port: 8080 });
-  for (const ip of ["0.0.0.0", "::", "169.254.1.1", "224.0.0.1", "localhost", "10.0.0", "10.0.0.05"]) assert.throws(() => validateIngressBind({ ip, port: 8080 }), undefined, ip);
+  for (const ip of ["0.0.0.0", "::", "169.254.1.1", "224.0.0.1", "localhost", "10.0.0", "10.0.0.05"]) assert.throws(() => validateIngressBind({ ip, port: 8080 }), (error: unknown) => error instanceof Error, ip);
 });
