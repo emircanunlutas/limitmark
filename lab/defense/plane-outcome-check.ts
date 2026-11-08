@@ -1,12 +1,12 @@
 /**
- * Observation-only cross-checks over the plane's own OUTCOME TALLY (defense/core/outcome-counters.ts). Pure functions: no I/O, no clock.
+ * Observation-only cross-checks over the plane's own OUTCOME TALLY (lab/defense/outcome-counters.ts; the in-tree copy lives in PROPOSED-INSTRUMENTATION-WIRING.patch). Pure functions: no I/O, no clock.
  *
  * `checkOutcomeIdentities` verifies the tally against itself (quiescent snapshot: nothing in flight). `compareToLedger` reports every kind
  * whose plane-side count differs from the collector's ledger count: that difference is an UNEXPLAINED difference (typically events dropped
  * on the bounded channel). Neither function decides an admission, changes a verdict or is read by the verdict path; a caller may attach the
  * result to evidence as an advisory finding.
  */
-import type { OutcomeSnapshot } from "../../defense/core/outcome-counters";
+import type { OutcomeSnapshot } from "./outcome-counters";
 
 const sum = (table: Record<string, number>): number => Object.values(table).reduce((a, b) => a + b, 0);
 

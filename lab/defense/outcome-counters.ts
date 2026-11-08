@@ -13,8 +13,8 @@
  *     no address, no header, no token, no nonce is ever read or stored.
  *   - Disabled (the default: the front is not given a counter) means no allocation and no wrapper at all.
  */
-import { EGRESS_ERROR_KINDS, PLANE_EVENT_KINDS } from "./ledger";
-import { ALL_REJECT_REASONS } from "./types";
+import { EGRESS_ERROR_KINDS, PLANE_EVENT_KINDS } from "../../defense/core/ledger";
+import { ALL_REJECT_REASONS } from "../../defense/core/types";
 
 // Closed lists restated HERE (not imported from ./lanes) because the legacy Slice-1/2 plane's module graph must contain no L2 code; a test
 // pins every list below to the authoritative one in ./lanes.

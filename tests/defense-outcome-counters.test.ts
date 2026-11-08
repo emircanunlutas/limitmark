@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { test } from "node:test";
 import type { PlaneEvent } from "../defense/core/ledger";
-import { OutcomeCounters, countingEmit } from "../defense/core/outcome-counters";
+import { OutcomeCounters, countingEmit } from "../lab/defense/outcome-counters";
 import { createSyntheticOrigin } from "../defense/origin/synthetic-origin";
 import { createFront } from "../defense/plane/front";
 import { checkOutcomeIdentities, compareToLedger } from "../lab/defense/plane-outcome-check";
@@ -127,7 +127,7 @@ test("overhead is measured and small: per-event tally cost and end-to-end reques
 
 import { ALL_REJECT_REASONS } from "../defense/core/types";
 import { L2_ERROR_KINDS, L2_OUTCOMES, LANES, OPERATION_CLASSES, SHED_REASONS } from "../defense/core/lanes";
-import { COUNTED_CLASSES, COUNTED_L2_ERROR_KINDS, COUNTED_L2_OUTCOMES, COUNTED_LANES, COUNTED_SHED_REASONS, REJECT_REASON_KEY } from "../defense/core/outcome-counters";
+import { COUNTED_CLASSES, COUNTED_L2_ERROR_KINDS, COUNTED_L2_OUTCOMES, COUNTED_LANES, COUNTED_SHED_REASONS, REJECT_REASON_KEY } from "../lab/defense/outcome-counters";
 import { assertEvidenceSafe } from "../lab/evidence/redact";
 import { readFileSync } from "node:fs";
 
@@ -151,6 +151,6 @@ test("a real snapshot passes the evidence scanner unchanged (no forbidden key or
 });
 
 test("the legacy plane entry module graph has no L2 import through the counter module", () => {
-  const source = readFileSync(new URL("../defense/core/outcome-counters.ts", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//gu, "");
+  const source = readFileSync(new URL("../lab/defense/outcome-counters.ts", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//gu, "");
   assert.doesNotMatch(source, /from "\.\/(lanes|credit-filter|enrollment|replay-guard)"/u);
 });
