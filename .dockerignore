@@ -23,3 +23,8 @@ Dockerfile*
 README*
 PHASE*.md
 QA_REPORT.md
+
+# Phase 3P.4 rendered production lifecycle configs (real Cloudflare account identifiers): exact filenames, mirroring .gitignore. Not a glob.
+deployment/lifecycle-transport.production.json
+deployment/lifecycle-mailbox.production.jsonc
+deployment/operator-lifecycle-executor.production.jsonc

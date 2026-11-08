@@ -27,9 +27,9 @@ function gitGrep(pattern: string): Array<{ file: string; line: string }> {
 
 test("runtime/operator trees reference test-only fault machinery only in reviewed, justified places", () => {
   const hits = gitGrep(faultTokens.source);
-  const guardFiles = new Set(["workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/staging-dispatch-guard.ts"]);
+  const guardFiles = new Set(["workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/staging-dispatch-guard.ts", "workers/lifecycle-mailbox/lab-dispatch-guard.ts"]);
   // Reviewed, justified, non-reachable references:
-  //  - the two guards' constructor-only LocalFaultHooks parameter (private field,
+  //  - the three guards' (production, staging, lab) constructor-only LocalFaultHooks parameter (private field,
   //    default {}); workerd constructs Durable Objects with (state, env) only;
   //  - a comment in scripts/gate6-secure-input.ts naming a test harness.
   const guardShapes = [
