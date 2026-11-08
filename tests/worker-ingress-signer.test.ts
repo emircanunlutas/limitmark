@@ -138,3 +138,26 @@ test("laboratory signer binds the public host, forwards the origin host, and req
   });
   assert.equal((await missingAuth(new Request("https://inquiry-lab.example/"))).status, 503);
 });
+
+test("F-1: the factory itself rejects every pairwise collision among the four production secrets, before any signing or forwarding", async () => {
+  const pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+  const privatePkcs8 = encodeBase64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey)));
+  const names = ["signingPrivateKeyPkcs8", "identityHmacKey", "originSecret", "vercelBypassSecret"] as const;
+  const base = { signingPrivateKeyPkcs8: privatePkcs8, identityHmacKey: hmacKey, originSecret: "o".repeat(43), vercelBypassSecret: "b".repeat(43) };
+  const attempt = async (secrets: Record<(typeof names)[number], string>) => {
+    const forwarded: unknown[] = [];
+    const signer = createIngressSigner({ environment: "production", publicHosts: ["limitmark.com", "www.limitmark.com"], targetOrigin: "https://limitmark.com", originHostname: "limitmark.com",
+      audience: "prj_limitmark", deploymentId: "dpl_reviewed", keyId: "key-current", ...secrets }, {
+      now: () => 1_000_000, random: (bytes) => { bytes.fill(7); return bytes; }, fetch: async (input) => { forwarded.push(input); return new Response("ok"); } });
+    const response = await signer(new Request("https://limitmark.com/", { method: "GET", headers: { "cf-connecting-ip": "203.0.113.9" } }));
+    return { status: response.status, forwarded: forwarded.length };
+  };
+  assert.deepEqual(await attempt(base), { status: 200, forwarded: 1 }, "the distinct baseline works");
+  for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) {
+    assert.deepEqual(await attempt({ ...base, [names[j]]: base[names[i]] }), { status: 503, forwarded: 0 }, `${names[i]} == ${names[j]}`);
+  }
+  // the bypass secret specifically (the check that was dropped), and empty values
+  assert.deepEqual(await attempt({ ...base, vercelBypassSecret: base.originSecret }), { status: 503, forwarded: 0 });
+  assert.deepEqual(await attempt({ ...base, vercelBypassSecret: "" }), { status: 503, forwarded: 0 });
+  assert.deepEqual(await attempt({ ...base, originSecret: "" }), { status: 503, forwarded: 0 });
+});

@@ -80,6 +80,14 @@ async function importSigningKey(value: string, subtle: SubtleCrypto): Promise<Cr
   return subtle.importKey("pkcs8", toArrayBuffer(decodeCanonicalBase64url(value)), { name: "Ed25519" }, false, ["sign"]);
 }
 
+/** Secret-distinctness invariant (F-1). Production: signing key, identity HMAC key, origin secret AND the Vercel bypass secret must be pairwise distinct; the
+ * laboratory has no bypass secret, so its three must be. Enforced here as well as by the Worker-level runtime secret policy (defense in depth). */
+function distinctSecrets(configuration: IngressSignerConfiguration): boolean {
+  const secrets = [configuration.signingPrivateKeyPkcs8, configuration.identityHmacKey, configuration.originSecret,
+    ...(configuration.environment === "production" ? [configuration.vercelBypassSecret] : [])];
+  return secrets.every((secret) => typeof secret === "string" && secret.length > 0) && new Set(secrets).size === secrets.length;
+}
+
 export function createIngressSigner(configuration: IngressSignerConfiguration, dependencies: {
   fetch?: typeof fetch;
   now?: () => number;
@@ -96,7 +104,7 @@ export function createIngressSigner(configuration: IngressSignerConfiguration, d
       if (configuration.environment === "cloud-run-lab" && !configuration.cloudRunAuthorizationToken ||
           configuration.environment === "production" && !configuration.vercelBypassSecret) return new Response(null, { status: 503 });
       if (!configuration.audience || !configuration.deploymentId || !configuration.keyId ||
-          new Set([configuration.signingPrivateKeyPkcs8, configuration.identityHmacKey, configuration.originSecret]).size !== 3) return new Response(null, { status: 503 });
+          distinctSecrets(configuration) === false) return new Response(null, { status: 503 });
       const approvedOrigin = new URL(configuration.targetOrigin);
       if (approvedOrigin.origin !== configuration.targetOrigin || approvedOrigin.pathname !== "/" || approvedOrigin.search || approvedOrigin.hash ||
           approvedOrigin.username || approvedOrigin.password || approvedOrigin.port || approvedOrigin.hostname !== configuration.originHostname) return new Response(null, { status: 503 });
