@@ -178,3 +178,17 @@ test("driver behavior (real handshake): verify-full rejects an untrusted CA and 
     });
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("first production release: public-CA only -- the policy and the factory contain no private-CA, pinned-CA or TLS-object path", async () => {
+  const { readFile } = await import("node:fs/promises");
+  for (const file of ["src/lib/production-launch-policy.ts", "src/lib/public-inquiry-production-runtime.server.ts"]) {
+    const source = (await readFile(new URL(`../${file}`, import.meta.url), "utf8")).replace(/\/\*[\s\S]*?\*\//gu, "").replace(/^\s*\/\/.*$/gmu, "");
+    assert.doesNotMatch(source, /DatabaseTlsConfiguration|DATABASE_CA|rejectUnauthorized|\bca:|NODE_EXTRA_CA_CERTS|readFile|tls\.connect|checkServerIdentity/u, file);
+  }
+  // a custom CA in the URL, or a TLS object, can never satisfy the policy
+  for (const query of ["?sslmode=verify-full&sslrootcert=/ca.pem", "?sslmode=verify-ca", "?sslmode=require&sslrootcert=system&ssl=false"]) {
+    const verdictFor = verdict(url(query));
+    if (query.includes("sslrootcert=system")) assert.deepEqual(verdictFor, { ok: true }, "system trust store override resolves to verify-full by the driver itself");
+    else assert.equal(verdictFor.ok, false, query);
+  }
+});
