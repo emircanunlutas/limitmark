@@ -25,7 +25,19 @@
  *     C4 plane.lastSeq === collector.lastSeq === ledger.lastSeq; ledger.missingSeqs === plane.dropped; collector.droppedReported <= plane.dropped
  *   tally and ledger: the tally key set equals the closed vocabulary exactly (no key is ever treated as zero), counts equal per kind, identities I1..I12 hold,
  *   unknown === 0 and faults === 0.
- *   level: `server-level.json`, `core.json` and the manifest describe ONE complete level (same level id), and the level was not empty.
+ *   level (R-4): `server-level.json`, `core.json` and `manifest.json` describe ONE complete level: level id, campaign id, parameter fingerprint, workload fingerprint,
+ *     worker count and server-side status/failure class/reasons are equal across the artifacts that carry them; the git SHA of server-level equals the manifest's; the time
+ *     window is present and well formed; status complete, no failure class, no reasons, phasesCompleted, no firstReason, and the recorded finalization steps
+ *     (close_ingress, drain, final_telemetry, snapshot) all ok. A missing identity field is ERROR, never assumed.
+ *   external lane (R-1/R-2), each counter compared only with a counter of the SAME meaning:
+ *     X1 external.accepted > 0. `accepted` is the external reducer's count of remote-lane requests (plane INGRESS_ACCEPTED for requests the collector does not own); the
+ *        collector's canary requests are owned by the collector and never reach the reducer, so canary traffic cannot satisfy this. No minimum above zero is imposed.
+ *     X2 external.accepted === server-level.reconcileInput.externalAccepted, and the other copies in reconcileInput (statusHistogram, status503, classes, l1Rejected,
+ *        egressFailed, connections.acceptedRemote) equal their source counters. These are copies of one source: they detect substitution and truncation of one artifact.
+ *     X3 independent ingress evidence: connections.json final.acceptedRemote >= 1 (a remote request needs a remote connection; one connection may carry many requests
+ *        or none, so no equality) and equals reconcileInput.connections.acceptedRemote; sum(terminal) === accepted with terminal.unresolved === 0 (reducer E1).
+ *     X4 independent receipt evidence: the reducer's per-external-request boundary counters (arrived, admitted, rejected, relayed, responded) do not exceed the boundary
+ *        process's own counters of the same name, and its app counters (admitted, refused, executed) do not exceed the origin app's own; boundary.arrived <= egress.attempted.
  *   cross-records: ledger[k] === journal[k] + reducer[k] for each kind the reducer counts; ledger[k] >= journal[k] for the two enrollment kinds, whose remote
  *   share the reducer does not count (a lower bound only; equality with the tally still applies to them).
  * `kind-ledger.json` is MANDATORY. A run without it is REJECTED, never accepted by a weaker rule.
@@ -61,8 +73,13 @@ export type TallyCheckInput = {
   planeFin?: unknown;
   /** Object keys that occurred more than once in any evidence file read (JSON.parse silently keeps the last). */
   duplicateKeys?: readonly string[];
-  /** `{ serverLevel, core, manifestResult }` read from the same evidence directory; undefined/null when absent (REJECT). */
+  /** `{ serverLevel, core, manifest }` (the parsed server-level.json, core.json, manifest.json) from the same evidence directory; undefined/null when absent (REJECT). */
   level?: unknown;
+  /** `connections.json` (the plane listener's exact counters); undefined/null when absent (REJECT). */
+  connections?: unknown;
+  /** `processes.json` boundary and app entries (`{ drained, channel, stats }`, or the string "no_fin"); absent or "no_fin" is REJECT (no receipt evidence). */
+  boundaryFin?: unknown;
+  appFin?: unknown;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -74,7 +91,7 @@ const countTable = (value: unknown): Record<string, number> | null => {
   return out;
 };
 
-/** Object keys that appear twice in one JSON object of `text` (JSON.parse keeps the last silently). Returns `path:key` entries; a text that does not parse returns []. */
+/** Object keys that appear twice in one JSON object of `text` (JSON.parse keeps the last silently). Returns `path:key` entries; a text that does not parse returns []; a text that parses but cannot be scanned returns a `scanner-failed` entry. */
 export function findDuplicateObjectKeys(text: string): string[] {
   const found: string[] = [];
   let index = 0;
@@ -87,6 +104,7 @@ export function findDuplicateObjectKeys(text: string): string[] {
   };
   const value = (path: string): void => {
     skip();
+    path = path.length > 120 ? path.slice(0, 120) : path;
     const c = text[index];
     if (c === "{") {
       index++; const seen = new Set<string>(); skip();
@@ -104,7 +122,8 @@ export function findDuplicateObjectKeys(text: string): string[] {
     } else if (c === '"') string();
     else while (index < text.length && !",}] \t\r\n".includes(text[index])) index++;
   };
-  try { JSON.parse(text); value("$"); } catch { return []; }
+  try { JSON.parse(text); } catch { return []; } // invalid JSON is reported by the parser every consumer runs
+  try { value("$"); } catch { return ["$:scanner-failed"]; } // text that parses but defeats the scanner (for example extreme nesting) is a finding, never silently clean
   return found.slice(0, 20);
 }
 
@@ -160,22 +179,101 @@ function readPlaneFin(value: unknown): PlaneFin | null {
   return { drained: value.drained, emitted: c.emitted as number, dropped: c.dropped as number, sent: c.sent as number, received: c.received as number, queued: c.queued as number, unacknowledged: c.unacknowledged as number, lastSeq: c.lastSeq as number };
 }
 
-type LevelEvidence = { levelId: string; complete: boolean; coreLevelId: string; manifestComplete: boolean };
-/** Reads the level identity/completion evidence; null when its shape is not recognizable (ERROR). */
+type Lane = {
+  accepted: number; terminalSum: number; unresolved: number; egressAttempted: number; egressFailed: number; l1Rejected: number;
+  boundary: Record<"arrived" | "admitted" | "rejected" | "relayed" | "responded", number>; app: Record<"admitted" | "refused" | "executed", number>;
+  statusHistogram: Record<string, number>; status503: { total: number; expectedShed: number; unexplained: number }; classes: Record<string, number>;
+};
+/** The external reducer's counters this check relies on, or null when any is missing or not an exact count. */
+function readLane(external: unknown): Lane | null {
+  if (!isRecord(external)) return null;
+  const { accepted, terminal, egress, l1, boundary, app, statusHistogram, status503, l2 } = external;
+  const term = countTable(terminal); const hist = countTable(statusHistogram);
+  if (!isCount(accepted) || term === null || hist === null || !isRecord(egress) || !isRecord(l1) || !isRecord(boundary) || !isRecord(app) || !isRecord(status503) || !isRecord(l2)) return null;
+  const classes = countTable(l2.classes);
+  const b = ["arrived", "admitted", "rejected", "relayed", "responded"].map((k) => boundary[k]); const a = ["admitted", "refused", "executed"].map((k) => app[k]);
+  if (classes === null || !isCount(egress.attempted) || !isCount(egress.failed) || !isCount(l1.rejected) || !b.every(isCount) || !a.every(isCount)) return null;
+  if (!isCount(status503.total) || !isCount(status503.expectedShed) || !isCount(status503.unexplained)) return null;
+  return {
+    accepted, terminalSum: Object.values(term).reduce((x, y) => x + y, 0), unresolved: term.unresolved ?? 0, egressAttempted: egress.attempted, egressFailed: egress.failed, l1Rejected: l1.rejected,
+    boundary: { arrived: b[0] as number, admitted: b[1] as number, rejected: b[2] as number, relayed: b[3] as number, responded: b[4] as number },
+    app: { admitted: a[0] as number, refused: a[1] as number, executed: a[2] as number },
+    statusHistogram: hist, status503: { total: status503.total, expectedShed: status503.expectedShed, unexplained: status503.unexplained }, classes,
+  };
+}
+const sameTable = (x: Record<string, number>, y: Record<string, number>): boolean => {
+  const keys = new Set([...Object.keys(x), ...Object.keys(y)]);
+  for (const key of keys) if ((x[key] ?? 0) !== (y[key] ?? 0)) return false;
+  return true;
+};
+
+/** Receipt counters of a downstream process (processes.json boundary / app entry); null when it is the string "no_fin" or absent; undefined when malformed. */
+function readBoundaryStats(value: unknown): Record<"arrived" | "admitted" | "rejected" | "relayed" | "responded", number> | null | undefined {
+  if (value === undefined || value === null || typeof value === "string") return null;
+  if (!isRecord(value) || !isRecord(value.stats)) return undefined;
+  const s = value.stats; const keys = ["arrived", "admitted", "rejected", "relayed", "responded"] as const;
+  if (!keys.every((k) => isCount(s[k]))) return undefined;
+  return { arrived: s.arrived as number, admitted: s.admitted as number, rejected: s.rejected as number, relayed: s.relayed as number, responded: s.responded as number };
+}
+function readAppStats(value: unknown): Record<"admitted" | "refused" | "executed", number> | null | undefined {
+  if (value === undefined || value === null || typeof value === "string") return null;
+  if (!isRecord(value) || !isRecord(value.stats) || !isRecord(value.stats.counters)) return undefined;
+  const c = value.stats.counters;
+  if (!isCount(c.admitted) || !isCount(c.refused) || !isCount(c.executed)) return undefined;
+  return { admitted: c.admitted, refused: c.refused, executed: c.executed };
+}
+
+type LevelEvidence = {
+  levelId: string; coreLevelId: string; campaignId: string; coreCampaignId: string; paramsSha: string; coreParamsSha: string; workloadSha: string; coreWorkloadSha: string;
+  workers: number; coreWorkers: number; gitSha: string; manifestGitSha: string; statusSame: boolean; complete: boolean; manifestComplete: boolean; windowValid: boolean;
+  firstReasonSet: boolean; finalizationOk: boolean;
+  reconcile: { externalAccepted: number; statusHistogram: Record<string, number>; status503: { total: number; expectedShed: number; unexplained: number }; classes: Record<string, number>; l1Rejected: number; egressFailed: number; acceptedRemote: number } | null;
+};
+const HEX40 = /^[0-9a-f]{40}$/u; const HEX64 = /^[0-9a-f]{64}$/u;
+const REQUIRED_STEPS = ["close_ingress", "drain", "final_telemetry", "snapshot"];
+/** Reads the level identity/completion evidence; null when its shape is not recognizable (ERROR). Every identity field is required: nothing is defaulted. */
 function readLevel(value: unknown): LevelEvidence | null {
-  if (!isRecord(value) || !isRecord(value.serverLevel) || !isRecord(value.core) || typeof value.manifestResult !== "string") return null;
-  const { serverLevel, core } = value;
+  if (!isRecord(value) || !isRecord(value.serverLevel) || !isRecord(value.core) || !isRecord(value.manifest)) return null;
+  const { serverLevel, core, manifest } = value;
   const status = isRecord(serverLevel.serverSide) ? serverLevel.serverSide : null;
   const coreLevel = isRecord(core.level) ? core.level : null;
+  const params = isRecord(core.parameters) ? core.parameters : null;
   const machine = isRecord(core.machine) ? core.machine : null;
   const coreServer = isRecord(core.serverSide) ? core.serverSide : null;
-  if (status === null || coreLevel === null || machine === null || coreServer === null) return null;
-  if (typeof serverLevel.levelId !== "string" || typeof coreLevel.id !== "string" || serverLevel.schema !== "ba0-server-level-v1") return null;
-  if (typeof serverLevel.campaignId !== "string" || typeof serverLevel.gitSha !== "string" || typeof serverLevel.paramsFingerprintSha256 !== "string") return null;
-  const reasons = Array.isArray(status.reasons) ? status.reasons : null;
-  if (reasons === null) return null;
-  const complete = status.status === "complete" && status.failureClass === null && reasons.length === 0 && coreServer.status === "complete" && machine.phasesCompleted === true;
-  return { levelId: serverLevel.levelId, complete, coreLevelId: coreLevel.id, manifestComplete: value.manifestResult === "SERVER-COMPLETE" };
+  const git = isRecord(manifest.git) ? manifest.git : null;
+  if (status === null || coreLevel === null || params === null || machine === null || coreServer === null || git === null) return null;
+  if (serverLevel.schema !== "ba0-server-level-v1" || typeof manifest.result !== "string") return null;
+  if (typeof serverLevel.levelId !== "string" || typeof coreLevel.id !== "string" || typeof serverLevel.campaignId !== "string" || typeof coreLevel.campaignId !== "string") return null;
+  if (typeof serverLevel.gitSha !== "string" || !HEX40.test(serverLevel.gitSha) || typeof git.gitSha !== "string" || !HEX40.test(git.gitSha)) return null;
+  if (typeof serverLevel.paramsFingerprintSha256 !== "string" || !HEX64.test(serverLevel.paramsFingerprintSha256) || typeof params.sha256 !== "string" || !HEX64.test(params.sha256)) return null;
+  if (typeof serverLevel.workloadFingerprintSha256 !== "string" || !HEX64.test(serverLevel.workloadFingerprintSha256) || typeof core.workloadSha256 !== "string" || !HEX64.test(core.workloadSha256)) return null;
+  if (!isCount(serverLevel.workers) || !isCount(coreLevel.workers)) return null;
+  const reasons = Array.isArray(status.reasons) ? status.reasons : null; const coreReasons = Array.isArray(coreServer.reasons) ? coreServer.reasons : null;
+  if (reasons === null || coreReasons === null || typeof status.status !== "string" || typeof coreServer.status !== "string") return null;
+  if (!("failureClass" in status) || !("failureClass" in coreServer) || !("firstReason" in core) || !Array.isArray(core.sequence) || typeof machine.phasesCompleted !== "boolean") return null;
+  const codes = (list: unknown[]): string => JSON.stringify(list.map((entry) => (isRecord(entry) ? entry.code : entry)));
+  const w = serverLevel.window;
+  const windowValid = isRecord(w) && typeof w.openedAt === "string" && typeof w.closedAt === "string" && Number.isFinite(Date.parse(w.openedAt)) && Number.isFinite(Date.parse(w.closedAt)) &&
+    Date.parse(w.closedAt) >= Date.parse(w.openedAt) && typeof w.elapsedMs === "number" && Number.isFinite(w.elapsedMs) && w.elapsedMs >= 0;
+  const steps = core.sequence as unknown[];
+  const finalizationOk = steps.every((step) => isRecord(step) && step.ok === true && step.timedOut !== true && step.skippedByCap !== true) &&
+    REQUIRED_STEPS.every((name) => steps.some((step) => isRecord(step) && step.name === name));
+  let reconcile: LevelEvidence["reconcile"] = null;
+  const ri = serverLevel.reconcileInput;
+  if (isRecord(ri)) {
+    const hist = countTable(ri.statusHistogram); const classes = countTable(ri.classes); const s5 = ri.status503; const conn = ri.connections;
+    if (isCount(ri.externalAccepted) && hist !== null && classes !== null && isRecord(s5) && isCount(s5.total) && isCount(s5.expectedShed) && isCount(s5.unexplained) &&
+        isCount(ri.l1Rejected) && isCount(ri.egressFailed) && isRecord(conn) && isCount(conn.acceptedRemote)) {
+      reconcile = { externalAccepted: ri.externalAccepted, statusHistogram: hist, status503: { total: s5.total, expectedShed: s5.expectedShed, unexplained: s5.unexplained }, classes, l1Rejected: ri.l1Rejected, egressFailed: ri.egressFailed, acceptedRemote: conn.acceptedRemote };
+    } else return null;
+  } else if (ri !== null && ri !== undefined) return null;
+  return {
+    levelId: serverLevel.levelId, coreLevelId: coreLevel.id, campaignId: serverLevel.campaignId, coreCampaignId: coreLevel.campaignId, paramsSha: serverLevel.paramsFingerprintSha256, coreParamsSha: params.sha256,
+    workloadSha: serverLevel.workloadFingerprintSha256, coreWorkloadSha: core.workloadSha256, workers: serverLevel.workers, coreWorkers: coreLevel.workers, gitSha: serverLevel.gitSha, manifestGitSha: git.gitSha,
+    statusSame: status.status === coreServer.status && JSON.stringify(status.failureClass) === JSON.stringify(coreServer.failureClass) && codes(reasons) === codes(coreReasons),
+    complete: status.status === "complete" && status.failureClass === null && reasons.length === 0 && coreServer.status === "complete" && coreServer.failureClass === null && coreReasons.length === 0 && machine.phasesCompleted === true,
+    manifestComplete: manifest.result === "SERVER-COMPLETE", windowValid, firstReasonSet: core.firstReason !== null, finalizationOk, reconcile,
+  };
 }
 
 const IDENTITY_REASON: Record<string, string> = { I11: "m1.tally.unknown_nonzero", I12: "m1.tally.faults_nonzero" };
@@ -204,6 +302,17 @@ export function evaluateTallyAgainstLedger(input: TallyCheckInput): TallyCheckRe
     const haveLevel = input.level !== undefined && input.level !== null;
     const level = haveLevel ? readLevel(input.level) : null;
     if (haveLevel && level === null) return empty("ERROR", ["m1.tally.evidence_malformed_level"]);
+    const lane = readLane(input.external);
+    if (lane === null) return empty("ERROR", ["m1.tally.evidence_malformed_external"]);
+    const boundaryStats = readBoundaryStats(input.boundaryFin); const appStats = readAppStats(input.appFin);
+    if (boundaryStats === undefined || appStats === undefined) return empty("ERROR", ["m1.tally.evidence_malformed_receipts"]);
+    const haveConnections = input.connections !== undefined && input.connections !== null;
+    let acceptedRemote: number | null = null;
+    if (haveConnections) {
+      const c = input.connections;
+      if (!isRecord(c) || (c.final !== "not_available" && !(isRecord(c.final) && isCount(c.final.acceptedRemote)))) return empty("ERROR", ["m1.tally.evidence_malformed_connections"]);
+      if (isRecord(c.final)) acceptedRemote = c.final.acceptedRemote as number;
+    }
 
     const reasons: string[] = [];
     if ((input.duplicateKeys?.length ?? 0) > 0) reasons.push("m1.tally.duplicate_json_keys");
@@ -262,13 +371,47 @@ export function evaluateTallyAgainstLedger(input: TallyCheckInput): TallyCheckRe
     }
     for (const kind of Object.keys(journal)) if (journal[kind] > 0 && !Object.hasOwn(kindLedger.counts, kind)) reasons.push(`m1.tally.ledger_kind_not_tallied_${slug(kind)}`);
 
-    // F-4: one completed, non-empty level, identified by the existing level evidence
+    // R-4: one completed level, identified consistently across the artifacts that carry its identity
     if (level === null) reasons.push("m1.tally.level_evidence_missing");
     else {
       if (level.levelId !== level.coreLevelId) reasons.push("m1.tally.level_identity_mismatch");
+      if (level.campaignId !== level.coreCampaignId) reasons.push("m1.tally.level_campaign_mismatch");
+      if (level.paramsSha !== level.coreParamsSha) reasons.push("m1.tally.level_params_mismatch");
+      if (level.workloadSha !== level.coreWorkloadSha) reasons.push("m1.tally.level_workload_mismatch");
+      if (level.workers !== level.coreWorkers) reasons.push("m1.tally.level_workers_mismatch");
+      if (level.gitSha !== level.manifestGitSha) reasons.push("m1.tally.level_git_mismatch");
+      if (!level.statusSame) reasons.push("m1.tally.level_status_mismatch");
       if (!level.complete || !level.manifestComplete) reasons.push("m1.tally.level_not_complete");
+      if (!level.windowValid) reasons.push("m1.tally.level_window_invalid");
+      if (level.firstReasonSet) reasons.push("m1.tally.level_first_reason_set");
+      if (!level.finalizationOk) reasons.push("m1.tally.level_finalization_incomplete");
     }
+    // F-4: a non-empty level (plane-side)
     if (kindLedger.total === 0 || kindLedger.counts.INGRESS_ACCEPTED === 0 || (snapshot.events.INGRESS_ACCEPTED ?? 0) === 0) reasons.push("m1.tally.level_empty");
+
+    // R-1 / R-2: authoritative external-lane activity. Each comparison is between counters of the same meaning (see the header).
+    if (lane.accepted === 0) reasons.push("m1.tally.external_lane_inactive");
+    if ((snapshot.events.INGRESS_ACCEPTED ?? 0) < lane.accepted) reasons.push("m1.tally.external_exceeds_plane_ingress");
+    if (lane.terminalSum !== lane.accepted) reasons.push("m1.tally.external_terminal_vs_accepted");
+    if (lane.unresolved !== 0) reasons.push("m1.tally.external_unresolved");
+    if (level !== null) {
+      if (level.reconcile === null) reasons.push("m1.tally.reconcile_input_missing");
+      else {
+        const r = level.reconcile;
+        if (r.externalAccepted !== lane.accepted) reasons.push("m1.tally.external_accepted_vs_reconcile_input");
+        if (!sameTable(r.statusHistogram, lane.statusHistogram) || r.status503.total !== lane.status503.total || r.status503.expectedShed !== lane.status503.expectedShed ||
+            r.status503.unexplained !== lane.status503.unexplained || !sameTable(r.classes, lane.classes) || r.l1Rejected !== lane.l1Rejected || r.egressFailed !== lane.egressFailed) reasons.push("m1.tally.reconcile_input_vs_external");
+        if (acceptedRemote !== null && r.acceptedRemote !== acceptedRemote) reasons.push("m1.tally.connections_vs_reconcile_input");
+      }
+    }
+    if (acceptedRemote === null) reasons.push("m1.tally.connections_missing");
+    else if (lane.accepted > 0 && acceptedRemote < 1) reasons.push("m1.tally.external_without_remote_connection");
+    if (lane.boundary.arrived > lane.egressAttempted) reasons.push("m1.tally.receipt_exceeds_attempts");
+    if (boundaryStats === null || appStats === null) reasons.push("m1.tally.receipt_evidence_missing");
+    else {
+      if (!(["arrived", "admitted", "rejected", "relayed", "responded"] as const).every((k) => lane.boundary[k] <= boundaryStats[k])) reasons.push("m1.tally.boundary_receipts_contradict");
+      if (!(["admitted", "refused", "executed"] as const).every((k) => lane.app[k] <= appStats[k])) reasons.push("m1.tally.app_receipts_contradict");
+    }
 
     const unique = [...new Set(reasons)];
     return unique.length === 0

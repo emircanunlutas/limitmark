@@ -190,7 +190,7 @@ test("a full level runs PREFLIGHT -> ... -> DONE: ordered states, every finaliza
     assert.equal(processes.plane.channel.dropped, 0);
     // the criterion 9 evaluator over the REAL evidence of this run: every enforced channel/collector identity holds against a real plane and collector
     const tallyCheck = evaluateTallyAgainstLedger(gatherTallyInput(outcome.evidenceDirectory!));
-    assert.deepEqual([tallyCheck.outcome, tallyCheck.reasons], ["PASS", []], "a clean real run passes criterion 9 as a whole");
+    assert.deepEqual([tallyCheck.outcome, tallyCheck.reasons], ["REJECT", ["m1.tally.external_lane_inactive"]], "every channel, collector, level-binding and receipt check passes on real evidence; the loopback rig has no remote peer, so criterion 9 correctly refuses it as an M1 level");
     await assertTornDown(r);
   } finally { r.cleanup(); }
 });

@@ -31,7 +31,7 @@ export function parseTallyArguments(argv: readonly string[]): TallyCli {
 }
 
 const readJson = (file: string): unknown => { try { return JSON.parse(readFileSync(file, "utf8")); } catch { return undefined; } };
-const DUPLICATE_KEY_CHECKED = ["telemetry.json", "kind-ledger.json", "processes.json", "external.json", "server-level.json", "core.json", "manifest.json"] as const;
+const DUPLICATE_KEY_CHECKED = ["telemetry.json", "kind-ledger.json", "processes.json", "external.json", "server-level.json", "core.json", "manifest.json", "accounting.json", "connections.json"] as const;
 
 /** Gathers the evaluator's input from a finalized evidence directory. Anything unreadable becomes the matching null/flag, never a guess. */
 export function gatherTallyInput(directory: string): TallyCheckInput {
@@ -44,6 +44,7 @@ export function gatherTallyInput(directory: string): TallyCheckInput {
 
   let journalByKind: Record<string, number> | null = null;
   let journalIncomplete = false;
+  const duplicateJournal: string[] = [];
   const journalPath = path.join(directory, JOURNAL_FILE);
   if (existsSync(journalPath)) {
     try {
@@ -56,6 +57,7 @@ export function gatherTallyInput(directory: string): TallyCheckInput {
       for (const line of text.split("\n")) {
         if (line.length === 0) continue;
         lines++;
+        for (const entry of findDuplicateObjectKeys(line)) duplicateJournal.push(`${JOURNAL_FILE}:line${lines}${entry}`);
         const entry = JSON.parse(line) as { src?: unknown; k?: unknown };
         if (entry.src === "p" && typeof entry.k === "string") counts[entry.k] = (counts[entry.k] ?? 0) + 1;
       }
@@ -66,13 +68,14 @@ export function gatherTallyInput(directory: string): TallyCheckInput {
   // kind-ledger.json is MANDATORY for criterion 9: absent is passed on as undefined (-> REJECT), present-but-unparseable as a malformed value (-> ERROR).
   const ledgerPath = path.join(directory, "kind-ledger.json");
   const kindLedger = existsSync(ledgerPath) ? (readJson(ledgerPath) ?? { unreadable: true }) : undefined;
-  const processes = readJson(path.join(directory, "processes.json")) as { plane?: unknown } | undefined;
-  const planeFin = processes !== undefined && typeof processes.plane === "object" && processes.plane !== null ? processes.plane : undefined; // the string "no_fin" is not a fin
+  const processes = readJson(path.join(directory, "processes.json")) as { plane?: unknown; boundary?: unknown; app?: unknown } | undefined;
+  const planeFin = processes !== undefined && processes !== null && typeof processes.plane === "object" && processes.plane !== null ? processes.plane : undefined; // the string "no_fin" is not a fin
   const serverLevel = readJson(path.join(directory, "server-level.json"));
   const core = readJson(path.join(directory, "core.json"));
-  const manifest = readJson(path.join(directory, "manifest.json")) as { result?: unknown } | undefined;
-  const level = serverLevel === undefined || core === undefined || typeof manifest?.result !== "string" ? undefined : { serverLevel, core, manifestResult: manifest.result };
-  const duplicateKeys: string[] = [];
+  const manifest = readJson(path.join(directory, "manifest.json"));
+  const level = serverLevel === undefined || core === undefined || manifest === undefined ? undefined : { serverLevel, core, manifest };
+  const connections = readJson(path.join(directory, "connections.json"));
+  const duplicateKeys: string[] = [...duplicateJournal];
   for (const name of DUPLICATE_KEY_CHECKED) {
     try { for (const entry of findDuplicateObjectKeys(readFileSync(path.join(directory, name), "utf8"))) duplicateKeys.push(`${name}${entry}`); } catch { /* an unreadable file is handled where it is used */ }
   }
@@ -81,7 +84,7 @@ export function gatherTallyInput(directory: string): TallyCheckInput {
     tallyFromFinalTick: finals.length > 0,
     journalByKind, journalIncomplete,
     external: externalDoc?.counters ?? null,
-    kindLedger, planeFin, level, duplicateKeys,
+    kindLedger, planeFin, level, duplicateKeys, connections, boundaryFin: processes?.boundary ?? undefined, appFin: processes?.app ?? undefined,
   };
 }
 

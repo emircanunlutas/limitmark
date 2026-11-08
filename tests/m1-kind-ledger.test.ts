@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { EventKindLedger, KIND_LEDGER_KINDS, KIND_LEDGER_SCHEMA } from "../lab/defense/event-kind-ledger";
 import { evaluateTallyAgainstLedger, findDuplicateObjectKeys, tallyCheckWellFormed, type TallyCheckInput } from "../lab/defense/m1-tally-check";
 import { OutcomeCounters } from "../lab/defense/outcome-counters";
-import { enroll, ledgerArtifact, levelEvidence, noExternal, pass, planeFinOf, validInput, workload, type E } from "./support/m1-tally-fixture";
+import { enroll, ledgerArtifact, levelEvidence, noExternal, pass, planeFinOf, remoteWorkload, validInput, workload, type E } from "./support/m1-tally-fixture";
 
 // Per-kind collector ledger and the criterion 9 false-PASS closure (F-1..F-4). The tally side is the real OutcomeCounters, the ledger side the real EventKindLedger.
 
@@ -97,7 +97,7 @@ test("F-2: an absent kind ledger is REJECT in every circumstance (no weaker fall
 test("F-3: every channel identity is enforced; each contradiction rejects (previously PASS for emitted/unacknowledged/queued/collector.received)", () => {
   const base = validInput(events());
   const fin = (patch: Record<string, unknown>, channelPatch: Record<string, unknown> = {}) => ({ ...base, planeFin: { ...plain(base.planeFin), ...patch, channel: { ...plain(plain(base.planeFin).channel), ...channelPatch } } });
-  const n = 29;
+  const n = events().length + remoteWorkload().length;
   assert.ok(reasonsOf(fin({}, { emitted: 99 })).includes("m1.tally.channel_emitted_vs_lastseq"));
   assert.ok(reasonsOf(fin({}, { sent: n - 1 })).includes("m1.tally.channel_emitted_identity"));
   assert.ok(reasonsOf(fin({}, { queued: 1 })).includes("m1.tally.channel_emitted_identity"));
@@ -137,11 +137,11 @@ test("channel loss and ordering faults reach REJECT from the evaluator (transit 
 
 // ---------------------------------------------------------------------------------------------- F-4: a completed, non-empty level
 test("F-4: an empty level (previously PASS) and missing, incomplete or contradictory level evidence reject", () => {
-  const empty = evaluateTallyAgainstLedger(validInput([]));
+  const empty = evaluateTallyAgainstLedger(validInput([], []));
   assert.equal(empty.outcome, "REJECT");
   assert.ok(empty.reasons.includes("m1.tally.level_empty"), empty.reasons.join(","));
   // zero events everywhere while the plane's anchor says events were emitted
-  assert.ok(reasonsOf({ ...validInput([]), planeFin: planeFinOf(18) }).includes("m1.tally.ledger_anchor_mismatch"));
+  assert.ok(reasonsOf({ ...validInput([], []), planeFin: planeFinOf(18) }).includes("m1.tally.ledger_anchor_mismatch"));
   const base = validInput(events());
   for (const absent of [undefined, null]) assert.ok(reasonsOf({ ...base, level: absent }).includes("m1.tally.level_evidence_missing"));
   const lvl = (mutate: (l: ReturnType<typeof levelEvidence>) => void) => { const l = clone(levelEvidence()); mutate(l); return { ...base, level: l }; };
@@ -150,8 +150,8 @@ test("F-4: an empty level (previously PASS) and missing, incomplete or contradic
   assert.ok(reasonsOf(lvl((l) => { l.serverLevel.serverSide.failureClass = "defense" as unknown as null; })).includes("m1.tally.level_not_complete"));
   assert.ok(reasonsOf(lvl((l) => { (l.serverLevel.serverSide.reasons as unknown[]).push({ code: "x" }); })).includes("m1.tally.level_not_complete"));
   assert.ok(reasonsOf(lvl((l) => { l.core.machine.phasesCompleted = false; })).includes("m1.tally.level_not_complete"));
-  assert.ok(reasonsOf(lvl((l) => { l.manifestResult = "SERVER-ABORTED"; })).includes("m1.tally.level_not_complete"));
-  for (const bad of ["x", 3, { serverLevel: {}, core: {}, manifestResult: "SERVER-COMPLETE" }, { ...levelEvidence(), manifestResult: 3 }, { ...levelEvidence(), serverLevel: { ...levelEvidence().serverLevel, schema: "v0" } }]) {
+  assert.ok(reasonsOf(lvl((l) => { l.manifest.result = "SERVER-ABORTED"; })).includes("m1.tally.level_not_complete"));
+  for (const bad of ["x", 3, { serverLevel: {}, core: {}, manifestResult: "SERVER-COMPLETE" }, { ...levelEvidence(), manifest: { result: 3, git: { gitSha: "a".repeat(40) } } }, { ...levelEvidence(), serverLevel: { ...levelEvidence().serverLevel, schema: "v0" } }]) {
     assert.equal(evaluateTallyAgainstLedger({ ...base, level: bad }).outcome, "ERROR", JSON.stringify(bad)?.slice(0, 50));
   }
 });
@@ -160,16 +160,14 @@ test("F-4: an empty level (previously PASS) and missing, incomplete or contradic
 test("the journal and reducer cross-checks still reject; enrollment kinds use a lower bound only and equality with the tally still applies", () => {
   const base = validInput(events());
   const j = base.journalByKind as Record<string, number>;
+  assert.equal(evaluateTallyAgainstLedger(base).outcome, "PASS");
   assert.ok(reasonsOf({ ...base, journalByKind: { ...j, L1_ENTERED: 9 } }).includes("m1.tally.ledger_vs_reducer_l1_entered"));
   const art = plain(base.kindLedger); const counts = plain(art.counts) as Record<string, number>;
-  const remote = { ...noExternal, accepted: 3, l1: { entered: 3, passed: 3, rejected: 0, shed: 0, error: 0 }, l2: { entered: 3, decided: 3 }, egress: { attempted: 3, responded: 3, failed: 0 }, proofsIssued: 3, statusHistogram: { "200": 3 } };
-  const remoteBase = { ...base, journalByKind: { L2_ENROLLED: 1, L2_ENROLL_SKIPPED: 1 }, external: remote };
-  assert.equal(evaluateTallyAgainstLedger(remoteBase).outcome, "PASS");
-  // a ledger enrollment count above the journal is allowed by the bound but the tally must equal it
-  const inflated = { ...remoteBase, kindLedger: { ...art, counts: { ...counts, L2_ENROLLED: 5 } } };
+  // a ledger enrollment count above the journal is allowed by the lower bound, but the tally must equal it
+  const inflated = { ...base, kindLedger: { ...art, counts: { ...counts, L2_ENROLLED: counts.L2_ENROLLED + 4 } } };
   assert.ok(reasonsOf(inflated).includes("m1.tally.difference_l2_enrolled"));
-  // tally and ledger both lacking an enrollment the journal recorded: caught by the lower bound
-  assert.ok(reasonsOf({ ...remoteBase, journalByKind: { L2_ENROLLED: 4, L2_ENROLL_SKIPPED: 1 } }).includes("m1.tally.ledger_vs_reducer_l2_enrolled"));
+  // the journal holding more enrollments than the ledger saw is impossible
+  assert.ok(reasonsOf({ ...base, journalByKind: { ...j, L2_ENROLLED: counts.L2_ENROLLED + 3 } }).includes("m1.tally.ledger_vs_reducer_l2_enrolled"));
 });
 
 test("tally-side faults still reject: faults, unknown, final tick, absent tally", () => {
@@ -182,7 +180,7 @@ test("tally-side faults still reject: faults, unknown, final tick, absent tally"
 
 test("hostile combinations of incomplete evidence never PASS and never throw", () => {
   const base = validInput(events());
-  const fields = ["tally", "journalByKind", "external", "kindLedger", "planeFin", "level"] as const;
+  const fields = ["tally", "journalByKind", "external", "kindLedger", "planeFin", "level", "connections", "boundaryFin", "appFin"] as const;
   for (const field of fields) for (const value of [undefined, null, 0, "", [], {}, "x"]) {
     const input = { ...base, [field]: value } as unknown as TallyCheckInput;
     assert.notEqual(evaluateTallyAgainstLedger(input).outcome, "PASS", `${field}=${JSON.stringify(value)}`);
