@@ -32,8 +32,10 @@ function get(port: number, method: string, target: string, headers: Record<strin
   });
 }
 
-async function run(telemetry: boolean): Promise<{ statuses: number[]; events: Ev[]; ticks: Tick[]; childStayedAlive: boolean }> {
-  const origin = createSyntheticOrigin({ instance: "protected", onObservation: () => undefined });
+type OriginObs = { kind: string; hop: number | null; nonce: string | null };
+async function run(telemetry: boolean): Promise<{ statuses: number[]; events: Ev[]; ticks: Tick[]; childStayedAlive: boolean; origin: OriginObs[] }> {
+  const originEvents: OriginObs[] = [];
+  const origin = createSyntheticOrigin({ instance: "protected", onObservation: (event) => { originEvents.push({ kind: event.kind, hop: event.hop, nonce: event.nonce }); } });
   const originPort = await origin.listen();
   const root = new HopTrustRoot();
   const child: ChildProcess = fork(ENTRY, [], { execArgv: process.execArgv, cwd: process.cwd(), stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json" });
@@ -65,7 +67,7 @@ async function run(telemetry: boolean): Promise<{ statuses: number[]; events: Ev
   child.send({ type: "stop" });
   await new Promise((resolve) => { child.once("exit", resolve); setTimeout(() => { child.kill("SIGKILL"); resolve(null); }, 5_000); });
   await origin.close();
-  return { statuses, events, ticks, childStayedAlive: alive };
+  return { statuses, events, ticks, childStayedAlive: alive, origin: originEvents };
 }
 const shape = (events: Ev[]) => events.map((e) => [e.kind, e.reason, e.status, e.class, e.lane, e.outcome, e.egressError]);
 const kinds = (events: Ev[]) => { const out: Record<string, number> = {}; for (const e of events) out[e.kind] = (out[e.kind] ?? 0) + 1; return out; };
@@ -79,6 +81,20 @@ test("equivalence: the real plane gives the same statuses and the same event str
   assert.equal(off.ticks.length, 0, "disabled: no tick at all");
   assert.ok(on.ticks.length >= 2, "enabled: ticks flow");
   assert.ok(off.statuses.includes(503) && off.statuses.includes(200), "the workload exercised sheds and pass-throughs");
+});
+
+// Hop correlation (the origin recording the plane's EGRESS_ATTEMPTED seq) needs the Boundary in the chain; with instrumentation ON it is exercised end to end by
+// tests/lab-ba0-field-run.test.ts (real plane + Boundary + App, collector hop check). This rig has no Boundary, so only the independent COUNTS are asserted here.
+test("origin delivery is independently accounted: origin receipts equal plane egress attempts minus failures, with and without instrumentation", async () => {
+  for (const telemetry of [false, true]) {
+    const r = await run(telemetry);
+    const attempted = new Set(r.events.filter((e) => e.kind === "EGRESS_ATTEMPTED").map((e) => e.seq));
+    assert.equal(attempted.size, r.events.filter((e) => e.kind === "EGRESS_ATTEMPTED").length, "attempt seqs are unique");
+    const received = r.origin.filter((e) => e.kind === "ORIGIN_RECEIVED");
+    assert.ok(received.length >= 4, `telemetry=${telemetry}: the origin received the proxied requests`);
+    const failed = r.events.filter((e) => e.kind === "EGRESS_FAILED").length;
+    assert.equal(received.length, attempted.size - failed, `telemetry=${telemetry}: origin receipts = plane egress attempts - egress failures`);
+  }
 });
 
 test("enabled: the tally equals the events the plane emitted, satisfies every accounting identity and shows no unexplained difference", async () => {
