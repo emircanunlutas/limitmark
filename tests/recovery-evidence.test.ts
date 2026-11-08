@@ -143,7 +143,7 @@ test("the judge is pure: it imports nothing that can sign, submit, claim or writ
   const { readFile } = await import("node:fs/promises");
   const source = (await readFile(new URL("./support/recovery-evidence.ts", import.meta.url), "utf8")).replace(/\/\*[\s\S]*?\*\//gu, "");
   assert.deepEqual([...source.matchAll(/^import .*? from "([^"]+)";$/gmu)].map((m) => m[1]).sort(),
-    ["../../operator/authority-result-reader", "../../operator/recovery-decision-record", "../../workers/admission-service/authority"]);
+    ["../../operator/authority-result-reader", "../../operator/recovery-decision-record"]);
   assert.doesNotMatch(source, /node:fs|node:child_process|fetch\(|sign\(|submit|claim|settle|replace|writeFile|initializeAuthority/u);
   assert.deepEqual([...source.matchAll(/^export (?:async )?(?:function|const) (\w+)/gmu)].map((m) => m[1]), ["assessRecoveryEvidence"]);
 });
