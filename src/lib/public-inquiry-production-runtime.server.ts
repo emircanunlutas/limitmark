@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isForbiddenProductionApplicationVariable } from "../../deployment/secret-policy";
 import { createProductionAdmissionClient, VercelRequestOidcTokenProvider, type ProductionOidcTokenProvider } from "./admission-client.server";
 import { assessProductionDatabaseTls, assessProductionTelemetry } from "./production-launch-policy";
 import { getDatabase } from "./db/database.server";
@@ -15,8 +16,6 @@ export type ProductionRuntimeResult =
   | { enabled: false; reason: "runtime" | "configuration" | "invalid" | "database-tls" | "telemetry" }
   | { enabled: true; dependencies: PublicInquiryHandlerDependencies };
 
-/** Any of these on the production runtime means a laboratory/Google identity configuration leaked into it. The production factory refuses to run. */
-const forbiddenLaboratoryKeyPattern = /^(?:LAB_|GOOGLE_|ADMISSION_IDENTITY_MODE$)/u;
 
 /**
  * Production counterpart of `createLaboratoryRuntimeDependencies`: builds the dependencies of the public inquiry handler for the Vercel
@@ -32,7 +31,7 @@ export async function createProductionRuntimeDependencies(
   environment: ProductionRuntimeEnvironment,
   options: { providers?: readonly string[]; oidc?: ProductionOidcTokenProvider; request?: typeof fetch } = {},
 ): Promise<ProductionRuntimeResult> {
-  if (environment.LIMITMARK_RUNTIME !== undefined || Object.keys(environment).some((key) => forbiddenLaboratoryKeyPattern.test(key) && environment[key] !== undefined && environment[key] !== "")) {
+  if (environment.LIMITMARK_RUNTIME !== undefined || Object.keys(environment).some((key) => isForbiddenProductionApplicationVariable(key) && environment[key] !== undefined && environment[key] !== "")) {
     return { enabled: false, reason: "runtime" };
   }
   const configuration = getPublicSubmissionConfiguration(environment, options.providers ?? availableProductionRateLimitProviders);

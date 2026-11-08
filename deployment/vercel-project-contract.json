@@ -6,6 +6,11 @@
     "applicationRoutes": ["public", "admin"],
     "systemEnvironmentVariableAccess": "enabled",
     "productionBoundary": { "VERCEL": "1", "VERCEL_ENV": "production" },
+    "forbiddenEnvironmentConfiguration": {
+      "exactNames": ["LIMITMARK_RUNTIME", "ADMISSION_IDENTITY_MODE"],
+      "namePrefixes": ["LAB_", "GOOGLE_"],
+      "reason": "laboratory runtime selector, laboratory credentials and Google-lab identity configuration must never exist on the production project"
+    },
     "deploymentProtectionScope": "all-deployments",
     "gatewayTargets": {
       "publicSigner": { "projectRef": "P", "target": "shared-production-application" },
