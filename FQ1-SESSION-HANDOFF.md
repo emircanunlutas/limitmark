@@ -110,6 +110,11 @@ Production NO-GO; Gates 9, 10, 11A closed; no live deployment; no cloud provisio
 - Reviewer independence for the two instrumentation entries is not satisfied by the author.
 - A7 above is intentionally empty (numbering retained to avoid renumbering references).
 
+## A15. Update (owner decisions 2026-11-08, later session) [VERIFIED by tests in this repo]
+- Migration registry: the two instrumentation entries are APPROVED (`defense/core/outcome-counters.ts`, `defense/plane/runtime.ts`; the owner named the lab copy, but the registered entry is the in-tree one); 42 remain PENDING. The `aff793e` guard passes; the `64ccc9d` and `dcf10af8` guards stay red for the 42. `tests/reviewed-migrations.test.ts` now pins exactly those two approvals. No other approval is authorized; the first baseline batch is under review (joint reviews: ingress-signer index+signer, test-talep-et page+launch policy; large lab modules need a full review).
+- M1 criteria 7 to 9 are APPROVED (see `M1-CRITERIA.md`). N-1 overlay implemented locally in new files only (`lab/defense/m1-status-contract.ts`, `lab/defense/ba0-m1-reconcile.ts`, `tests/m1-status-contract.test.ts`); outcomes PASS | REJECT | ERROR; empirical real-chain histogram {200, 503}. Not yet run on a field run. Criterion 9 tooling and criterion 7 aggregation are not implemented.
+- Export-key: fail-closed migration design in `EXPORT-KEY-FAILCLOSED-MIGRATION-DESIGN.md` (design only; validity cap undecided).
+
 ---
 
 # PART B — HISTORICAL: FQ1-era handoff (written at HEAD `fbd5128`; superseded by Part A)
