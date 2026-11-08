@@ -14,9 +14,64 @@ import {
 } from "./admission-protocol";
 import { decodeCanonicalBase64url, encodeBase64url, toArrayBuffer } from "./ingress-protocol";
 import { decodeJwt } from "jose";
+import { getContext, getVercelOidcToken } from "@vercel/oidc";
 import type { ClaimPreInput, ConsumePostInput, PostDecision, PreDecision } from "../../workers/admission-service/authority";
 
 export interface ProductionOidcTokenProvider { getToken(audience: string): Promise<string> }
+
+/** The platform header that carries a Vercel Function's own OIDC token (set by Vercel on the function Request; see https://vercel.com/docs/oidc). */
+export const VERCEL_OIDC_REQUEST_HEADER = "x-vercel-oidc-token";
+export const VERCEL_OIDC_EXCHANGE_TIMEOUT_MS = 1_500;
+
+/** The narrow part of `@vercel/oidc` this provider uses; injectable so the failure modes can be tested without a Vercel runtime. */
+export type VercelOidcSdk = {
+  getContext(): { headers?: Record<string, string | undefined> } | undefined;
+  getVercelOidcToken(options: { audience: string }): Promise<string>;
+};
+const defaultVercelOidcSdk: VercelOidcSdk = { getContext, getVercelOidcToken: (options) => getVercelOidcToken(options) };
+
+/**
+ * Production token provider for admission: a Vercel-issued OIDC token whose `aud` is the dedicated admission audience.
+ *
+ * Request-scoped and uncached by design (Vercel: "Don't cache the returned token"): every call re-reads the request context and re-asks the SDK,
+ * whose own exchange cache is keyed by token and audience. Fail-closed: it throws, with a fixed non-secret message, unless
+ *  - the Vercel request context carries the platform header (so the build/dev fallbacks of the SDK -- `VERCEL_OIDC_TOKEN`, `VERCEL_OIDC_TOKEN_FILE`
+ *    and the local CLI refresh path -- can never supply a token in production),
+ *  - the SDK resolves within the timeout, and
+ *  - the returned JWT is well formed, carries exactly the requested audience and `environment: "production"`.
+ * The token is never logged, stored or included in an error. The Worker remains the authority on issuer/subject/project; the checks here only
+ * stop this process from sending an obviously wrong token.
+ */
+export class VercelRequestOidcTokenProvider implements ProductionOidcTokenProvider {
+  constructor(
+    private readonly sdk: VercelOidcSdk = defaultVercelOidcSdk,
+    private readonly timeoutMs: number = VERCEL_OIDC_EXCHANGE_TIMEOUT_MS,
+  ) {}
+
+  async getToken(audience: string): Promise<string> {
+    if (!audience || audience.length > 256 || /[\s,]/u.test(audience)) throw new Error("oidc-audience");
+    const platformToken = this.sdk.getContext()?.headers?.[VERCEL_OIDC_REQUEST_HEADER];
+    if (typeof platformToken !== "string" || platformToken === "") throw new Error("vercel-oidc-context");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let token: unknown;
+    try {
+      token = await Promise.race([
+        this.sdk.getVercelOidcToken({ audience }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("vercel-oidc-timeout")), this.timeoutMs); }),
+      ]);
+    } catch (error) {
+      throw new Error(error instanceof Error && error.message === "vercel-oidc-timeout" ? "vercel-oidc-timeout" : "vercel-oidc-exchange");
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    if (typeof token !== "string" || !token || token.length > 8_192 || /[\s,]/u.test(token) || token.split(".").length !== 3) throw new Error("vercel-oidc-token");
+    let claims;
+    try { claims = decodeJwt(token); } catch { throw new Error("vercel-oidc-token"); }
+    const claimedAudience = Array.isArray(claims.aud) ? (claims.aud.length === 1 ? claims.aud[0] : undefined) : claims.aud;
+    if (claimedAudience !== audience || claims["environment"] !== "production") throw new Error("vercel-oidc-claims");
+    return token;
+  }
+}
 
 export class GoogleMetadataOidcTokenProvider implements ProductionOidcTokenProvider {
   private cached?: { audience: string; token: string; expiresAtMs: number };
