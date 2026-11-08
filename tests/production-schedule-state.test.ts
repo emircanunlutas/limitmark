@@ -29,6 +29,7 @@ async function rendered() {
   mailbox.main = "../workers/lifecycle-mailbox/index.ts";
   observer.main = "../workers/lifecycle-observer.ts";
   (mailbox.vars as Record<string, unknown>).AUTHORITY_OPERATOR_PUBLIC_KEY = OPERATOR_KEY;
+  (mailbox.vars as Record<string, unknown>).CLOUDFLARE_ACCOUNT_ID = ACCOUNT;
   return { mailbox, observer };
 }
 const withTriggers = (config: Record<string, unknown>, triggers: unknown) => ({ ...structuredClone(config), triggers });

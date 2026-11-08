@@ -16,6 +16,7 @@ const synthetic = async () => {
   mailbox.main = "../workers/lifecycle-mailbox/index.ts";
   observer.main = "../workers/lifecycle-observer.ts";
   (mailbox.vars as Record<string, unknown>).AUTHORITY_OPERATOR_PUBLIC_KEY = encodeBase64url(new Uint8Array(32).fill(7));
+  (mailbox.vars as Record<string, unknown>).CLOUDFLARE_ACCOUNT_ID = "a".repeat(32);
   transport.accountId = "a".repeat(32);
   transport.operatorPublicKey = (mailbox.vars as Record<string, unknown>).AUTHORITY_OPERATOR_PUBLIC_KEY;
   return { mailbox, observer, transport };

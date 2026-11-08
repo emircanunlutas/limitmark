@@ -10,6 +10,8 @@ const buckets = [
   { binding: "RESULT_BUCKET", bucket_name: "limitmark-lifecycle-results-production" },
 ];
 const reader = { binding: "LIFECYCLE_READER", service: "limitmark-admission-service-production", entrypoint: "AuthorityLifecycleReadOnly" };
+/** The observer reaches the guard ledger ONLY through this read-only entrypoint (one method, `exportLedger`); it never binds the guard Durable Object itself. */
+const guardReader = { binding: "GUARD_READER", service: "limitmark-lifecycle-mailbox-production", entrypoint: "LifecycleGuardReadOnly" };
 const stagingBuckets = [
   { binding: "REQUEST_BUCKET", bucket_name: "limitmark-lifecycle-requests-staging" },
   { binding: "RESULT_BUCKET", bucket_name: "limitmark-lifecycle-results-staging" },
@@ -40,13 +42,13 @@ function base(value: unknown, kind: "mailbox" | "observer", template: boolean, r
     throw new Error("unsafe-lifecycle-config");
   const expectedServices = kind === "mailbox" ? [
     { binding: "LIFECYCLE_EXECUTOR", service: "limitmark-authority-operator-executor-production", entrypoint: "OperatorLifecycleExecutor" }, reader,
-  ] : [reader];
+  ] : [reader, guardReader];
   if (JSON.stringify(value.services) !== JSON.stringify(expectedServices)) throw new Error("unsafe-lifecycle-services");
   if (kind === "mailbox") {
     if (JSON.stringify(value.durable_objects) !== JSON.stringify({ bindings: [{ name: "DISPATCH_GUARD", class_name: "LifecycleDispatchGuard" }] }) ||
         JSON.stringify(value.migrations) !== JSON.stringify([{ tag: "i3b-guard-v1", new_sqlite_classes: ["LifecycleDispatchGuard"] }]) ||
-        !exact(value.vars, ["AUTHORITY_OPERATOR_PUBLIC_KEY", "LIFECYCLE_ENVIRONMENT"]) ||
-        value.vars.LIFECYCLE_ENVIRONMENT !== "production") throw new Error("unsafe-lifecycle-guard");
+        !exact(value.vars, ["AUTHORITY_OPERATOR_PUBLIC_KEY", "CLOUDFLARE_ACCOUNT_ID", "LIFECYCLE_ENVIRONMENT"]) ||
+        value.vars.LIFECYCLE_ENVIRONMENT !== "production" || value.vars.CLOUDFLARE_ACCOUNT_ID !== value.account_id) throw new Error("unsafe-lifecycle-guard");
     const key = value.vars.AUTHORITY_OPERATOR_PUBLIC_KEY;
     if (template ? key !== "__REQUIRED_OPERATOR_ED25519_PUBLIC_KEY__" : typeof key !== "string" || key.startsWith("__REQUIRED_"))
       throw new Error("unsafe-lifecycle-key");
@@ -408,4 +410,18 @@ export function validateLabEnvironmentGate(value: unknown): void {
       lab.rotationImplemented !== false || lab.requestCredentialScopeLiveVerified !== false || lab.resultCredentialScopeLiveVerified !== false ||
       lab.provisioningOpen !== false || lab.isolatedFromProduction !== true || lab.productionProvisioningImplied !== false)
     throw new Error("unsafe-lifecycle-environments");
+}
+
+/**
+ * Recovery-evidence posture (Gate 11A preparation; local validation only, deploys nothing): the OBSERVER is armed so it can relay signed
+ * reconciliations, while the MAILBOX stays INACTIVE (no cron) and therefore can never dispatch an initialization or rotation. Both configs are
+ * validated by the exact same production validators (exact key set, bindings, services, R2 buckets, rendered main) -- so the observer provably has
+ * NO executor service binding, NO Durable Object binding and NO vars -- and must belong to the same Cloudflare account. The caller passes the two
+ * configs explicitly; nothing is inferred from file names or ambient state.
+ */
+export function validateRecoveryEvidencePosture(observer: unknown, mailbox: unknown, template = false): { observer: ProductionScheduleState; mailbox: ProductionScheduleState } {
+  const observerState = validateLifecycleObserverConfig(observer, template, "PRODUCTION_SCHEDULE_ARMED");
+  const mailboxState = validateLifecycleMailboxConfig(mailbox, template, "PRODUCTION_DEPLOYMENT_INACTIVE");
+  if (!template && (observer as { account_id: unknown }).account_id !== (mailbox as { account_id: unknown }).account_id) throw new Error("recovery-posture-account-mismatch");
+  return { observer: observerState, mailbox: mailboxState };
 }

@@ -126,6 +126,7 @@ test("Production lifecycle preflight modes are unaffected by the Gate 5A staging
   mailboxTemplate.account_id = "a".repeat(32);
   mailboxTemplate.main = "../workers/lifecycle-mailbox/index.ts";
   mailboxTemplate.vars.AUTHORITY_OPERATOR_PUBLIC_KEY = validKey;
+  mailboxTemplate.vars.CLOUDFLARE_ACCOUNT_ID = "a".repeat(32);
   observerTemplate.account_id = "a".repeat(32);
   observerTemplate.main = "../workers/lifecycle-observer.ts";
   // Production configs may render under any filename in deployment/ today (unchanged behavior).

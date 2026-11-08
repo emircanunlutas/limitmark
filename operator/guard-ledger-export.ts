@@ -40,6 +40,9 @@ export interface GuardLedgerSource {
   read(): GuardLedgerRows;
 }
 
+/** Identity the live guard itself reported (inside an operator-signed, read-only export request answered by the guard). */
+export type GuardExportRequestBinding = { requestDigest: string; nonce: string; accountId: string; observedAtMs: number };
+
 const digestPattern = /^[a-f0-9]{64}$/u;
 const claimStatuses = new Set(["CLAIMED", "SUCCESS", "ALREADY_APPLIED", "REFUSED", "UNCONFIRMED"]);
 
@@ -117,9 +120,15 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 
 export type GuardLedgerExport = ReturnType<typeof buildGuardLedgerExport>;
 
-export function buildGuardLedgerExport(input: { environment: string; guardObject: string; provenance: GuardLedgerSource["kind"]; rows: unknown }) {
+export function buildGuardLedgerExport(input: { environment: string; guardObject: string; provenance: GuardLedgerSource["kind"] | "mailbox-export"; rows: unknown; request?: GuardExportRequestBinding }) {
   const target = guardTarget(input.environment, input.guardObject);
-  if (input.provenance !== "sqlite-file") return refuse("provenance");
+  if (input.provenance !== "sqlite-file" && input.provenance !== "mailbox-export") return refuse("provenance");
+  if ((input.provenance === "mailbox-export") !== (input.request !== undefined)) return refuse("provenance");
+  if (input.request !== undefined) {
+    const r = exactKeys(input.request, ["requestDigest", "nonce", "accountId", "observedAtMs"], "export-request-binding");
+    if (typeof r.requestDigest !== "string" || !digestPattern.test(r.requestDigest) || typeof r.nonce !== "string" || !/^[a-f0-9]{32}$/u.test(r.nonce) ||
+        typeof r.accountId !== "string" || !/^[a-f0-9]{32}$/u.test(r.accountId) || !Number.isSafeInteger(r.observedAtMs) || (r.observedAtMs as number) < 0) return refuse("export-request-binding");
+  }
   const ledger = normalizeGuardLedgerRows(target.environment, input.rows);
   const settled = new Set(ledger.settlements.map((settlement) => settlement.digest));
   const unsettled = ledger.claims.filter((claim) => !settled.has(claim.digest));
@@ -127,7 +136,10 @@ export function buildGuardLedgerExport(input: { environment: string; guardObject
   const body = {
     format: GUARD_LEDGER_EXPORT_FORMAT,
     target,
-    provenance: { kind: input.provenance, identityEvidence: "operator-asserted", readOnly: true, evidenceClass: "relay-local-bookkeeping-unsigned" },
+    provenance: input.request === undefined
+      ? { kind: input.provenance, identityEvidence: "operator-asserted", readOnly: true, evidenceClass: "relay-local-bookkeeping-unsigned" }
+      : { kind: input.provenance, identityEvidence: "guard-reported-after-operator-signed-request", readOnly: true, evidenceClass: "relay-local-bookkeeping-unsigned",
+          request: { requestDigest: input.request.requestDigest, nonce: input.request.nonce, accountId: input.request.accountId, observedAtMs: input.request.observedAtMs } },
     ledger,
     derived: {
       claimCount: ledger.claims.length,
@@ -160,7 +172,10 @@ export function verifyGuardLedgerExport(text: string, expected: { environment: s
   try { parsed = parseStrictJson(text); } catch { return refuse("export-json"); }
   const document = exactKeys(parsed, ["format", "target", "provenance", "ledger", "derived", "contentSha256"], "export-shape");
   if (document.format !== GUARD_LEDGER_EXPORT_FORMAT) return refuse("export-format");
-  const rebuilt = buildGuardLedgerExport({ environment: expected.environment, guardObject: expected.guardObject, provenance: "sqlite-file", rows: document.ledger });
+  const provenance = (document.provenance ?? {}) as Record<string, unknown>;
+  const live = provenance.kind === "mailbox-export";
+  const rebuilt = buildGuardLedgerExport({ environment: expected.environment, guardObject: expected.guardObject, provenance: live ? "mailbox-export" : "sqlite-file", rows: document.ledger,
+    ...(live ? { request: provenance.request as GuardExportRequestBinding } : {}) });
   if (serializeGuardLedgerExport(rebuilt) !== (text.endsWith("\n") ? text : `${text}\n`)) return refuse("export-mismatch");
   return rebuilt;
 }
@@ -221,4 +236,28 @@ export const sqliteGuardLedgerSource = (path: string): GuardLedgerSource => ({ k
 
 export function exportGuardLedger(source: GuardLedgerSource, target: { environment: string; guardObject: string }): GuardLedgerExport {
   return buildGuardLedgerExport({ environment: target.environment, guardObject: target.guardObject, provenance: source.kind, rows: source.read() });
+}
+
+// ----------------------------------------------------------------------------------------------------------------- live (mailbox) export result
+
+/**
+ * Turns the guard's answer to an operator-signed, read-only export request (as published by the observer under ledger-export/<nonce>.json) into the same
+ * deterministic export document. Everything the guard reported is re-validated here: the request digest/nonce must be the ones the operator signed
+ * (the caller passes them), the environment, Authority, guard object and account must equal the expected pins, and the rows go through the same
+ * invariant checks as a SQLite file. Anything else (REFUSED, TOO_LARGE, unknown keys, mismatching identity) is a refusal with a fixed code.
+ */
+export function guardLedgerExportFromMailboxResult(text: string, expected: { environment: string; guardObject: string; accountId: string; requestDigest: string; nonce: string }) {
+  if (typeof text !== "string" || text.length === 0 || text.length > 8_192) return refuse("export-size");
+  let parsed: unknown;
+  try { parsed = parseStrictJson(text); } catch { return refuse("export-json"); }
+  const target = guardTarget(expected.environment, expected.guardObject);
+  if (target.environment !== "production") return refuse("target-environment");
+  const document = exactKeys(parsed, ["version", "status", "requestDigest", "nonce", "accountId", "guardObject", "authorityId", "environment", "observedAtMs", "ledger"], "export-shape");
+  if (document.version !== 1 || document.status !== "EXPORTED") return refuse("export-status");
+  if (document.requestDigest !== expected.requestDigest || document.nonce !== expected.nonce) return refuse("export-request-mismatch");
+  if (document.accountId !== expected.accountId || document.environment !== target.environment || document.guardObject !== target.guardObject || document.authorityId !== target.authorityId) return refuse("export-identity");
+  if (!Number.isSafeInteger(document.observedAtMs)) return refuse("export-shape");
+  const ledger = exactKeys(document.ledger, ["claims", "latch", "settlements"], "export-shape");
+  return buildGuardLedgerExport({ environment: expected.environment, guardObject: expected.guardObject, provenance: "mailbox-export", rows: ledger,
+    request: { requestDigest: expected.requestDigest, nonce: expected.nonce, accountId: expected.accountId, observedAtMs: document.observedAtMs as number } });
 }

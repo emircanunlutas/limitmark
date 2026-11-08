@@ -1,4 +1,5 @@
 import { boundedResult, parseControl, publishSignedEnvelope, readBounded } from "./lifecycle-mailbox/wire";
+import { GUARD_EXPORT_REQUEST_LIMIT, GUARD_EXPORT_SLOT, parseGuardExportEnvelope, type GuardExportOutcome } from "./lifecycle-mailbox/guard-export";
 import type { R2Bucket, ScheduledEvent } from "@cloudflare/workers-types";
 import { validateRuntimeSecrets } from "../deployment/secret-policy";
 import { normalizeReconciliationRelayResult, unsignedDiagnostic } from "../operator/attested-relay";
@@ -8,6 +9,9 @@ export type ObserverEnvironment = {
   RESULT_BUCKET: R2Bucket;
   /** The Authority-signed reconciliation capability. The observer holds no unsigned read and constructs no Authority semantics. */
   LIFECYCLE_READER: { attestReconciliation(digest: string, nonce: string): Promise<unknown> };
+  /** Read-only guard ledger export entrypoint (service binding to LifecycleGuardReadOnly: exactly one method, authenticated by the guard). Optional so an
+   * observer without it keeps working; the validated production config always binds it. */
+  GUARD_READER?: { exportLedger(envelopeJson: string): Promise<GuardExportOutcome> };
 };
 
 /** A DUMB RELAY. It forwards the caller's exact digest and nonce to the Authority and stores the signed envelope bytes the
@@ -28,12 +32,32 @@ export async function observeReconciliation(env: ObserverEnvironment): Promise<v
     throw new Error("reconciliation-publication-unconfirmed");
 }
 
+/** Relays an operator-signed, read-only guard ledger export request. The observer verifies nothing and interprets nothing: the guard authenticates the
+ * request and answers; the observer stores the answer UNSIGNED (relay-local bookkeeping) under the request nonce, never overwriting an existing key.
+ * Unauthenticated requests are not answered at all (no result object): an unauthenticated writer cannot make this Worker write. */
+export async function observeGuardExport(env: ObserverEnvironment): Promise<void> {
+  if (!env.GUARD_READER) return;
+  const bytes = await readBounded(await env.REQUEST_BUCKET.get(GUARD_EXPORT_SLOT), GUARD_EXPORT_REQUEST_LIMIT);
+  if (!bytes) return;
+  const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  const nonce = parseGuardExportEnvelope(source).request[6];
+  const key = `ledger-export/${nonce}.json`;
+  if (await env.RESULT_BUCKET.head(key)) return;
+  const outcome = await env.GUARD_READER.exportLedger(source);
+  if (!outcome || typeof outcome !== "object" || outcome.version !== 1) return;
+  if (outcome.status === "REFUSED" && (outcome.nonce !== nonce || outcome.requestDigest === undefined)) return;
+  const written = await env.RESULT_BUCKET.put(key, boundedResult(outcome));
+  if (!written || typeof written !== "object" || written.key !== key) throw new Error("export-publication-unconfirmed");
+}
+
 const lifecycleObserver = {
   fetch(): Response { return new Response(null, { status: 404 }); },
   async scheduled(_event: ScheduledEvent, env: ObserverEnvironment): Promise<void> {
     if (!validateRuntimeSecrets("lifecycleObserver", env as unknown as Record<string, unknown>)) return;
     try { await observeReconciliation(env); }
     catch { /* Read-only observation may be requested again with a new nonce. */ }
+    try { await observeGuardExport(env); }
+    catch { /* A read-only export may be requested again with a new nonce. */ }
   },
 };
 

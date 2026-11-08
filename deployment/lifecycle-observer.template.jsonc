@@ -12,6 +12,7 @@
     { "binding": "RESULT_BUCKET", "bucket_name": "limitmark-lifecycle-results-production" }
   ],
   "services": [
-    { "binding": "LIFECYCLE_READER", "service": "limitmark-admission-service-production", "entrypoint": "AuthorityLifecycleReadOnly" }
+    { "binding": "LIFECYCLE_READER", "service": "limitmark-admission-service-production", "entrypoint": "AuthorityLifecycleReadOnly" },
+    { "binding": "GUARD_READER", "service": "limitmark-lifecycle-mailbox-production", "entrypoint": "LifecycleGuardReadOnly" }
   ]
 }
