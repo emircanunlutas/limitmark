@@ -121,7 +121,22 @@ const RUNTIME_CONFIG_UNAVAILABLE = { status: "UNAVAILABLE", reason: "runtime-con
 
 let handlerPromise: Promise<(request: Request) => Promise<Response>> | undefined;
 let labHandlerPromise: Promise<(request: Request) => Promise<Response>> | undefined;
+/** Identity-mode isolation between the production-class entry and the laboratory entry. The laboratory (Google) identity can only ever serve the
+ * laboratory authority, and the Vercel identity can never serve it; a production-class Worker (production or staging binding) refuses every Google
+ * identity setting even if one is present in its environment. Enforced at runtime, not only by the template validators. */
+const GOOGLE_IDENTITY_KEYS = ["GOOGLE_OIDC_ISSUER", "GOOGLE_OIDC_AUDIENCE", "GOOGLE_SERVICE_ACCOUNT_EMAIL", "GOOGLE_SERVICE_ACCOUNT_SUBJECT"] as const;
+function assertIdentityIsolation(environment: AdmissionServiceEnvironment, authorityId: string): void {
+  const record = environment as unknown as Record<string, unknown>;
+  const googleMode = environment.ADMISSION_IDENTITY_MODE === "google-lab";
+  if (authorityId === LAB_ADMISSION_AUTHORITY_ID) {
+    if (!googleMode) throw new Error("identity-mode");
+    return;
+  }
+  if (googleMode || GOOGLE_IDENTITY_KEYS.some((key) => record[key] !== undefined && record[key] !== "")) throw new Error("identity-mode");
+}
+
 async function configure(environment: AdmissionServiceEnvironment, authorityId: typeof ADMISSION_AUTHORITY_ID | typeof LAB_ADMISSION_AUTHORITY_ID = ADMISSION_AUTHORITY_ID) {
+  assertIdentityIsolation(environment, authorityId);
   const releases: AdmissionServiceRelease[] = [{ role: "current", releaseId: environment.ADMISSION_CURRENT_RELEASE_ID,
     keyId: environment.ADMISSION_CURRENT_KEY_ID, rpcKey: await importAdmissionRpcKey(environment.ADMISSION_CURRENT_RPC_KEY),
     activatedAtMs: Number(environment.ADMISSION_CURRENT_ACTIVATED_AT_MS) }];
