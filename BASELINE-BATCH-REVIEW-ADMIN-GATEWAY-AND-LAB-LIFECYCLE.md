@@ -20,7 +20,7 @@ Registry state is unchanged (44 entries, 2 APPROVED, 42 PENDING). Each blob belo
 - Behavior: reads `reconcile.json` (bounded to 1 024 bytes), parses it as a control, forwards the exact digest and nonce to the Authority's `attestReconciliation`, and stores the returned signed envelope bytes unchanged. Without signed evidence it stores only an explicit unsigned, non-positive diagnostic. Never overwrites an existing key. `fetch` answers an empty 404. Errors are swallowed so a later request with a new nonce can retry.
 - Boundaries: it holds no signing key, builds no Authority semantics, and gates its scheduled work on `validateRuntimeSecrets("lifecycleObserver", env)`.
 - Observation: unlike the executor it carries no runtime environment marker; its lab isolation comes from the deployment contract (`validateLabLifecycleObserverConfig`: lab buckets and service binding), not from a check in the code.
-- Imports are outside the registry (`lifecycle-mailbox/wire`, `operator/attested-relay`, `deployment/secret-policy`) and unchanged from the baselines.
+- Imports are outside the registry (`lifecycle-mailbox/wire`, `operator/attested-relay`, `deployment/secret-policy`) and unchanged from the baselines, except `deployment/secret-policy.ts`: its 11 added lines (production Vercel project forbidden-variable contract) do not touch `validateRuntimeSecrets`.
 - Reachability: lab only (`deployment/lifecycle-observer.lab.jsonc`).
 
 ## 3. `workers/lab-operator-lifecycle-executor.ts`
