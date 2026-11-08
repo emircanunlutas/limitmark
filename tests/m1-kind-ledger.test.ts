@@ -195,3 +195,13 @@ test("hostile combinations of incomplete evidence never PASS and never throw", (
   const thrower = { get tally(): unknown { throw new Error("boom"); } } as unknown as TallyCheckInput;
   assert.equal(evaluateTallyAgainstLedger(thrower).outcome, "ERROR");
 });
+
+test("duplicate-key detection: escaped spellings, whitespace, nested arrays and __proto__ are caught; distinct keys and invalid JSON are not mistaken for duplicates", () => {
+  assert.deepEqual(findDuplicateObjectKeys('{"a":1,"\u0061":2}'), ["$:a"], "an escaped spelling of the same key is the same key");
+  assert.deepEqual(findDuplicateObjectKeys('{\n "a" : 1 ,\n "a" : 2 }'), ["$:a"]);
+  assert.deepEqual(findDuplicateObjectKeys('{"x":[{"k":1}],"x":2}'), ["$:x"]);
+  assert.deepEqual(findDuplicateObjectKeys('{"__proto__":1,"__proto__":2}'), ["$:__proto__"]);
+  assert.deepEqual(findDuplicateObjectKeys('{"a":true,"b":null,"c":-1.5e3,"c":2}'), ["$:c"]);
+  assert.deepEqual(findDuplicateObjectKeys('{"a":1,"A":2}'), [], "keys differing in case are different keys");
+  assert.deepEqual(findDuplicateObjectKeys('{"a":1,"a":2,}'), [], "invalid JSON is reported by the parser that every consumer runs, not here");
+});

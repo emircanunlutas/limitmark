@@ -1,0 +1,67 @@
+# Final Criterion 9 verification, admin-gateway cache, lab observer isolation, lab executor runtime tests, and the three-entry decision package (2026-11-08, reviewed from HEAD 196ef25)
+
+Review and tests only. No production code, threshold, registry entry or historical evidence was changed. Registry: 44 entries, 2 APPROVED, 42 PENDING.
+
+## 1. Criterion 9 final verification
+
+### Original false-PASS probes (re-run at this HEAD)
+All four original paths and every other probe fail closed: deleting any tally key (including `PROOF_ISSUED`, `L2_ENROLLED`, `L2_ENROLL_SKIPPED`, `PARSER_REJECTED`) is REJECT; an extra zero key is REJECT; an absent kind ledger is REJECT (also with remote traffic accepted); contradictory channel stats (`emitted`, `unacknowledged`, `queued`) and a collector `received` mismatch are REJECT; an empty level is REJECT (`level_empty`); transit loss, trailing loss, trailing loss with the anchor absent, and zero tally with a non-zero plane anchor are REJECT; overflow and NaN counts are ERROR. Complete valid evidence is PASS, including a real loopback rig run.
+
+### Answers to the six verification points
+1. **Original cases:** all REJECT or ERROR (above).
+2. **Valid evidence:** PASS for three fixture workloads and the real rig evidence.
+3. **Missing or contradictory anchors:** cannot PASS: absent plane stats is `ledger_completeness_unanchored`; malformed is ERROR; each contradiction among S1..S4 and C1..C4 has its own reason; a hostile-combination test removes every subset of six inputs and asserts never PASS.
+4. **F-4 source:** the accepted-request condition uses the plane tally's `INGRESS_ACCEPTED` and the kind ledger's `INGRESS_ACCEPTED` and `total`. That source counts all plane-accepted requests, **including the collector's own canary requests**. It is not the external reducer's `accepted` and is not `server-level.json` `reconcileInput.externalAccepted`. See R-1.
+5. **Level completion:** `server-level.json` must be `ba0-server-level-v1` with status `complete`, no failure class, no reasons; `core.json` must show `serverSide.status` complete and `phasesCompleted`; the manifest must say `SERVER-COMPLETE`; the level ids in the two files must be equal. See R-4 for what is not cross-bound.
+6. **Duplicate keys:** the raw-text scanner covers seven files (`telemetry`, `kind-ledger`, `processes`, `external`, `server-level`, `core`, `manifest`). It treats escaped spellings as the same key (`"a"` equals `"a"`), handles whitespace, nested arrays and `__proto__`, and does not flag keys that differ in case. Text that `JSON.parse` rejects (trailing comma, BOM) returns no duplicates, which is safe because every consumer already fails on the parse error: kind ledger, telemetry and external become ERROR, and processes, level files and manifest become REJECT. New tests pin these behaviors. See R-3 for what the scanner does not cover.
+
+### Remaining false-PASS possibilities (separate from the plane-emission completeness limitation)
+- **R-1 (accepted-request source):** a level whose only traffic is the collector's canary (no remote-lane request at all) passes criterion 9, because the canary also produces `INGRESS_ACCEPTED`. A real M1 level must have remote traffic. Proposed correction: also require `external.accepted > 0` and `external.accepted === server-level reconcileInput.externalAccepted`, in the same evaluator. (The loopback rig has no remote peer, so the real-run test would need a flag or a fixture variant.)
+- **R-2 (accounting cross-check):** `server-level.json reconcileInput` event counts are not compared with the ledger. Same proposal as R-1.
+- **R-3 (scanner coverage):** `accounting.json` (journal digest, line count, `overflow`) is read but not scanned for duplicate keys. A duplicated `"overflow"` key would let `JSON.parse` keep the last value silently. The per-line journal records are also not scanned. A file nested deeper than the scanner's recursion limit makes the scanner give up and report none (a crafted file, outside the accidental-corruption model, and the parse would still succeed). Proposed correction: add `accounting.json` to the checked list; treat a scanner failure on a file that parses as a duplicate-key finding.
+- **R-4 (level binding):** only `levelId` is cross-checked between `server-level.json` and `core.json`. Not compared: `campaignId`, `paramsFingerprintSha256` against `core.parameters.sha256`, `gitSha` against the manifest. Not checked: `core.firstReason`, failed finalization `sequence` steps, `window` null. A probe confirmed these variants PASS. They all sit in one checksummed evidence directory and the runner sets status `complete` only for a clean level, so this is a consistency gap, not a known bypass. Proposed correction: compare those fields and reject on non-null `firstReason`, any `ok:false` step, or null `window`.
+All four need your authorization before any code change.
+
+## 2. Admin gateway configuration cache (`workers/admin-gateway/index.ts`)
+Evidence: `git show aff793e:workers/admin-gateway/index.ts` lines 13 to 21 contain the identical `configuredHandler ??= createAdminGateway(...)`. **The cache exists unchanged at the baseline; the migration diff only removes a re-export. It is not a migration-specific regression.**
+- *Immutable for the isolate lifetime?* The handler (and the configuration strings it captured) is created once per isolate. A Worker's `env` is fixed for a deployed version, so a rebuilt handler would read the same values.
+- *Can secrets or policy change while an isolate lives?* Not within a version. A secret or var change is a new version and deployment; revocation (a different allowed email or Access audience) needs that deployment. Old isolates drain with the old version.
+- *Revocation of Access signing keys:* handled by the bounded JWKS resolver inside the cached handler: 10-minute cache, 5-minute stale grace on fetch failure, 30-second refresh cooldown (`JWKS_DEFAULTS`). Caching the handler is what keeps that cache across requests; rebuilding per request would refetch the keys on every request.
+- *Can a failed initial configuration cache forever?* The runtime-secret policy is checked on every request before the cache, and a failing environment returns 503 without caching. If values pass the policy but are malformed, `createAdminGateway` substitutes placeholder hosts and answers 503 for every request; since `env` cannot change inside the version, a rebuild would give the same answer. Recovery is a new deployment either way.
+- *Defect:* none found. Observation: `env` equality is not re-checked per request, which only matters for tests that pass different environments to one module instance (use `./gateway` directly, as the existing tests do).
+
+## 3. Lab lifecycle observer isolation (`workers/lab-lifecycle-observer.ts`)
+Evidence from the committed config `deployment/lifecycle-observer.lab.jsonc`, the validator `validateLabLifecycleObserverConfig` and the tests:
+- **Binding set:** exactly two R2 buckets named `limitmark-lifecycle-requests-lab` / `limitmark-lifecycle-results-lab` and exactly one service binding `LIFECYCLE_READER` to `limitmark-admission-service-lab` entrypoint `LabAuthorityLifecycleReadOnly`. `workers_dev` and `preview_urls` are false, `triggers.crons` is empty, `main` is the lab file. The validator requires an exact key set and exact equality of name, buckets, services and main (`labBase`).
+- **Production bindings supplied by mistake:** `lab-environment-isolation.test.ts` asserts the lab validator throws for the production and staging templates and that the production and staging validators throw for the lab template. **Finding:** the validators are called only from tests in this repository (no deployment script imports them), so the isolation is enforced by CI against the committed files, not at deploy or run time. The Worker code itself has no environment marker (the executor does have one).
+- **Authority identity:** the observer does not validate it; it relays. The service side pins it: `LabAuthorityLifecycleReadOnly` always addresses `getByName(LAB_ADMISSION_AUTHORITY_ID)`, and readers verify the returned envelope against the lab trust manifest (`readLabAuthorityResult`; the lab workerd test verifies the stored envelope under the lab key).
+- **Can it invoke a lifecycle operation?** No by construction: its only service binding is the read-only entrypoint, whose methods are `inspectLifecycle`, `attestAppliedLifecycle`, `attestReconciliation`; the observer calls only `attestReconciliation`. It has no executor binding and holds no signing key. It never reads a lifecycle request slot.
+- **Guard-export removal:** the lab observer never reads the `ledger-export` slot or a guard binding, and the lab observer config has no guard binding. A request placed in that slot is simply never read: no unhandled operation, no partial handling. The actual lab chain (mailbox, guard, executor, admission, observer) is exercised end to end in `lab-lifecycle-mailbox.integration.ts`, including a signed reconciliation published by the real lab observer.
+- **Residual risk:** an operator who deploys the observer with production bindings by hand would not be stopped by the code; it could then only read, not change, state. Recommended (not done): call the lab validator from the deployment path.
+
+## 4. Lab lifecycle executor runtime tests (D4)
+New: `tests/workers/lab-operator-executor-runtime.integration.ts` with fixtures in `tests/workers/support/lab-executor-runtime-fixtures.ts`, registered in `package.json` as `test:workers:lab-executor-runtime` and in the `test:workers` chain. Real `workers/lab-operator-lifecycle-executor.ts` in workerd over real service bindings, local counting stub instead of admission, freshly generated disposable keys, no network. (This corrects `BASELINE-BATCH-REVIEW-...md`, which said a runtime test was missing: `lab-lifecycle-mailbox.integration.ts` already covered the executor end to end; what was missing was executor-level negative cases.)
+Cases, each asserting the dispatch count reaching the admission binding:
+1. valid lab artifact: relayed exactly, one dispatch with environment `lab` and the lab authority id; an artifact issued 4 minutes ago also accepted.
+2. production rejection: an executor configured `production` refuses a lab artifact (`invalid-executor-environment`); the lab executor refuses production and staging artifacts (`invalid-sealed-artifact`); zero dispatch.
+3. wrong authority: production, staging, unknown, empty, and a lab command with a production confirmation: refused, zero dispatch.
+4. signature: a stranger key gives `operator-signature`; empty, malformed, short, long, missing member, empty input, oversize input (4 097) and a duplicate JSON member give `invalid-sealed-artifact`; zero dispatch.
+5. expiry: issued 310 s and 1 hour in the past and in the future: refused, zero dispatch.
+6. rotation: `submitRotationArtifact` is not an RPC method ("RPC receiver does not implement the method"); a rotate-release artifact sent to the initialization method is refused.
+7. transport failure: UNCONFIRMED with exactly one dispatch (no retry); a malformed admission answer is UNCONFIRMED.
+8. public route: GET, POST, PUT, DELETE, HEAD, PATCH on five paths for all four executor instances: empty 404, zero dispatch.
+Result: PASS. Limitation: the success path uses a counting stub, not the real lab authority; the real authority path is covered by `lab-lifecycle-mailbox.integration.ts`. One test-design note: boundary skews are tested at ±310 s because a wall-clock test cannot hit the 300 000 ms edge deterministically.
+
+## 5. Decision package (recommendations only; no registry change)
+
+| | `workers/admin-gateway/index.ts` | `workers/lab-lifecycle-observer.ts` | `workers/lab-operator-lifecycle-executor.ts` |
+|---|---|---|---|
+| ReviewId / change | BASELINE-V2/PRODUCTION_PREPARATION / modified | BASELINE-V2/LABORATORY / added | BASELINE-V2/LABORATORY / added |
+| Historical blob (3 baselines) | `98ea23e1764d2c504e7844bf5d300f6b2e4fee36` | absent | absent |
+| Current blob | `9c159eaf416dffe751e2fa66cb262ab3acc4c8a4` | `b0c2eb42011285e1ce031bb89ecd715fece9a21c` | `dadcb9769e11e67eaf8c01711a9150a159aa51fc` |
+| Dependencies | `./gateway`, `deployment/secret-policy` (neither registered-pending for this file's behavior) | `lifecycle-mailbox/wire`, `operator/attested-relay`, `deployment/secret-policy`: none registered | `operator/lifecycle-submitter`, `deployment/secret-policy`: none registered |
+| Security impact | removes a runtime re-export; handler unchanged | lab-only read-only relay; no signing, no write path to Authority | lab-only subset of the production executor; initialization only |
+| Tests | `admin-gateway.test.ts`; new `admin-gateway-entry-contract.test.ts` (4 of 4) | `lab-lifecycle-mailbox.integration.ts` (real observer chain); isolation tests | new `lab-operator-executor-runtime.integration.ts`; `lab-lifecycle-mailbox.integration.ts`; isolation tests |
+| Outstanding risks | none introduced; the handler cache is a baseline behavior | isolation enforced by CI validators, not at deploy/run time | success path tested with a stub in the new test (real authority in the existing test) |
+| Recommendation | **APPROVE** | **APPROVE** (note the deploy-time validator suggestion) | **APPROVE** |
+These are recommendations from the same agent that wrote the tests; the owner edits the registry if and when approving.
