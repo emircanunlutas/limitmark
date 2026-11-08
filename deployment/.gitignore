@@ -7,3 +7,7 @@ lifecycle-observer.lab.jsonc
 operator-lifecycle-executor.lab.jsonc
 admission-service.lab.jsonc
 public-signer.cloud-run-lab.jsonc
+# Production schedule-state rendered configs (Phase: inactive-by-default). They hold the account id and PUBLIC keys only. Never commit.
+lifecycle-observer.production.jsonc
+lifecycle-mailbox.production.armed.jsonc
+lifecycle-observer.production.armed.jsonc

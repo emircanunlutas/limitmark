@@ -39,6 +39,7 @@
     "authority:settle": "tsx scripts/authority-submit.ts settle",
     "authority:executor:preflight": "tsx scripts/authority-executor-preflight.ts",
     "authority:lifecycle:preflight": "tsx scripts/lifecycle-private-preflight.ts",
+    "authority:production:schedule-arm": "tsx scripts/authority-production-schedule-arm.ts",
     "authority:lab:init:prepare": "tsx scripts/authority-lab-initialize.ts",
     "authority:lab:init:submit": "tsx scripts/authority-lab-submit.ts initialize",
     "authority:lab:reconcile": "tsx scripts/authority-lab-submit.ts reconcile",

@@ -15,12 +15,26 @@ const stagingBuckets = [
   { binding: "RESULT_BUCKET", bucket_name: "limitmark-lifecycle-results-staging" },
 ];
 const stagingReader = { binding: "LIFECYCLE_READER", service: "limitmark-admission-service-staging", entrypoint: "StagingAuthorityLifecycleReadOnly" };
-function base(value: unknown, kind: "mailbox" | "observer", template: boolean): Record<string, unknown> {
+/** Production schedule states. Production mailbox/observer rollouts start INACTIVE (no Cron trigger can process lifecycle objects before bindings,
+ * secrets and routes have been inspected); ARMED is a separate, explicitly authorized later step. Only these two exact `triggers` shapes exist; any
+ * other shape (extra crons, another expression, missing key) is refused. A validator never infers the state: the caller names the state it requires. */
+export type ProductionScheduleState = "PRODUCTION_DEPLOYMENT_INACTIVE" | "PRODUCTION_SCHEDULE_ARMED";
+const productionScheduleTriggers: Record<ProductionScheduleState, string> = {
+  PRODUCTION_DEPLOYMENT_INACTIVE: JSON.stringify({ crons: [] }),
+  PRODUCTION_SCHEDULE_ARMED: JSON.stringify({ crons: ["* * * * *"] }),
+};
+export function productionScheduleState(triggers: unknown): ProductionScheduleState {
+  const serialized = JSON.stringify(triggers);
+  if (serialized === productionScheduleTriggers.PRODUCTION_DEPLOYMENT_INACTIVE) return "PRODUCTION_DEPLOYMENT_INACTIVE";
+  if (serialized === productionScheduleTriggers.PRODUCTION_SCHEDULE_ARMED) return "PRODUCTION_SCHEDULE_ARMED";
+  throw new Error("unsafe-production-schedule-state");
+}
+function base(value: unknown, kind: "mailbox" | "observer", template: boolean, requireScheduleState: ProductionScheduleState): Record<string, unknown> {
   const extra = kind === "mailbox" ? ["durable_objects", "migrations", "vars"] : [];
   if (!exact(value, [...common, ...extra]) || value.$schema !== "../node_modules/wrangler/config-schema.json" ||
       value.name !== `limitmark-lifecycle-${kind}-production` || value.compatibility_date !== "2026-09-13" ||
       value.workers_dev !== false || value.preview_urls !== false ||
-      JSON.stringify(value.triggers) !== JSON.stringify({ crons: ["* * * * *"] }) ||
+      JSON.stringify(value.triggers) !== productionScheduleTriggers[requireScheduleState] ||
       JSON.stringify(value.r2_buckets) !== JSON.stringify(buckets) ||
       value.main !== (template ? `__REQUIRED_RENDERED_${kind.toUpperCase()}_MAIN__.ts` : `../workers/${kind === "mailbox" ? "lifecycle-mailbox/index" : "lifecycle-observer"}.ts`))
     throw new Error("unsafe-lifecycle-config");
@@ -43,8 +57,13 @@ function base(value: unknown, kind: "mailbox" | "observer", template: boolean): 
     throw new Error("unsafe-lifecycle-account");
   return value;
 }
-export function validateLifecycleMailboxConfig(value: unknown, template = true): void { base(value, "mailbox", template); }
-export function validateLifecycleObserverConfig(value: unknown, template = true): void { base(value, "observer", template); }
+/** `requireScheduleState` defaults to INACTIVE: a production mailbox/observer config is accepted as armed only when the caller explicitly asks for it. */
+export function validateLifecycleMailboxConfig(value: unknown, template = true, requireScheduleState: ProductionScheduleState = "PRODUCTION_DEPLOYMENT_INACTIVE"): ProductionScheduleState {
+  base(value, "mailbox", template, requireScheduleState); return requireScheduleState;
+}
+export function validateLifecycleObserverConfig(value: unknown, template = true, requireScheduleState: ProductionScheduleState = "PRODUCTION_DEPLOYMENT_INACTIVE"): ProductionScheduleState {
+  base(value, "observer", template, requireScheduleState); return requireScheduleState;
+}
 
 export function validateLifecycleTransportManifest(value: unknown, template = true): void {
   if (!exact(value, ["version", "environment", "accountId", "requestBucket", "resultBucket", "authorityId", "policyEpoch", "operatorPublicKey"]) ||
