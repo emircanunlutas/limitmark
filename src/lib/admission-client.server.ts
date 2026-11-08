@@ -22,6 +22,13 @@ export interface ProductionOidcTokenProvider { getToken(audience: string): Promi
 /** The platform header that carries a Vercel Function's own OIDC token (set by Vercel on the function Request; see https://vercel.com/docs/oidc). */
 export const VERCEL_OIDC_REQUEST_HEADER = "x-vercel-oidc-token";
 export const VERCEL_OIDC_EXCHANGE_TIMEOUT_MS = 1_500;
+/** Upper bound on SDK exchanges that have been started and not yet settled. The SDK's exchange fetch has no AbortSignal, so a call abandoned by the
+ * timeout below keeps running until the network gives up; this cap keeps a Vercel identity outage from accumulating unbounded pending requests.
+ * Over the cap the provider fails closed immediately and never calls the SDK. */
+export const VERCEL_OIDC_MAX_PENDING_EXCHANGES = 16;
+export type VercelOidcExchangeLimiter = { pending: number; readonly maximum: number };
+/** One per process: provider instances are created per request, the limiter must outlive them. */
+const sharedExchangeLimiter: VercelOidcExchangeLimiter = { pending: 0, maximum: VERCEL_OIDC_MAX_PENDING_EXCHANGES };
 
 /** The narrow part of `@vercel/oidc` this provider uses; injectable so the failure modes can be tested without a Vercel runtime. */
 export type VercelOidcSdk = {
@@ -46,17 +53,23 @@ export class VercelRequestOidcTokenProvider implements ProductionOidcTokenProvid
   constructor(
     private readonly sdk: VercelOidcSdk = defaultVercelOidcSdk,
     private readonly timeoutMs: number = VERCEL_OIDC_EXCHANGE_TIMEOUT_MS,
+    private readonly limiter: VercelOidcExchangeLimiter = sharedExchangeLimiter,
   ) {}
 
   async getToken(audience: string): Promise<string> {
     if (!audience || audience.length > 256 || /[\s,]/u.test(audience)) throw new Error("oidc-audience");
     const platformToken = this.sdk.getContext()?.headers?.[VERCEL_OIDC_REQUEST_HEADER];
     if (typeof platformToken !== "string" || platformToken === "") throw new Error("vercel-oidc-context");
+    if (this.limiter.pending >= this.limiter.maximum) throw new Error("vercel-oidc-saturated");
     let timer: ReturnType<typeof setTimeout> | undefined;
     let token: unknown;
     try {
+      const exchange = this.sdk.getVercelOidcToken({ audience });
+      this.limiter.pending += 1;
+      // Released when the SDK call itself settles (not when we stop waiting for it); the extra handler also keeps a late rejection from being unhandled.
+      void Promise.resolve(exchange).then(() => undefined, () => undefined).finally(() => { this.limiter.pending -= 1; });
       token = await Promise.race([
-        this.sdk.getVercelOidcToken({ audience }),
+        exchange,
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("vercel-oidc-timeout")), this.timeoutMs); }),
       ]);
     } catch (error) {

@@ -285,3 +285,32 @@ test("identity-service and JWKS unavailability fail closed: no allow, no authori
   assert.deepEqual(await c.client.claimPre(preInput()), { decision: "unavailable" });
   assert.deepEqual(await c.client.consumePost({ ...preInput(), permit: opaque(32, 5) }), { decision: "unavailable" });
 });
+
+test("abandoned exchanges cannot pile up: the in-flight cap fails closed without calling the SDK, and is released when the SDK call settles", async () => {
+  const identity = await identityFixture();
+  const releases: Array<(token: string) => void> = [];
+  const sdk = fakeSdk(() => new Promise<string>((resolve) => { releases.push(resolve); }));
+  const limiter = { pending: 0, maximum: 2 };
+  const provider = new VercelRequestOidcTokenProvider(sdk, 30, limiter);
+  const outcomes = await Promise.allSettled([provider.getToken(AUDIENCE), provider.getToken(AUDIENCE), provider.getToken(AUDIENCE)]);
+  assert.deepEqual(outcomes.map((outcome) => outcome.status === "rejected" ? (outcome.reason as Error).message : "ok").sort(),
+    ["vercel-oidc-saturated", "vercel-oidc-timeout", "vercel-oidc-timeout"]);
+  assert.equal(sdk.calls, 2, "the saturated call never reached the SDK");
+  assert.equal(limiter.pending, 2, "timed-out calls still count while their request is outstanding");
+  await assert.rejects(() => provider.getToken(AUDIENCE), /^Error: vercel-oidc-saturated$/);
+  assert.equal(sdk.calls, 2);
+  const token = await identity.mint();
+  for (const release of releases) release(token);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(limiter.pending, 0, "released when the SDK settles");
+  const healthy = new VercelRequestOidcTokenProvider(fakeSdk(() => Promise.resolve(token)), 30, limiter);
+  assert.equal(await healthy.getToken(AUDIENCE), token);
+  assert.equal(limiter.pending, 0);
+  // a late rejection of an abandoned exchange is not an unhandled rejection
+  const rejecting: Array<(reason: Error) => void> = [];
+  const lateFailure = new VercelRequestOidcTokenProvider(fakeSdk(() => new Promise<string>((_, reject) => { rejecting.push(reject); })), 20, limiter);
+  await assert.rejects(() => lateFailure.getToken(AUDIENCE), /vercel-oidc-timeout/);
+  for (const reject of rejecting) reject(new Error("late network failure"));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(limiter.pending, 0);
+});
