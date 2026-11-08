@@ -42,6 +42,7 @@
     "authority:production:schedule-arm": "tsx scripts/authority-production-schedule-arm.ts",
     "test:workers:guard-export": "tsx tests/workers/guard-export.integration.ts",
     "guard:ledger": "tsx scripts/guard-ledger-export.ts",
+    "qualification:baseline-proposal": "tsx tests/support/qualification-baseline-proposal.ts",
     "authority:recovery:posture": "tsx scripts/lifecycle-recovery-posture.ts",
     "authority:lab:init:prepare": "tsx scripts/authority-lab-initialize.ts",
     "authority:lab:init:submit": "tsx scripts/authority-lab-submit.ts initialize",
