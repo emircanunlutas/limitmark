@@ -87,12 +87,15 @@ export function createGoogleIdTokenProvider(
   let inFlight: Promise<string> | undefined;
 
   return async function getToken(): Promise<string> {
+    // Only the caller that STARTS an acquisition owns it and may clear it; callers that join an acquisition in flight must never clear it (doing so let a
+    // third caller start a second concurrent acquisition while the first was still pending).
+    let started: Promise<string> | undefined;
     try {
       if (!credentialsJson || !/^https:\/\/[a-z0-9.-]+$/iu.test(audience)) throw new Error("google-token-config");
       const currentSeconds = Math.floor(now() / 1000);
       if (cached && cached.expiresAt > currentSeconds + TOKEN_REFRESH_MARGIN_SECONDS) return cached.value;
       if (inFlight) return await inFlight;
-      inFlight = (async () => {
+      started = inFlight = (async () => {
         credentials ??= readJsonObject(credentialsJson);
         signingKey ??= await subtle.importKey(
           "pkcs8",
@@ -145,12 +148,12 @@ export function createGoogleIdTokenProvider(
         cached = { value: idTokenBody.token, expiresAt: payload.exp };
         return idTokenBody.token;
       })();
-      return await inFlight;
+      return await started;
     } catch {
       cached = undefined;
       throw new Error("google-id-token-acquisition-failed");
     } finally {
-      inFlight = undefined;
+      if (started !== undefined && inFlight === started) inFlight = undefined;
     }
   };
 }
