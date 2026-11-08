@@ -207,13 +207,13 @@ async function main(): Promise<void> {
         const tsx = [path.join("node_modules", "tsx", "dist", "cli.mjs"), "--conditions=react-server", "lab/run.ts"];
         // The HTTP drivers run on THIS host against the container's published loopback port; the destination is proven by --app-container.
         for (const workload of ["connectivity-baseline", "latency-measurement", "demo-submission-post"]) {
-          const r = await runCapture(process.execPath, [...tsx, "--target", "local-app-alt", "--workload", workload, "--app-container", APP_CONTAINER], `${evidence.id}-app-${workload}.log`, 5 * 60_000);
+          const r = await runCapture(process.execPath, [...tsx, "--local-only", "--target", "local-app-alt", "--workload", workload, "--app-container", APP_CONTAINER], `${evidence.id}-app-${workload}.log`, 5 * 60_000);
           output += `${workload}:${r.exitCode};`;
           withheld += r.withheld;
           if (r.exitCode !== 0) exitCode = 1;
         }
         // k6 (Docker) joins the app container's network namespace: its 127.0.0.1:3000 is the container's app.
-        const k6 = await runCapture(process.execPath, [...tsx, "--target", "local-app", "--workload", "latency-measurement", "--engine", "k6", "--k6-netns-container", APP_CONTAINER], `${evidence.id}-app-k6.log`, 5 * 60_000);
+        const k6 = await runCapture(process.execPath, [...tsx, "--local-only", "--target", "local-app", "--workload", "latency-measurement", "--engine", "k6", "--k6-netns-container", APP_CONTAINER], `${evidence.id}-app-k6.log`, 5 * 60_000);
         output += `k6:${k6.exitCode};`;
         withheld += k6.withheld;
         if (k6.exitCode !== 0) exitCode = 1;
