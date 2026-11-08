@@ -1,0 +1,48 @@
+diff --git a/defense/plane/runtime.ts b/defense/plane/runtime.ts
+index 5a90960..486da1b 100644
+--- a/defense/plane/runtime.ts
++++ b/defense/plane/runtime.ts
+@@ -10,6 +10,7 @@
+  * harness entry can register its own listener for its own message types without this file knowing they exist.
+  */
+ import { randomBytes } from "node:crypto";
++import { OutcomeCounters, countingEmit, type WithOutcomes } from "../core/outcome-counters";
+ import { monitorEventLoopDelay } from "node:perf_hooks";
+ import { BoundedEventChannel } from "../core/ledger";
+ import { JourneyLanes } from "../core/lanes";
+@@ -54,7 +55,7 @@ export function startPlane(deps: PlaneRuntimeDeps = {}): PlaneRuntimeHandle {
+   let front: Front | null = null;
+   let gate: ShapeGate | null = null;
+   let stage: L2Stage | null = null;
+-  let ticks: TickSource<PlaneTickData> | null = null;
++  let ticks: TickSource<WithOutcomes<PlaneTickData>> | null = null;
+   let tickTimer: NodeJS.Timeout | null = null;
+   const loop = monitorEventLoopDelay({ resolution: 10 });
+   loop.enable();
+@@ -77,21 +78,23 @@ export function startPlane(deps: PlaneRuntimeDeps = {}): PlaneRuntimeHandle {
+           maxUses: raw.l2.maxUses, ledgerCapacity: raw.l2.ledgerCapacity, mono: () => performance.now(), key: randomBytes(32),
+         });
+         stage = new L2Stage(lanes, { composer: raw.l2.stage, wrapLayer: deps.wrapL2, maxResponseBytes: MAX_RESPONSE_BYTES });
++        const telemetryTickMs = raw.telemetry?.tickMs;
++        const outcomeCounters = typeof telemetryTickMs === "number" ? new OutcomeCounters() : undefined;
+         front = createFront({
+-          upstream: { host: "127.0.0.1", port: raw.upstreamPort }, emit: (event) => ch.emit(event), layer: l1, hop, l2: stage, verdictOverride: deps.verdictOverride,
++          upstream: { host: "127.0.0.1", port: raw.upstreamPort }, emit: outcomeCounters === undefined ? (event) => ch.emit(event) : countingEmit(outcomeCounters, (event) => ch.emit(event)), layer: l1, hop, l2: stage, verdictOverride: deps.verdictOverride,
+           composer: raw.composer, bodyDeadlineMs: raw.bodyDeadlineMs, egressTimeoutMs: raw.egressTimeoutMs, maxResponseBytes: MAX_RESPONSE_BYTES, ingress: raw.ingress,
+         });
+         const ready = await front.listen();
+         const tickMs = raw.telemetry?.tickMs;
+         if (typeof tickMs === "number" && Number.isSafeInteger(tickMs) && tickMs >= 100 && tickMs <= 10_000) {
+           const owned = { front, stage, gate, channel: ch };
+-          ticks = new TickSource<PlaneTickData>("plane", new ProcessSampler(), () => {
++          ticks = new TickSource<WithOutcomes<PlaneTickData>>("plane", new ProcessSampler(), () => {
+             const interval = owned.front.intervalInFlight();
+             const l2 = owned.stage.stats();
+             return {
+               ingressOpen: owned.front.listening(), front: owned.front.stats(), inFlightMax: interval.max, inFlightExternalMax: interval.maxExternal,
+               external: owned.front.externalStats(), connections: owned.front.connectionStats(), l1Composer: owned.front.layerComposerStats(),
+-              l1Occupancy: owned.front.composerOccupancy(), l1: owned.gate.stats(), hop: owned.front.hopStats(), l2, channel: owned.channel.stats(),
++              l1Occupancy: owned.front.composerOccupancy(), l1: owned.gate.stats(), hop: owned.front.hopStats(), l2, channel: owned.channel.stats(), outcomes: outcomeCounters === undefined ? null : outcomeCounters.snapshot(),
+             };
+           });
+           // Observation only: a tick that fails to build or send changes nothing about any request.
