@@ -64,9 +64,9 @@ export interface AuthorityReadNonPositive {
   readonly observedAtMs: number;
   readonly signingKeyFingerprint: string;
   /** `initialized` as stated by the Authority-signed reconciliation (never inferred from a relay ledger or an unsigned object). */
-  readonly initialized: boolean;
+  readonly initialized?: boolean;
   /** The Authority-signed `coverage` of the same statement. */
-  readonly coverage: "COMPLETE" | "INCOMPLETE";
+  readonly coverage?: "COMPLETE" | "INCOMPLETE";
   /** Present only when the caller supplied a command that names a different digest; it was NOT used. */
   readonly commandContext?: "MISMATCHED";
 }
@@ -103,10 +103,12 @@ function withComposed<T extends object>(outcome: T, composed: ProductionAuthorit
   return Object.freeze(outcome);
 }
 
-/** The `initialized` and `coverage` the Authority SIGNED in a reconciliation statement. A non-positive observation is always a reconciliation (lifecycle statements are
- * always positive candidates); anything else is not evidence and the caller reports a contract failure. */
-function signedInitialization(statement: { readonly kind: string; readonly initialized?: unknown; readonly coverage?: unknown }): { initialized: boolean; coverage: "COMPLETE" | "INCOMPLETE" } | null {
-  if (statement.kind !== "reconciliation" || typeof statement.initialized !== "boolean" || (statement.coverage !== "COMPLETE" && statement.coverage !== "INCOMPLETE")) return null;
+/** The `initialized` and `coverage` the Authority SIGNED in a RECONCILIATION statement. A lifecycle statement that is non-positive only for want of command context
+ * (COMMAND_CONTEXT_REQUIRED) carries neither field: none is reported, and consumers must treat absence as "no initialization evidence". A reconciliation statement whose
+ * fields are malformed is not evidence and the caller reports a contract failure (null). */
+function signedInitialization(statement: { readonly kind: string; readonly initialized?: unknown; readonly coverage?: unknown }): { initialized?: boolean; coverage?: "COMPLETE" | "INCOMPLETE" } | null {
+  if (statement.kind !== "reconciliation") return {};
+  if (typeof statement.initialized !== "boolean" || (statement.coverage !== "COMPLETE" && statement.coverage !== "INCOMPLETE")) return null;
   return { initialized: statement.initialized, coverage: statement.coverage };
 }
 
@@ -123,6 +125,8 @@ export interface ProductionReadInput {
   /** The unmodified result of `authenticateSealedLifecycleArtifact`. Required for any positive. If it names a different digest it
    * is reported as MISMATCHED and NOT used, so a valid signed negative is never erased by inconsistent optional context. */
   readonly authenticatedCommand?: AuthenticatedLifecycleCommand;
+  /** Opt-in. When true, a VERIFIED_NON_POSITIVE reconciliation outcome also carries the Authority-SIGNED `initialized`/`coverage`. Default outcomes are unchanged. */
+  readonly includeSignedInitialization?: boolean;
 }
 
 export async function readProductionAuthorityResult(input: ProductionReadInput): Promise<AuthorityReadOutcome> {
@@ -146,7 +150,7 @@ export async function readProductionAuthorityResult(input: ProductionReadInput):
     if (receipt === null) return { status: "UNCONFIRMED", environment: "production", kind, digest, reason: "result-contract" };
     return withComposed({ status: "POSITIVE", ...common, receipt } satisfies AuthorityReadPositive, composed);
   }
-  const evidence = signedInitialization(verified.statement);
+  const evidence = input.includeSignedInitialization === true ? signedInitialization(verified.statement) : {};
   if (evidence === null) return { status: "UNCONFIRMED", environment: "production", kind, digest, reason: "result-contract" };
   return withComposed({ status: "VERIFIED_NON_POSITIVE", ...common, observation: composed.observation, ...evidence,
     ...(mismatched ? { commandContext: "MISMATCHED" as const } : {}) } satisfies AuthorityReadNonPositive, composed);
@@ -159,6 +163,8 @@ export interface StagingReadInput {
   readonly bytes: Uint8Array;
   readonly trustManifest: AuthorityResultTrustManifest;
   readonly nowMs: number;
+  /** Opt-in. When true, a VERIFIED_NON_POSITIVE reconciliation outcome also carries the Authority-SIGNED `initialized`/`coverage`. Default outcomes are unchanged. */
+  readonly includeSignedInitialization?: boolean;
 }
 
 export async function readStagingAuthorityResult(input: StagingReadInput): Promise<AuthorityReadOutcome> {
@@ -177,7 +183,7 @@ export async function readStagingAuthorityResult(input: StagingReadInput): Promi
     if (receipt === null) return { status: "UNCONFIRMED", environment: "staging", kind, digest, reason: "result-contract" };
     return withComposed({ status: "POSITIVE", ...common, receipt } satisfies AuthorityReadPositive, composed);
   }
-  const evidence = signedInitialization(verified.statement);
+  const evidence = input.includeSignedInitialization === true ? signedInitialization(verified.statement) : {};
   if (evidence === null) return { status: "UNCONFIRMED", environment: "staging", kind, digest, reason: "result-contract" };
   return withComposed({ status: "VERIFIED_NON_POSITIVE", ...common, observation: composed.observation, ...evidence } satisfies AuthorityReadNonPositive, composed);
 }

@@ -24,7 +24,7 @@ async function envelope(options: { initialized: boolean; coverage?: "COMPLETE" |
   return (await signer.sign(statement)) as Uint8Array;
 }
 const read = async (bytes: Uint8Array, nowMs = OBSERVED + 1_000, digest = DIGEST, nonce = NONCE) =>
-  readProductionAuthorityResult({ kind: "reconciliation", digest, nonce, bytes, trustManifest: await rfcTrustManifest(), nowMs });
+  readProductionAuthorityResult({ includeSignedInitialization: true, kind: "reconciliation", digest, nonce, bytes, trustManifest: await rfcTrustManifest(), nowMs });
 
 test("a signed never-initialized reconciliation reports initialized:false / COMPLETE / NOT_FOUND", async () => {
   const outcome = await read(await envelope({ initialized: false }));
@@ -84,4 +84,12 @@ test("provenance: the value is copied from the verified statement only; the read
   assert.match(source, /initialized: statement\.initialized, coverage: statement\.coverage/u);
   assert.doesNotMatch(source, /guard|ledger|claims|settlements|node:fs/iu);
   assert.deepEqual([...source.matchAll(/^import .*? from "([^"]+)";$/gmu)].map((m) => m[1]).filter((s) => s.startsWith("./") || s.startsWith("../")).length > 0, true);
+});
+
+test("opt-in: without includeSignedInitialization the outcome shape is exactly the historical one (no initialized/coverage)", async () => {
+  const bytes = await envelope({ initialized: false });
+  const outcome = await readProductionAuthorityResult({ kind: "reconciliation", digest: DIGEST, nonce: NONCE, bytes, trustManifest: await rfcTrustManifest(), nowMs: OBSERVED + 1_000 });
+  assert.equal(outcome.status, "VERIFIED_NON_POSITIVE");
+  assert.equal("initialized" in outcome, false);
+  assert.equal("coverage" in outcome, false);
 });

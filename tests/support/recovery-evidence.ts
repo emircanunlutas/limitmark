@@ -56,7 +56,7 @@ const noncePattern = /^[a-f0-9]{32}$/u;
 
 type Observed = { observedAtMs: number };
 async function verify(side: RecoveryEvidenceInput["first"], input: RecoveryEvidenceInput, blockers: Set<RecoveryBlocker>, verifiedAtMs: number): Promise<Observed | null> {
-  const outcome = await readProductionAuthorityResult({ kind: "reconciliation", digest: input.strandedDigest, nonce: side.nonce, bytes: side.bytes, trustManifest: input.trustManifest, nowMs: verifiedAtMs })
+  const outcome = await readProductionAuthorityResult({ includeSignedInitialization: true, kind: "reconciliation", digest: input.strandedDigest, nonce: side.nonce, bytes: side.bytes, trustManifest: input.trustManifest, nowMs: verifiedAtMs })
     .catch(() => null);
   // No authenticated command is supplied on purpose: a signed negative is VERIFIED_NON_POSITIVE; a positive can never be produced here.
   if (!outcome || outcome.status === "UNCONFIRMED") { blockers.add("signature-or-expectation"); return null; }
