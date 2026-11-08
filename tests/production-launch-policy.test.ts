@@ -107,6 +107,14 @@ await sql.end({ timeout: 0 }).catch(() => undefined);
 process.exit(0);
 `;
 
+/** PostgreSQL ErrorResponse: 'E', int32 length (self-inclusive), severity FATAL, SQLSTATE 28000, a fixed message, terminator. */
+const FATAL_ERROR_RESPONSE = (() => {
+  const body = Buffer.from("SFATAL\0C28000\0Msynthetic test server rejects after the handshake\0\0", "latin1");
+  const length = Buffer.alloc(4);
+  length.writeInt32BE(body.length + 4);
+  return Buffer.concat([Buffer.from("E", "latin1"), length, body]);
+})();
+
 async function withTlsServer<T>(files: { key: string; cert: string }, body: (port: number, handshakes: () => number) => Promise<T>): Promise<T> {
   let completed = 0;
   const server = net.createServer((socket) => {
@@ -115,7 +123,10 @@ async function withTlsServer<T>(files: { key: string; cert: string }, body: (por
       if (chunk.length < 8 || chunk.readInt32BE(4) !== 80877103) { socket.destroy(); return; }
       socket.write("S");
       const secure = new tls.TLSSocket(socket, { isServer: true, key: readFileSync(files.key), cert: readFileSync(files.cert) });
-      secure.on("secure", () => { completed += 1; secure.destroy(); });
+      // After the handshake the fixture answers with a FATAL ErrorResponse and then closes. Closing without any protocol reply made postgres.js treat the
+      // connection as never established and reconnect in a tight loop on Linux (hundreds of connections until the 20 s child timeout); a protocol-level rejection
+      // ends the client's attempt deterministically on every platform. Certificate verification is unchanged: only handshakes that complete are counted.
+      secure.on("secure", () => { completed += 1; secure.write(FATAL_ERROR_RESPONSE, () => secure.destroy()); });
       secure.on("error", () => undefined);
     });
     socket.on("error", () => undefined);
