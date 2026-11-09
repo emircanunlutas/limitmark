@@ -27,12 +27,27 @@ const PATHS_DCF10AF8 = ["defense", "src", "workers", "lab/policy", "lab/defense/
   "lab/defense/n2-measurement.ts", "lab/defense/external-reducer.ts", "lab/defense/external-accounting.ts", "lab/defense/canary.ts", "lab/defense/field-canary.ts", "lab/defense/collector.ts",
   "lab/defense/exposure-proof.ts", "lab/evidence"];
 const PATHS_AFF793E = ["defense", "lab/defense/n2-measurement.ts"];
-const GUARDS: Array<[string, string, string[], number]> = [["64ccc9d", MIGRATION_BASELINES[0], PATHS_64CCC9D, 38], ["dcf10af8", MIGRATION_BASELINES[1], PATHS_DCF10AF8, 38], ["aff793e", MIGRATION_BASELINES[2], PATHS_AFF793E, 0]];
+const GUARDS: Array<[string, string, string[], number]> = [["64ccc9d", MIGRATION_BASELINES[0], PATHS_64CCC9D, 11], ["dcf10af8", MIGRATION_BASELINES[1], PATHS_DCF10AF8, 11], ["aff793e", MIGRATION_BASELINES[2], PATHS_AFF793E, 0]];
 const NEW_APPROVALS = ["workers/admin-gateway/index.ts", "workers/lab-operator-lifecycle-executor.ts"];
 // Owner decision of 2026-11-09 ('Unified Acceptance False-PASS Closure and Targeted Migration Review'): exactly this one further entry, at its reviewed blob.
 const JWKS_APPROVAL = "workers/shared/bounded-jwks.ts";
 // Owner decision of 2026-11-09 ('Campaign Acceptance Trust Closure and Ingress Protocol Approval'): exactly this one further entry, at its reviewed blob.
 const INGRESS_APPROVAL = "src/lib/ingress-protocol.ts";
+// Owner decision of 2026-11-09 ('Migration Batch Closure and M1 Environment Preparation'): exactly these 27 entries (batches B1-B3), each at its reviewed blob. Nothing else is approved.
+export const BATCH_APPROVALS = [
+  "workers/admission-service/authority.ts", "workers/admission-service/operator-command.ts", "workers/admission-service/authority-attestation.ts", "workers/admission-service/authority-attestation-config.ts",
+  "workers/admission-service/authority-attestation-signer.ts", "src/lib/authority-result-attestation.ts", "src/lib/authority-result-trust.ts",
+  "workers/admission-service/auth.ts", "workers/admission-service/service.ts", "workers/admission-service/index.ts", "workers/admission-service/production-index.ts", "workers/admission-service/lab-index.ts",
+  "src/lib/ingress-verifier.server.ts", "src/lib/public-origin.ts", "src/proxy.ts", "src/lib/public-inquiry-handler.server.ts", "src/lib/admission-client.server.ts", "src/lib/db/database.server.ts",
+  "src/lib/public-inquiry-runtime.server.ts", "src/app/test-talep-et/page.tsx", "src/lib/public-inquiry-otel.server.ts", "src/lib/public-inquiry-telemetry.server.ts",
+  "workers/ingress-signer/google-id-token.ts", "workers/ingress-signer/signer.ts", "workers/ingress-signer/index.ts", "workers/ingress-signer/laboratory-index.ts", "workers/lab-lifecycle-observer.ts",
+];
+// Entries that must stay PENDING: the Gate 11A guard-export set, the production enablement set (D-1) and the lab mailbox files that import the Gate 11A dispatch guard.
+export const STILL_PENDING = [
+  "src/app/api/public-inquiries/route.ts", "src/lib/public-inquiry-production-runtime.server.ts", "src/lib/production-launch-policy.ts",
+  "workers/lifecycle-mailbox/guard-export.ts", "workers/lifecycle-mailbox/guard-reader.ts", "workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/index.ts", "workers/lifecycle-observer.ts",
+  "workers/lifecycle-mailbox/lab-dispatch-guard.ts", "workers/lifecycle-mailbox/lab-processor.ts", "workers/lifecycle-mailbox/lab-index.ts",
+];
 const INSTRUMENTATION = ["defense/core/outcome-counters.ts", "defense/plane/runtime.ts"];
 
 const approve = (registry: readonly ReviewedMigration[], which: (entry: ReviewedMigration) => boolean): ReviewedMigration[] =>
@@ -70,8 +85,16 @@ test("registry shape: a closed, versioned list of exact files, only the two inst
   ]);
   // Owner decision of 2026-11-09: exactly these two further entries are approved, each at its reviewed blob, with this authorization; the lab observer and every other entry stay PENDING.
   const approvedNow = REVIEWED_MIGRATIONS.filter((entry) => entry.status === "APPROVED").map((entry) => entry.path).sort();
-  assert.deepEqual(approvedNow, [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL].sort());
-  assert.equal(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "PENDING").length, 38);
+  assert.deepEqual(approvedNow, [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL, ...BATCH_APPROVALS].sort());
+  assert.equal(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "PENDING").length, 11);
+  assert.deepEqual(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "PENDING").map((entry) => entry.path).sort(), [...STILL_PENDING].sort());
+  for (const entry of REVIEWED_MIGRATIONS.filter((candidate) => BATCH_APPROVALS.includes(candidate.path))) {
+    assert.match(entry.authorization ?? "", /^Owner decision 'Migration Batch Closure and M1 Environment Preparation' \(2026-11-09\)/u, entry.path);
+    assert.match(entry.scope, /file-scoped and not transitive/u, entry.path);
+    assert.match(entry.scope, /authorizes no deployment or production enablement/u, entry.path);
+    assert.equal(entry.hold === "guard-export", false, `${entry.path}: no Gate 11A guard-export entry is approved`);
+    assert.equal(/GATE_11A/u.test(entry.reviewId), false, entry.path);
+  }
   const ingress = REVIEWED_MIGRATIONS.find((entry) => entry.path === INGRESS_APPROVAL)!;
   assert.deepEqual([ingress.historicalBlob, ingress.reviewedBlob, ingress.reviewId, ingress.hold], ["04de4ef57d95ccbc7fe9b523f6e85da861f39851", "15e374c3604ddd6b7a236d40adde9d76f0391b69", "BASELINE-V2/LABORATORY", "shared-production-module"]);
   assert.match(ingress.authorization ?? "", /^Owner decision 'Campaign Acceptance Trust Closure and Ingress Protocol Approval' \(2026-11-09\)/u);
@@ -88,17 +111,16 @@ test("registry shape: a closed, versioned list of exact files, only the two inst
   }
   assert.equal(REVIEWED_MIGRATIONS.find((entry) => entry.path === "workers/admin-gateway/index.ts")?.reviewedBlob, "9c159eaf416dffe751e2fa66cb262ab3acc4c8a4");
   assert.equal(REVIEWED_MIGRATIONS.find((entry) => entry.path === "workers/lab-operator-lifecycle-executor.ts")?.reviewedBlob, "dadcb9769e11e67eaf8c01711a9150a159aa51fc");
-  assert.equal(REVIEWED_MIGRATIONS.find((entry) => entry.path === "workers/lab-lifecycle-observer.ts")?.status, "PENDING", "the lab lifecycle observer stays PENDING");
   const holds = (hold: string) => REVIEWED_MIGRATIONS.filter((entry) => entry.hold === hold).length;
   assert.deepEqual([holds("none"), holds("shared-production-module"), holds("guard-export")], [28, 11, 5]);
 });
 
-test("real repository: every file that differs from each baseline is registered and unmodified since review (no unreviewed drift), and everything except the six approved entries is still PENDING", () => {
+test("real repository: every file that differs from each baseline is registered and unmodified since review (no unreviewed drift), and everything except the thirty-three approved entries is still PENDING", () => {
   for (const [name, baseline, paths, expected] of GUARDS) {
     const result = classifyDrift(root, baseline, paths);
     assert.deepEqual(result.unreviewed, [], `${name}: unreviewed drift`);
     assert.deepEqual(result.modifiedAfterReview, [], `${name}: modified after review`);
-    assert.deepEqual([...result.authorized].sort(), name === "aff793e" ? INSTRUMENTATION : [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL].sort(), `${name}: exactly the approved entries inside this guard's paths are authorized`);
+    assert.deepEqual([...result.authorized].sort(), name === "aff793e" ? INSTRUMENTATION : [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL, ...BATCH_APPROVALS].sort(), `${name}: exactly the approved entries inside this guard's paths are authorized`);
     assert.equal(result.pending.length, expected, `${name}: pending drift`);
   }
 });
@@ -183,14 +205,20 @@ test("exact-file approval is not dependency closure and not deployment authoriza
   const dependencies: Record<string, string[]> = {
     // bounded-jwks is a dependency of the gateway but is approved ONLY by its own explicit owner decision (JWKS_APPROVAL, asserted in the registry-shape test), never by this entry
     "workers/admin-gateway/index.ts": [],
-    "workers/lab-operator-lifecycle-executor.ts": ["workers/admission-service/authority.ts", "workers/admission-service/operator-command.ts"],
+    // authority.ts and operator-command.ts are now approved, each ONLY by its own entry in BATCH_APPROVALS (never through this executor)
+    "workers/lab-operator-lifecycle-executor.ts": [],
+    // approved batch entries whose importers remain held: the held importer is not approved by its import being approved
+    "src/lib/admission-client.server.ts": ["src/lib/public-inquiry-production-runtime.server.ts"],
+    "workers/admission-service/authority.ts": ["workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/lab-dispatch-guard.ts"],
+    "workers/admission-service/operator-command.ts": ["workers/lifecycle-mailbox/lab-processor.ts"],
+    "src/lib/public-inquiry-handler.server.ts": ["src/app/api/public-inquiries/route.ts"],
   };
   for (const [approved, pending] of Object.entries(dependencies)) {
     assert.equal(byPath.get(approved)?.status, "APPROVED", approved);
     for (const dependency of pending) {
       const entry = byPath.get(dependency);
       assert.ok(entry !== undefined, `${dependency} is registered`);
-      assert.equal(entry.status, "PENDING", `${dependency}: approving ${approved} does not approve its import`);
+      assert.equal(entry.status, "PENDING", `${dependency}: approving ${approved} does not approve its importer`);
       assert.equal(isEffective(entry), false, dependency);
     }
   }
