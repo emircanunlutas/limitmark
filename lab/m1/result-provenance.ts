@@ -26,14 +26,14 @@ export const EVALUATOR_SOURCES: Record<ResultComponent, readonly string[]> = {
   overlay: ["lab/defense/ba0-m1-reconcile.ts", "lab/defense/m1-status-contract.ts", "lab/defense/reconcile.ts", "lab/defense/generator-report.ts", "lab/m1/result-provenance.ts"],
   tally: ["lab/defense/ba0-m1-tally-check.ts", "lab/defense/m1-tally-check.ts", "lab/m1/inventory.ts", "lab/m1/result-provenance.ts"],
   receipts: ["lab/defense/ba0-m1-receipt-check.ts", "lab/defense/m1-receipt-check.ts", "lab/m1/inventory.ts", "lab/m1/result-provenance.ts"],
-  observation: ["lab/m1/observation-check.ts", "lab/m1/results.ts", "lab/m1/result-provenance.ts"],
+  observation: ["lab/m1/observation-check.ts", "lab/m1/observation-bundle.ts", "lab/m1/observation-completeness.ts", "lab/m1/results.ts", "lab/m1/result-provenance.ts"],
   provenance: ["lab/provenance/prototype.ts", "lab/m1/results.ts", "lab/m1/result-provenance.ts"],
 };
 export const EVALUATOR_CONTRACT: Record<ResultComponent, string> = {
   overlay: "m1-status-overlay", tally: "m1-tally-check-v1", receipts: "m1-receipt-check-v1", observation: "m1-observation-check-v1", provenance: "m1-provenance-check-v1",
 };
 
-export type InputSources = { packageDirectory: string; generatorReportPath?: string | null; observerDirectory?: string | null; retainedDirectory?: string | null };
+export type InputSources = { packageDirectory: string; generatorReportPath?: string | null; observerDirectory?: string | null; retainedDirectory?: string | null; maxHeartbeatGapMs?: number | null };
 export type InputRole = { role: string; sha256: string | null };
 
 const sha256 = (data: Buffer | string): string => createHash("sha256").update(data).digest("hex");
@@ -49,7 +49,7 @@ export function observedInputs(component: ResultComponent, sources: InputSources
     case "tally": roles.push({ role: "package.journal", sha256: digestOf(pkg("ledger-journal-field.ndjson")) }); break;
     case "receipts": roles.push({ role: "package.journal", sha256: digestOf(pkg("ledger-journal-field.ndjson")) }); if (sources.generatorReportPath) roles.push({ role: "generator.report", sha256: digestOf(sources.generatorReportPath) }); break;
     case "overlay": roles.push({ role: "package.server.level", sha256: digestOf(pkg("server-level.json")) }, { role: "generator.report", sha256: digestOf(sources.generatorReportPath) }); break;
-    case "observation": roles.push({ role: "observer.canary", sha256: digestOf(observer("canary-results.json")) }, { role: "observer.receipts", sha256: digestOf(observer("origin-receipts.ndjson")) }, { role: "observer.meta", sha256: digestOf(observer("observation-meta.json")) }); break;
+    case "observation": roles.push({ role: "observer.canary", sha256: digestOf(observer("canary-results.json")) }, { role: "observer.receipts", sha256: digestOf(observer("origin-receipts.ndjson")) }, { role: "observer.meta", sha256: digestOf(observer("observation-meta.json")) }, { role: "observer.declaration", sha256: digestOf(observer("collector-declaration.json")) }); break;
     case "provenance": roles.push({ role: "retained.commitment", sha256: digestOf(retained("commitment.json")) }, { role: "retained.beacons", sha256: digestOf(retained("beacons.ndjson")) }, { role: "retained.final", sha256: digestOf(retained("final.json")) }); break;
   }
   return roles.sort((a, b) => (a.role < b.role ? -1 : 1));

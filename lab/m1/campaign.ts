@@ -21,7 +21,7 @@ import { extractRun } from "../defense/ba0-m1-repeatability";
 import { BA0_FIELD_V1, ba0FieldFingerprint } from "../defense/field-thresholds";
 import { evaluateRepeatability, repeatabilityWellFormed, type RepeatabilityResult, type RepeatabilityRun } from "../defense/m1-repeatability";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory } from "../evidence/manifest";
-import { QUALIFICATION_BLOCKERS, evaluateRunFromEvidence, type AcceptCli, type AcceptanceOutcome, type AcceptanceResult } from "./acceptance";
+import { QUALIFICATION_BLOCKERS, evaluateRunFromEvidence, type AcceptCli, type VerifierSettings, type AcceptanceOutcome, type AcceptanceResult } from "./acceptance";
 import { identityDifferences, identityDigest, parseIdentity } from "./identity";
 import { canonicalJson } from "./result-provenance";
 import { verifyMandatoryInventory } from "./inventory";
@@ -100,12 +100,12 @@ export function auditStoredAcceptance(root: string, acceptanceId: string | undef
   } catch { return "disagrees"; }
 }
 
-export function m1LocalCampaign(cli: CampaignCli, root: string = EVIDENCE_ROOT, now = new Date()): { result: CampaignResult; evidenceId: string } {
+export function m1LocalCampaign(cli: CampaignCli, root: string = EVIDENCE_ROOT, now = new Date(), verifier: VerifierSettings = {}): { result: CampaignResult; evidenceId: string } {
   const runs: CampaignRun[] = cli.runs.map((run) => {
     const repeat = existsSync(run.reportPath) ? extractRun(run.serverId, run.reportPath, root) : null;
     try {
       // the RECOMPUTED acceptance is the only one used; the generator report doubles as the acceptance's generator input
-      const { result, inputs } = evaluateRunFromEvidence({ serverId: run.serverId, resultIds: run.resultIds ?? {}, generatorReportPath: run.reportPath, observerDirectory: run.observerDirectory ?? null, retainedDirectory: run.retainedDirectory ?? null }, root);
+      const { result, inputs } = evaluateRunFromEvidence({ serverId: run.serverId, resultIds: run.resultIds ?? {}, generatorReportPath: run.reportPath, observerDirectory: run.observerDirectory ?? null, retainedDirectory: run.retainedDirectory ?? null }, root, verifier);
       return { acceptance: { outcome: result.outcome, identity: result.identity, components: result.components }, repeat, audit: auditStoredAcceptance(root, run.acceptanceId, result, inputs, run.serverId) };
     } catch { return { acceptance: { outcome: "ERROR" as const, identity: null, components: {} as AcceptanceResult["components"] }, repeat, audit: "disagrees" as const }; }
   });

@@ -106,7 +106,8 @@
     "lab:ba0:origin": "tsx --conditions=react-server lab/defense/ba0-origin-run.ts",
     "lab:ba0:collapse": "tsx --conditions=react-server lab/defense/ba0-collapse-run.ts",
     "lab:ba0:field": "tsx --conditions=react-server lab/defense/ba0-field-run.ts",
-    "lab:ba0:field:reconcile": "tsx --conditions=react-server lab/defense/ba0-field-reconcile.ts"
+    "lab:ba0:field:reconcile": "tsx --conditions=react-server lab/defense/ba0-field-reconcile.ts",
+    "lab:m1": "tsx --conditions=react-server lab/m1/cli.ts"
   },
   "engines": {
     "node": ">=22.0.0"

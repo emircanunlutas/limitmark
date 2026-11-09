@@ -4,13 +4,12 @@
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import path from "node:path";
 import { BA0_FIELD_V1, ba0FieldFingerprint } from "../defense/field-thresholds";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory } from "../evidence/manifest";
 import { identityBlock } from "./identity";
 import { withResultProvenance } from "./result-provenance";
-import { evaluateObservation, type ObservationResult } from "./observation-check";
-import { readObservation } from "./observation/run";
+import { type ObservationResult } from "./observation-check";
+import { evaluateObservationFiles, observerFiles } from "./observation-bundle";
 import { verifyProvenance, type ProvenanceReport } from "../provenance/prototype";
 
 const sha = (data: Buffer | string): string => createHash("sha256").update(data).digest("hex");
@@ -24,20 +23,19 @@ function finish(evidence: EvidenceRun, engine: string, outcome: "PASS" | "REJECT
 }
 
 /** Evaluates the observer's evidence (kept OUTSIDE the SUT evidence directory) against the identity of the server package. */
-export function writeObservationResult(serverId: string, observerDirectory: string, root: string = EVIDENCE_ROOT, now = new Date()): { evidenceId: string; result: ObservationResult } {
+export function writeObservationResult(serverId: string, observerDirectory: string, root: string = EVIDENCE_ROOT, now = new Date(), maxHeartbeatGapMs: number | null = null): { evidenceId: string; result: ObservationResult } {
   const directory = resolveEvidenceDirectory(serverId, root);
   const block = identityBlock(directory);
-  const files = { canaryFile: path.join(observerDirectory, "canary-results.json"), receiptsFile: path.join(observerDirectory, "origin-receipts.ndjson"), metaFile: path.join(observerDirectory, "observation-meta.json") };
-  const read = readObservation(files);
+  const files = observerFiles(observerDirectory);
   const digest = (file: string): string | null => { try { return sha(readFileSync(file)); } catch { return null; } };
   const result = block.identity === null
     ? ({ contract: "m1-observation-check-v1", outcome: "ERROR", reasons: ["m1.obs.identity_missing"], summary: null, limitations: [] } as ObservationResult)
-    : evaluateObservation({ identity: { runId: block.identity.runId, campaignId: block.identity.campaignId }, canary: read.canary, receipts: read.receipts, meta: read.meta });
+    : evaluateObservationFiles({ runId: block.identity.runId, campaignId: block.identity.campaignId }, observerDirectory, maxHeartbeatGapMs).result;
   const evidence = new EvidenceRun("m1-observation-check", "m1-observation-check", now, root);
   evidence.addJsonArtifact("m1-observation-check.json", withResultProvenance("observation", {
     contract: result.contract, scope: "independent canary and origin receipt collector (separate local loopback processes) against one server package; not independent organizational custody",
     runId: serverId, ...block, observation: { outcome: result.outcome, reasons: dotted(result.reasons) }, summary: result.summary, limitations: dotted(result.limitations),
-    inputs: { canarySha256: digest(files.canaryFile), receiptsSha256: digest(files.receiptsFile), metaSha256: digest(files.metaFile) }, claims: { defenseQualification: "not_claimed", independentCustody: "not_established" },
+    inputs: { canarySha256: digest(files.canaryFile), receiptsSha256: digest(files.receiptsFile), metaSha256: digest(files.metaFile), declarationSha256: digest(files.declarationFile) }, claims: { defenseQualification: "not_claimed", independentCustody: "not_established" },
   }, { packageDirectory: directory, observerDirectory }, now));
   finish(evidence, "offline-m1-observation-check", result.outcome, result.reasons);
   return { evidenceId: evidence.id, result };

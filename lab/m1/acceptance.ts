@@ -39,8 +39,7 @@ import { BA0_FIELD_V1, ba0FieldFingerprint, fieldLevel } from "../defense/field-
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory } from "../evidence/manifest";
 import { identityBlock, identityDifferences, identityDigest, identityFromPackage, parseIdentity, type M1Identity } from "./identity";
 import { verifyMandatoryInventory } from "./inventory";
-import { evaluateObservation } from "./observation-check";
-import { readObservation } from "./observation/run";
+import { evaluateObservationFiles, observerFiles } from "./observation-bundle";
 import { dotted } from "./results";
 import { verifyProvenance } from "../provenance/prototype";
 import { EVALUATOR_CONTRACT, PRODUCER_CLAIM, RESULT_PROVENANCE_CONTRACT, canonicalJson, evaluatorSources, observedInputs, outputDigest, type InputRole, type InputSources } from "./result-provenance";
@@ -196,13 +195,14 @@ function recomputeReceipts(src: AuthoritySources): Recomputed {
 }
 function recomputeObservation(src: AuthoritySources): Recomputed {
   if (!src.observerDirectory) return unavailable("observer_records_not_supplied");
-  const files = { canaryFile: path.join(src.observerDirectory, "canary-results.json"), receiptsFile: path.join(src.observerDirectory, "origin-receipts.ndjson"), metaFile: path.join(src.observerDirectory, "observation-meta.json") };
-  const read = readObservation(files);
-  const result = evaluateObservation({ identity: { runId: src.identity.runId, campaignId: src.identity.campaignId }, canary: read.canary, receipts: read.receipts, meta: read.meta });
+  const files = observerFiles(src.observerDirectory);
+  const bundle = evaluateObservationFiles({ runId: src.identity.runId, campaignId: src.identity.campaignId }, src.observerDirectory, src.maxHeartbeatGapMs);
+  if (bundle.limitMissing) return unavailable("heartbeat_gap_limit_not_set");
+  const result = bundle.result;
   const digest = (file: string): string | null => { try { return sha256(readFileSync(file)); } catch { return null; } };
   return {
     state: "computed", outcome: result.outcome, reasons: dotted(result.reasons), passed: result.outcome === "PASS" && result.reasons.length === 0,
-    material: { summary: JSON.parse(JSON.stringify(result.summary)), limitations: dotted(result.limitations), inputs: { canarySha256: digest(files.canaryFile), receiptsSha256: digest(files.receiptsFile), metaSha256: digest(files.metaFile) } },
+    material: { summary: JSON.parse(JSON.stringify(result.summary)), limitations: dotted(result.limitations), inputs: { canarySha256: digest(files.canaryFile), receiptsSha256: digest(files.receiptsFile), metaSha256: digest(files.metaFile), declarationSha256: digest(files.declarationFile) } },
   };
 }
 function recomputeProvenance(src: AuthoritySources): Recomputed {
@@ -294,22 +294,24 @@ export function loadComponent(root: string, id: string | undefined, name: Compon
 
 /** The result evidence runs to judge, plus the authoritative inputs acceptance reads ITSELF to recompute them (any not supplied makes its component INCOMPLETE). */
 export type AcceptCli = { serverId: string; resultIds: Partial<Record<ComponentName, string>>; generatorReportPath?: string | null; observerDirectory?: string | null; retainedDirectory?: string | null };
+/** Verifier-side settings that are NOT part of the run evidence (the CLI type above takes ids and input locations only). */
+export type VerifierSettings = { maxHeartbeatGapMs?: number | null };
 export type AcceptOutcome = { result: AcceptanceResult; evidenceId: string };
 
 /** The complete per-run evaluation, WITHOUT writing anything: re-derives the package identity, loads each supplied result and recomputes from the authoritative inputs. The campaign wrapper uses this same function. */
-export function evaluateRunFromEvidence(cli: AcceptCli, root: string = EVIDENCE_ROOT): { result: AcceptanceResult; packageDirectory: string; inputs: Record<string, string | null> } {
+export function evaluateRunFromEvidence(cli: AcceptCli, root: string = EVIDENCE_ROOT, verifier: VerifierSettings = {}): { result: AcceptanceResult; packageDirectory: string; inputs: Record<string, string | null> } {
   const packageDirectory = resolveEvidenceDirectory(cli.serverId, root);
   const { identity, problems } = identityFromPackage(packageDirectory);
   const loaded: Partial<Record<ComponentName, LoadedComponent>> = {}; const inputs: Record<string, string | null> = {};
   for (const name of COMPONENT_NAMES) { const component = loadComponent(root, cli.resultIds[name], name); loaded[name] = component; inputs[`${name}Sha256`] = "sha256" in component && component.sha256 ? component.sha256 : null; }
-  const sources: InputSources = { packageDirectory, generatorReportPath: cli.generatorReportPath ?? null, observerDirectory: cli.observerDirectory ?? null, retainedDirectory: cli.retainedDirectory ?? null };
+  const sources: InputSources = { packageDirectory, generatorReportPath: cli.generatorReportPath ?? null, observerDirectory: cli.observerDirectory ?? null, retainedDirectory: cli.retainedDirectory ?? null, maxHeartbeatGapMs: verifier.maxHeartbeatGapMs ?? null };
   const authority = gatherAuthority(identity, sources);
   return { result: evaluateAcceptance({ packageIdentity: identity, packageProblems: problems, components: loaded, authority }), packageDirectory, inputs };
 }
 
 /** Re-derives the package identity, loads each supplied result and writes `m1-acceptance.json` as a NEW evidence run. */
-export function m1AcceptRun(cli: AcceptCli, root: string = EVIDENCE_ROOT, now = new Date()): AcceptOutcome {
-  const { result, packageDirectory, inputs } = evaluateRunFromEvidence(cli, root);
+export function m1AcceptRun(cli: AcceptCli, root: string = EVIDENCE_ROOT, now = new Date(), verifier: VerifierSettings = {}): AcceptOutcome {
+  const { result, packageDirectory, inputs } = evaluateRunFromEvidence(cli, root, verifier);
   const evidence = new EvidenceRun("m1-acceptance", "m1-acceptance", now, root);
   evidence.addJsonArtifact("m1-acceptance.json", {
     contract: result.contract, scope: "unified M1 acceptance prototype over the result artifacts of ONE run; additive, replaces no base verdict",

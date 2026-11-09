@@ -11,7 +11,7 @@ const STEPS: { name: string; method: "GET" | "POST"; path: string }[] = [
 ];
 
 async function main(): Promise<void> {
-  const config = JSON.parse(process.argv[2] ?? "{}") as { frontPort: number; runId: string; campaignId: string; plan: { baseline: number; window: number; recovery: number }; timeoutMs: number; outFile: string };
+  const config = JSON.parse(process.argv[2] ?? "{}") as { frontPort: number; frontHost?: string; runId: string; campaignId: string; plan: { baseline: number; window: number; recovery: number }; timeoutMs: number; outFile: string };
   const steps: unknown[] = [];
   for (const phase of ["baseline", "window", "recovery"] as const) {
     for (let journey = 1; journey <= config.plan[phase]; journey++) {
@@ -22,7 +22,7 @@ async function main(): Promise<void> {
         const started = performance.now(); const startedAtMs = Date.now();
         let status: number | null = null; let ok = false; let timedOut = false; let failed = false; let challenged = false;
         try {
-          const response = await fetch(`http://127.0.0.1:${config.frontPort}${step.path}`, {
+          const response = await fetch(`http://${config.frontHost ?? "127.0.0.1"}:${config.frontPort}${step.path}`, {
             method: step.method, signal: controller.signal, headers: { "x-m1-run-id": config.runId, "x-m1-campaign-id": config.campaignId, "x-m1-request-id": requestId, ...(step.method === "POST" ? { "content-type": "application/json" } : {}) },
             ...(step.method === "POST" ? { body: JSON.stringify({ name: "Canary", email: "canary@example.invalid" }) } : {}),
           });

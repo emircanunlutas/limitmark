@@ -35,7 +35,7 @@ export function buildCommitment(input: CommitmentInput): CommitmentResult {
   try {
     const reasons: string[] = [];
     if (!/^[a-z0-9-]{1,31}$/u.test(input.campaignId)) reasons.push("m1.commit.campaign_id_invalid");
-    if (!nonEmpty(input.runId) || !/^[a-z0-9-]+$/u.test(input.runId)) reasons.push("m1.commit.run_id_invalid");
+    if (!nonEmpty(input.runId) || !/^[A-Za-z0-9._-]+$/u.test(input.runId)) reasons.push("m1.commit.run_id_invalid");
     if (!HEX40.test(input.commit)) reasons.push("m1.commit.commit_not_a_sha");
     if (input.treeClean !== true) reasons.push("m1.commit.tree_not_clean");
     if (input.parametersId !== BA0_FIELD_V1.id || input.parametersDigest !== PARAMETERS_DIGEST) reasons.push("m1.commit.parameters_not_code_pinned");
@@ -62,7 +62,7 @@ export function buildCommitment(input: CommitmentInput): CommitmentResult {
 }
 
 export type FreshnessResult = { outcome: "FRESH" | "NOT_FRESH"; reasons: string[] };
-/** Cross-run check for one campaign: every run has its own instance, boot, run id and commitment digest, and runs do not overlap. */
+/** Cross-run check for the three runs: every run has its own instance, boot, run id, campaign id and commitment digest, one commit, and runs do not overlap. */
 export function evaluateFreshness(runs: readonly { commitment: Commitment; digest: string }[]): FreshnessResult {
   const reasons: string[] = [];
   const unique = (values: string[]) => new Set(values).size === values.length;
@@ -71,7 +71,8 @@ export function evaluateFreshness(runs: readonly { commitment: Commitment; diges
   if (!unique(runs.map((r) => r.commitment.instance.bootId))) reasons.push("m1.fresh.boot_reused");
   if (!unique(runs.map((r) => r.commitment.runId))) reasons.push("m1.fresh.run_id_reused");
   if (!unique(runs.map((r) => r.digest))) reasons.push("m1.fresh.commitment_reused");
-  if (new Set(runs.map((r) => r.commitment.campaignId)).size !== 1) reasons.push("m1.fresh.campaign_mixed");
+  // Criterion 7 (unchanged repeatability rules) requires a DISTINCT campaign id per run, so distinctness is what is checked here
+  if (!unique(runs.map((r) => r.commitment.campaignId))) reasons.push("m1.fresh.campaign_id_reused");
   if (new Set(runs.map((r) => r.commitment.commit)).size !== 1) reasons.push("m1.fresh.commit_changed");
   const ordered = [...runs].sort((a, b) => a.commitment.window.startMs - b.commitment.window.startMs);
   for (let i = 1; i < ordered.length; i++) {

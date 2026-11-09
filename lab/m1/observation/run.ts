@@ -19,8 +19,11 @@ export type ObservationOptions = {
   plan?: { baseline: number; window: number; recovery: number };
   timeoutMs?: number;
   faults?: FrontFaults;
+  /** Heartbeat interval of the origin receipt collector and the largest gap the LOCAL harness records as its limit (a verifier-supplied limit always takes precedence). */
+  heartbeatMs?: number;
+  maxHeartbeatGapMs?: number;
 };
-export type ObservationFiles = { canaryFile: string; receiptsFile: string; metaFile: string };
+export type ObservationFiles = { canaryFile: string; receiptsFile: string; metaFile: string; declarationFile: string };
 
 const ENTRY = (name: string): string => path.join(REPOSITORY_ROOT, "lab", "m1", "observation", name);
 
@@ -42,23 +45,26 @@ const stop = (child: ChildProcess): Promise<void> => new Promise((resolve) => {
 
 export async function runObservation(options: ObservationOptions): Promise<ObservationFiles> {
   mkdirSync(options.observerDirectory, { recursive: true });
-  const files: ObservationFiles = { canaryFile: path.join(options.observerDirectory, "canary-results.json"), receiptsFile: path.join(options.observerDirectory, "origin-receipts.ndjson"), metaFile: path.join(options.observerDirectory, "observation-meta.json") };
+  const files: ObservationFiles = { canaryFile: path.join(options.observerDirectory, "canary-results.json"), receiptsFile: path.join(options.observerDirectory, "origin-receipts.ndjson"), metaFile: path.join(options.observerDirectory, "observation-meta.json"), declarationFile: path.join(options.observerDirectory, "collector-declaration.json") };
   const children: ChildProcess[] = [];
   try {
     const site = await start(ENTRY("fixture-site.ts"), {}); children.push(site.child);
-    const collector = await start(ENTRY("origin-collector.ts"), { upstreamPort: site.port, receiptsFile: files.receiptsFile }); children.push(collector.child);
+    const collector = await start(ENTRY("origin-collector.ts"), { upstreamPort: site.port, receiptsFile: files.receiptsFile, runId: options.runId, campaignId: options.campaignId, declarationFile: files.declarationFile, heartbeatMs: options.heartbeatMs ?? 100 }); children.push(collector.child);
     const front = await start(ENTRY("fixture-front.ts"), { upstreamPort: collector.port, faults: options.faults ?? {} }); children.push(front.child);
+    const windowStartMs = Date.now();
     const canary = fork(ENTRY("canary.ts"), [JSON.stringify({ frontPort: front.port, runId: options.runId, campaignId: options.campaignId, plan: options.plan ?? { baseline: 2, window: 3, recovery: 2 }, timeoutMs: options.timeoutMs ?? 5_000, outFile: files.canaryFile })],
       { execArgv: process.execArgv, cwd: REPOSITORY_ROOT, stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json" });
     children.push(canary);
     await new Promise<void>((resolve, reject) => { canary.once("exit", (code) => (code === 0 ? resolve() : reject(new Error("canary failed")))); });
     writeFileSync(files.metaFile, `${JSON.stringify({
       schema: "m1-observation-meta-v1", loopbackOnly: true, runId: options.runId, campaignId: options.campaignId,
+      runWindow: { startMs: windowStartMs, endMs: Date.now() }, completeness: { maxHeartbeatGapMs: options.maxHeartbeatGapMs ?? 1_000, source: "local-harness" },
       processes: { canary: canary.pid ?? 0, serverUnderTestStandIn: front.pid, originReceiptCollector: collector.pid, originFixture: site.pid, harness: process.pid },
       custody: "separate local processes under one operator on one host: NOT independent organizational custody",
     })}\n`);
   } finally { await Promise.all(children.map(stop)); }
   if (!existsSync(files.canaryFile)) throw new Error("canary produced no result file");
+  if (!existsSync(files.declarationFile)) throw new Error("collector wrote no closing declaration");
   return files;
 }
 

@@ -5,7 +5,7 @@ import { PARAMETERS_DIGEST, buildCommitment, evaluateFreshness, type CommitmentI
 
 const H = 3_600_000; const A0 = 1_800_000_000_000;
 const base = (run: number, over: Partial<CommitmentInput> = {}): CommitmentInput => ({
-  campaignId: "m1-c1", runId: `run-${run}`, commit: "a".repeat(40), treeClean: true, parametersId: "ba0-field-v1", parametersDigest: PARAMETERS_DIGEST, fixtureDigest: "b".repeat(64),
+  campaignId: `m1-c${run}`, runId: `run-${run}`, commit: "a".repeat(40), treeClean: true, parametersId: "ba0-field-v1", parametersDigest: PARAMETERS_DIGEST, fixtureDigest: "b".repeat(64),
   target: { ipv4: "10.10.0.5", authorizedFromMs: A0 + run * 3 * H - H, authorizedUntilMs: A0 + run * 3 * H + 2 * H },
   window: { startMs: A0 + run * 3 * H, endMs: A0 + run * 3 * H + 5 * 60_000 },
   instance: { id: `inst-${run}`, createdMs: A0 + run * 3 * H - 30 * 60_000, imageId: "img-1", bootId: `boot-${run}` },
