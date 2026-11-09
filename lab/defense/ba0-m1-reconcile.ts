@@ -16,6 +16,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory, verifyEvidenceDirectory } from "../evidence/manifest";
 import { evidenceSafeError } from "../evidence/redact";
+import { identityBlock } from "../m1/identity";
 import { BA0_FIELD_V1, ba0FieldFingerprint, fieldLevel } from "./field-thresholds";
 import { FIELD_EXIT } from "./field-verdict";
 import { parseGeneratorReport, type GeneratorReport } from "./generator-report";
@@ -110,6 +111,7 @@ export function m1Reconcile(cli: M1Cli, root: string = EVIDENCE_ROOT, now = new 
   evidence.addJsonArtifact("m1-verdict.json", {
     contract: M1_STATUS_CONTRACT_ID,
     scope: "M1 status contract for the existing synthetic-origin fixture of the L1/L2 application plane; an overlay over, never a replacement of, the historical reconcile",
+    ...identityBlock(directory),
     baseVerdict,
     statusOverlay: overlay,
     m1StatusContract: accepted ? "accepted" : "not_accepted",

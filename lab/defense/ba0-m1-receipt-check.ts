@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory, verifyEvidenceDirectory } from "../evidence/manifest";
 import { evidenceSafeError } from "../evidence/redact";
+import { identityBlock } from "../m1/identity";
 import { verifyMandatoryInventory } from "./ba0-m1-tally-check";
 import { BA0_FIELD_V1, ba0FieldFingerprint } from "./field-thresholds";
 import { FIELD_EXIT } from "./field-verdict";
@@ -113,7 +114,7 @@ export function m1ReceiptCheck(cli: ReceiptCli, root: string = EVIDENCE_ROOT, no
   evidence.addJsonArtifact("m1-receipt-check.json", {
     contract: result.contract,
     scope: "M1 receipt reconciliation: downstream observers (Boundary, App, origin-side served counters, generator, canary client) against the ledger attribution; additive to criterion 9",
-    runId: cli.serverId, generatorReportSha256: generatorText === null ? null : createHash("sha256").update(generatorText).digest("hex"),
+    runId: cli.serverId, ...identityBlock(directory), generatorReportSha256: generatorText === null ? null : createHash("sha256").update(generatorText).digest("hex"),
     receiptCheck: { outcome: result.outcome, reasons: result.reasons }, identities: result.identities.map((identity) => ({ ...identity, id: identity.id.replace(/_/gu, ".") })), // dot-joined: the evidence scanner rejects long token-like strings
  limitations: result.limitations, campaignAttribution: result.campaignAttribution,
     claims: { defenseQualification: "not_claimed", authenticity: "not_claimed" },
