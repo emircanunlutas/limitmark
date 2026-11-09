@@ -15,6 +15,7 @@ import path from "node:path";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory, verifyEvidenceDirectory } from "../evidence/manifest";
 import { evidenceSafeError } from "../evidence/redact";
 import { identityBlock } from "../m1/identity";
+import { withResultProvenance } from "../m1/result-provenance";
 import { verifyMandatoryInventory } from "./ba0-m1-tally-check";
 import { BA0_FIELD_V1, ba0FieldFingerprint } from "./field-thresholds";
 import { FIELD_EXIT } from "./field-verdict";
@@ -111,14 +112,14 @@ export function m1ReceiptCheck(cli: ReceiptCli, root: string = EVIDENCE_ROOT, no
 
   const result = evaluateReceipts(gatherReceiptInput(directory, generatorText));
   const evidence = new EvidenceRun("m1-receipt-check", "m1-receipt-check", now, root);
-  evidence.addJsonArtifact("m1-receipt-check.json", {
+  evidence.addJsonArtifact("m1-receipt-check.json", withResultProvenance("receipts", {
     contract: result.contract,
     scope: "M1 receipt reconciliation: downstream observers (Boundary, App, origin-side served counters, generator, canary client) against the ledger attribution; additive to criterion 9",
     runId: cli.serverId, ...identityBlock(directory), generatorReportSha256: generatorText === null ? null : createHash("sha256").update(generatorText).digest("hex"),
     receiptCheck: { outcome: result.outcome, reasons: result.reasons }, identities: result.identities.map((identity) => ({ ...identity, id: identity.id.replace(/_/gu, ".") })), // dot-joined: the evidence scanner rejects long token-like strings
  limitations: result.limitations, campaignAttribution: result.campaignAttribution,
     claims: { defenseQualification: "not_claimed", authenticity: "not_claimed" },
-  });
+  }, { packageDirectory: directory, generatorReportPath: cli.reportPath }, now));
   evidence.finalize({
     git: collectGitState(), environment: collectEnvironment(), target: null, workload: null, ceilings: null, thresholds: ba0FieldFingerprint(BA0_FIELD_V1), engine: "offline-m1-receipt-check",
     result: result.outcome === "PASS" ? "PASS" : result.outcome === "REJECT" ? "FAIL" : "ERROR", resultReasons: result.reasons.slice(0, 40), metrics: { receiptOutcome: result.outcome, networkActivity: false },

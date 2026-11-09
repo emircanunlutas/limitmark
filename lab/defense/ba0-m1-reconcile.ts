@@ -17,6 +17,7 @@ import path from "node:path";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory, verifyEvidenceDirectory } from "../evidence/manifest";
 import { evidenceSafeError } from "../evidence/redact";
 import { identityBlock } from "../m1/identity";
+import { withResultProvenance } from "../m1/result-provenance";
 import { BA0_FIELD_V1, ba0FieldFingerprint, fieldLevel } from "./field-thresholds";
 import { FIELD_EXIT } from "./field-verdict";
 import { parseGeneratorReport, type GeneratorReport } from "./generator-report";
@@ -108,7 +109,7 @@ export function m1Reconcile(cli: M1Cli, root: string = EVIDENCE_ROOT, now = new 
 
   const accepted = m1Accepted(baseVerdict, overlay);
   const evidence = new EvidenceRun("m1-verdict", "m1-status-overlay", now, root);
-  evidence.addJsonArtifact("m1-verdict.json", {
+  evidence.addJsonArtifact("m1-verdict.json", withResultProvenance("overlay", {
     contract: M1_STATUS_CONTRACT_ID,
     scope: "M1 status contract for the existing synthetic-origin fixture of the L1/L2 application plane; an overlay over, never a replacement of, the historical reconcile",
     ...identityBlock(directory),
@@ -118,7 +119,7 @@ export function m1Reconcile(cli: M1Cli, root: string = EVIDENCE_ROOT, now = new 
     allowedStatuses: M1_ALLOWED_STATUS_LABEL,
     inputs: { server: { runId: cli.serverId, levelSha256: sha256(serverText) }, generator: { reportSha256: sha256(reportText) }, finalCrossChecked: cli.finalId !== null },
     claims: { defenseQualification: "not_claimed", notClaimed: [...M1_NOT_CLAIMED] },
-  });
+  }, { packageDirectory: directory, generatorReportPath: cli.reportPath }, now));
   evidence.finalize({
     git: collectGitState(), environment: collectEnvironment(), target: null, workload: null, ceilings: null, thresholds: ba0FieldFingerprint(BA0_FIELD_V1), engine: "offline-m1-overlay",
     result: overlay.outcome === "PASS" ? "PASS" : overlay.outcome === "REJECT" ? "FAIL" : "ERROR",

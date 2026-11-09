@@ -287,7 +287,7 @@ test("the overlay artifact passes the real evidence scanner (it was written thro
     const outcome = m1Reconcile({ serverId: id, reportPath, finalId: null }, root);
     assert.notEqual(outcome.evidenceId, null);
     const written = readVerdict(root, outcome.evidenceId!);
-    assert.deepEqual(Object.keys(written).sort(), ["allowedStatuses", "baseVerdict", "claims", "contract", "identity", "identityProblems", "identitySha256", "inputs", "m1StatusContract", "scope", "statusOverlay"]);
+    assert.deepEqual(Object.keys(written).sort(), ["allowedStatuses", "baseVerdict", "claims", "contract", "identity", "identityProblems", "identitySha256", "inputs", "m1StatusContract", "resultProvenance", "scope", "statusOverlay"]);
     assert.equal(written.allowedStatuses, "200,503");
   } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(tmp, { recursive: true, force: true }); }
 });

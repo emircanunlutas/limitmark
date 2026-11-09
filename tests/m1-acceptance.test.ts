@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { COMPONENT_FILES, COMPONENT_NAMES, QUALIFICATION_BLOCKERS, evaluateAcceptance, loadComponent, m1AcceptRun, type AcceptanceInput, type ComponentName, type LoadedComponent } from "../lab/m1/acceptance";
+import { COMPONENT_FILES, COMPONENT_NAMES, QUALIFICATION_BLOCKERS, evaluateAcceptance, gatherAuthority, loadComponent, m1AcceptRun, type AcceptanceInput, type ComponentName, type LoadedComponent } from "../lab/m1/acceptance";
 import { IDENTITY_FIELDS, identityDigest, identityFromPackage, parseIdentity, type M1Identity } from "../lab/m1/identity";
 import { resolveEvidenceDirectory } from "../lab/evidence/manifest";
+import { outputDigest } from "../lab/m1/result-provenance";
+import { writeProvenanceResult } from "../lab/m1/results";
 import { buildWorld, disposeWorld, syntheticResult, testRoot, type World } from "./support/m1-world";
 
 // Unified M1 acceptance prototype: identity binding across every component, fail-closed behavior, and QUALIFIED unreachable.
@@ -15,7 +17,7 @@ const read = (root: string, id: string, file: string): Record<string, unknown> =
 type Loaded = Record<ComponentName, Record<string, unknown>>;
 function inputOf(world: World, artifacts: Loaded): AcceptanceInput {
   const { identity, problems } = identityFromPackage(resolveEvidenceDirectory(world.serverId, world.root));
-  return { packageIdentity: identity, packageProblems: problems, components: Object.fromEntries(COMPONENT_NAMES.map((name) => [name, { state: "loaded", artifact: artifacts[name] } satisfies LoadedComponent])) as AcceptanceInput["components"] };
+  return { packageIdentity: identity, packageProblems: problems, authority: gatherAuthority(identity, world.sources), components: Object.fromEntries(COMPONENT_NAMES.map((name) => [name, { state: "loaded", artifact: artifacts[name] } satisfies LoadedComponent])) as AcceptanceInput["components"] };
 }
 const artifactsOf = (world: World): Loaded => Object.fromEntries(COMPONENT_NAMES.map((name) => [name, read(world.root, world.ids[name]!, COMPONENT_FILES[name])])) as Loaded;
 /** Re-seals an identity edit exactly as a careful forger would (digest recomputed). */
@@ -42,7 +44,7 @@ test("genuine local evidence for one run is LOCALLY_CONSISTENT, bound to one nin
 });
 
 test("the same result through the IO path writes an additive artifact that claims neither authenticity nor custody", () => {
-  const outcome = m1AcceptRun({ serverId: A.serverId, resultIds: A.ids }, A.root);
+  const outcome = m1AcceptRun({ serverId: A.serverId, resultIds: A.ids, generatorReportPath: A.reportPath, observerDirectory: A.observerDirectory, retainedDirectory: A.retainedDirectory }, A.root);
   assert.equal(outcome.result.outcome, "LOCALLY_CONSISTENT");
   const written = read(A.root, outcome.evidenceId, "m1-acceptance.json") as { acceptance: { outcome: string }; claims: Record<string, string>; qualification: { reachable: boolean }; identity: M1Identity };
   assert.deepEqual([written.acceptance.outcome, written.qualification.reachable, written.claims.authenticity, written.claims.independentCustody], ["LOCALLY_CONSISTENT", false, "not_claimed", "not_established"]);
@@ -99,35 +101,45 @@ test("missing components are INCOMPLETE and named; nothing is defaulted", () => 
   assert.equal(none.reasons.length, 5);
 });
 
-test("a component that did not pass is REJECT: failed overlay, criterion 9 rejection, missing receipt reconciliation, forged or failed origin receipts, replayed or incomplete provenance", () => {
-  const failures: [ComponentName, (artifact: Record<string, unknown>) => void][] = [
-    ["overlay", (a) => { a.m1StatusContract = "not_accepted"; }], ["overlay", (a) => { a.baseVerdict = "INVALID"; }],
-    ["tally", (a) => { (a.tallyCheck as Record<string, unknown>).outcome = "REJECT"; (a.tallyCheck as Record<string, unknown>).reasons = ["m1.tally.external_lane_inactive"]; }],
-    ["tally", (a) => { (a.tallyCheck as Record<string, unknown>).reasons = ["m1.tally.x"]; }],
-    ["receipts", (a) => { (a.receiptCheck as Record<string, unknown>).outcome = "REJECT"; (a.receiptCheck as Record<string, unknown>).reasons = ["m1.receipt.x"]; }],
-    ["observation", (a) => { (a.observation as Record<string, unknown>).outcome = "REJECT"; (a.observation as Record<string, unknown>).reasons = ["m1.obs.canary_success_without_origin_receipt"]; }],
-    ["provenance", (a) => { (a.provenance as Record<string, unknown>).overall = "FAILED"; }],
-    ["provenance", (a) => { (a.provenance as Record<string, unknown>).overall = "INCOMPLETE"; (a.provenance as { levels: Record<string, string> }).levels.independentCorroboration = "ABSENT"; }],
-    ["provenance", (a) => { (a.provenance as { levels: Record<string, string> }).levels.runBinding = "FAILED"; }],
+test("a component that genuinely did not pass is REJECT: failed overlay, criterion 9 rejection, receipt reconciliation, failed origin observation, failed or replayed provenance (each produced by the REAL writers on altered evidence)", async () => {
+  const worlds: [ComponentName, Parameters<typeof buildWorld>[1]][] = [
+    ["overlay", { evidence: { mutate: { "server-level.json": (c) => { (c.reconcileInput as Record<string, number>).externalAccepted += 1; } } } }],
+    ["tally", { evidence: { mutate: { "kind-ledger.json": (c) => { (c.counts as Record<string, number>).INGRESS_ACCEPTED += 1; } } } }],
+    ["receipts", { evidence: { mutate: { "processes.json": (c) => { ((c.app as { stats: { counters: Record<string, number> } }).stats.counters).executed += 1; } } } }],
+    ["observation", { faults: { drop: ["window.2.submit"] } }],
   ];
-  for (const [name, change] of failures) {
-    const failed = clone(artifactsA); change(failed[name]);
-    const result = run(inputOf(A, failed));
-    assert.equal(result.outcome, "REJECT", `${name}: ${result.reasons.join(",")}`);
-    assert.ok(result.reasons.includes(`m1.accept.${name}.not_passed`));
+  for (const [name, options] of worlds) {
+    const world = await buildWorld(testRoot("accept-fail-" + name), options);
+    try {
+      const result = run(inputOf(world, artifactsOf(world)));
+      assert.equal(result.outcome, "REJECT", `${name}: ${result.reasons.join(",")}`);
+      assert.ok(result.reasons.includes(`m1.accept.${name}.not_passed`), `${name}: ${result.reasons.join(",")}`);
+    } finally { disposeWorld(world); fs.rmSync(world.root, { recursive: true, force: true }); }
   }
+  // failed provenance: the retained commitment names another commit; the REAL verifier and writer record FAILED, and acceptance recomputes the same
+  const world = await buildWorld(testRoot("accept-fail-provenance"));
+  try {
+    const commitmentFile = path.join(world.retainedDirectory, "commitment.json");
+    const commitment = JSON.parse(fs.readFileSync(commitmentFile, "utf8")) as Record<string, unknown>; commitment.gitSha = "e".repeat(40); fs.writeFileSync(commitmentFile, JSON.stringify(commitment));
+    const ids = { ...world.ids, provenance: writeProvenanceResult(world.serverId, world.retainedDirectory, world.root).evidenceId };
+    const result = run(inputOf(world, Object.fromEntries(COMPONENT_NAMES.map((name) => [name, read(world.root, ids[name]!, COMPONENT_FILES[name])])) as Loaded));
+    assert.equal(result.outcome, "REJECT"); assert.ok(result.reasons.includes("m1.accept.provenance.not_passed"));
+  } finally { disposeWorld(world); fs.rmSync(world.root, { recursive: true, force: true }); }
   // provenance carried over from another run (a replay) is bound to the wrong package
   const replayed = clone(artifactsA); replayed.provenance = artifactsB.provenance;
   assert.equal(run(inputOf(A, replayed)).outcome, "REJECT");
 });
 
-test("a provenance result may never claim authenticity or independence: such a claim is ERROR", () => {
+test("a provenance result may never claim authenticity or independence: an unsealed edit fails the output digest, a re-sealed one disagrees with the recomputation, a claim edit fails the closed claims", () => {
+  const reseal = (a: Record<string, unknown>): Record<string, unknown> => { (a.resultProvenance as Record<string, unknown>).outputSha256 = outputDigest(a); return a; };
   const over = clone(artifactsA); (over.provenance.provenance as { levels: Record<string, string> }).levels.authenticity = "VERIFIED";
-  assert.deepEqual([run(inputOf(A, over)).outcome, run(inputOf(A, over)).reasons.includes("m1.accept.provenance.overclaims_authenticity")], ["ERROR", true]);
-  const claimed = clone(artifactsA); (claimed.provenance.claims as Record<string, unknown>).independent = true;
-  assert.equal(run(inputOf(A, claimed)).outcome, "ERROR");
-  const authenticated = clone(artifactsA); (authenticated.provenance.claims as Record<string, unknown>).authenticated = true;
-  assert.equal(run(inputOf(A, authenticated)).outcome, "ERROR");
+  assert.ok(run(inputOf(A, over)).reasons.includes("m1.accept.provenance.result_provenance.output_digest"));
+  const resealed = clone(artifactsA); (resealed.provenance.provenance as { levels: Record<string, string> }).levels.authenticity = "VERIFIED"; reseal(resealed.provenance);
+  assert.deepEqual([run(inputOf(A, resealed)).outcome, run(inputOf(A, resealed)).reasons.includes("m1.accept.provenance.supplied_result_disagrees_with_recomputation")], ["ERROR", true]);
+  for (const key of ["independent", "authenticated"]) {
+    const claimed = clone(artifactsA); (claimed.provenance.claims as Record<string, unknown>)[key] = true; reseal(claimed.provenance);
+    const result = run(inputOf(A, claimed)); assert.equal(result.outcome, "ERROR"); assert.ok(result.reasons.includes("m1.accept.provenance.schema.claims_overclaim"));
+  }
 });
 
 test("malformed or untrusted result artifacts are ERROR: tampered bytes, unlisted files, duplicate keys, wrong shape", () => {
@@ -135,7 +147,7 @@ test("malformed or untrusted result artifacts are ERROR: tampered bytes, unliste
   const tampered = syntheticResult(A.root, A.serverId, COMPONENT_FILES.receipts, { receiptCheck: { outcome: "PASS", reasons: [] } });
   fs.appendFileSync(path.join(resolveEvidenceDirectory(tampered, A.root), COMPONENT_FILES.receipts), " ");
   assert.equal(loadComponent(A.root, tampered, "receipts").state, "unreadable");
-  const viaCli = m1AcceptRun({ serverId: A.serverId, resultIds: { ...A.ids, receipts: tampered } }, A.root);
+  const viaCli = m1AcceptRun({ serverId: A.serverId, resultIds: { ...A.ids, receipts: tampered }, generatorReportPath: A.reportPath, observerDirectory: A.observerDirectory, retainedDirectory: A.retainedDirectory }, A.root);
   assert.equal(viaCli.result.outcome, "ERROR");
   never(viaCli.result.outcome);
   // an unlisted extra artifact next to a result
@@ -156,7 +168,7 @@ test("QUALIFIED is unreachable: no code path, no flag, no input; exhaustive over
   const text = fs.readFileSync(path.join(__dirname, "..", "lab", "m1", "acceptance.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//gu, "").replace(/\/\/.*$/gmu, "");
   assert.equal([...text.matchAll(/"QUALIFIED"/gu)].length, 1, "the only mention is the member of the outcome type");
   assert.equal(/return finish\("QUALIFIED"|outcome\s*=\s*"QUALIFIED"|independent\s*[:=]\s*true|bypass|override|force/iu.test(text), false);
-  assert.equal(/export type AcceptCli = \{ serverId: string; resultIds: Partial<Record<ComponentName, string>> \}/u.test(text), true, "the CLI takes ids only: no assertion flags");
+  assert.equal(/export type AcceptCli = \{ serverId: string; resultIds: Partial<Record<ComponentName, string>>; generatorReportPath\?: string \| null; observerDirectory\?: string \| null; retainedDirectory\?: string \| null \}/u.test(text), true, "the CLI takes ids and input LOCATIONS only: no assertion flags");
   const states: LoadedComponent[] = [{ state: "absent" }, { state: "unreadable", problems: [] }, { state: "loaded", artifact: null }, { state: "loaded", artifact: {} }];
   let combinations = 0;
   const walk = (index: number, current: Partial<Record<ComponentName, LoadedComponent>>): void => {

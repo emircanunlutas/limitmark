@@ -8,12 +8,13 @@ import path from "node:path";
 import { BA0_FIELD_V1, ba0FieldFingerprint } from "../defense/field-thresholds";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory } from "../evidence/manifest";
 import { identityBlock } from "./identity";
+import { withResultProvenance } from "./result-provenance";
 import { evaluateObservation, type ObservationResult } from "./observation-check";
 import { readObservation } from "./observation/run";
 import { verifyProvenance, type ProvenanceReport } from "../provenance/prototype";
 
 const sha = (data: Buffer | string): string => createHash("sha256").update(data).digest("hex");
-const dotted = (items: readonly string[]): string[] => items.slice(0, 20).map((item) => item.replace(/[_:]/gu, "."));
+export const dotted = (items: readonly string[]): string[] => items.slice(0, 20).map((item) => item.replace(/[_:]/gu, "."));
 
 function finish(evidence: EvidenceRun, engine: string, outcome: "PASS" | "REJECT" | "ERROR", reasons: readonly string[]): void {
   evidence.finalize({
@@ -33,11 +34,11 @@ export function writeObservationResult(serverId: string, observerDirectory: stri
     ? ({ contract: "m1-observation-check-v1", outcome: "ERROR", reasons: ["m1.obs.identity_missing"], summary: null, limitations: [] } as ObservationResult)
     : evaluateObservation({ identity: { runId: block.identity.runId, campaignId: block.identity.campaignId }, canary: read.canary, receipts: read.receipts, meta: read.meta });
   const evidence = new EvidenceRun("m1-observation-check", "m1-observation-check", now, root);
-  evidence.addJsonArtifact("m1-observation-check.json", {
+  evidence.addJsonArtifact("m1-observation-check.json", withResultProvenance("observation", {
     contract: result.contract, scope: "independent canary and origin receipt collector (separate local loopback processes) against one server package; not independent organizational custody",
     runId: serverId, ...block, observation: { outcome: result.outcome, reasons: dotted(result.reasons) }, summary: result.summary, limitations: dotted(result.limitations),
     inputs: { canarySha256: digest(files.canaryFile), receiptsSha256: digest(files.receiptsFile), metaSha256: digest(files.metaFile) }, claims: { defenseQualification: "not_claimed", independentCustody: "not_established" },
-  });
+  }, { packageDirectory: directory, observerDirectory }, now));
   finish(evidence, "offline-m1-observation-check", result.outcome, result.reasons);
   return { evidenceId: evidence.id, result };
 }
@@ -48,11 +49,11 @@ export function writeProvenanceResult(serverId: string, retainedDirectory: strin
   const block = identityBlock(directory);
   const report = verifyProvenance(directory, retainedDirectory);
   const evidence = new EvidenceRun("m1-provenance-check", "m1-provenance-check", now, root);
-  evidence.addJsonArtifact("m1-provenance-check.json", {
+  evidence.addJsonArtifact("m1-provenance-check.json", withResultProvenance("provenance", {
     contract: "m1-provenance-check-v1", scope: "pre-run commitment, generator-side beacon chain and finalization digest against one server package (local prototype)",
     runId: serverId, ...block, provenance: { overall: report.overall, levels: report.levels }, claimedProducer: report.claimedProducer, problems: dotted(report.problems),
     announcementSource: "self.reported.by.the.server.process", claims: report.claims, notClaimed: ["authenticity", "independent.custody"],
-  });
+  }, { packageDirectory: directory, retainedDirectory }, now));
   finish(evidence, "offline-m1-provenance-check", report.overall === "CONSISTENT_WITH_RECORDS" ? "PASS" : report.overall === "FAILED" ? "REJECT" : "ERROR", dotted(report.problems));
   return { evidenceId: evidence.id, report };
 }

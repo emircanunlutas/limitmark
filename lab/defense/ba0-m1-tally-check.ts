@@ -16,6 +16,7 @@ import path from "node:path";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory, verifyEvidenceDirectory } from "../evidence/manifest";
 import { evidenceSafeError } from "../evidence/redact";
 import { identityBlock } from "../m1/identity";
+import { withResultProvenance } from "../m1/result-provenance";
 import { BA0_FIELD_V1, ba0FieldFingerprint } from "./field-thresholds";
 import { FIELD_EXIT } from "./field-verdict";
 import { evaluateTallyAgainstLedger, findDuplicateObjectKeys, tallyCheckWellFormed, type TallyCheckInput, type TallyCheckResult } from "./m1-tally-check";
@@ -108,7 +109,7 @@ export function m1TallyCheck(cli: TallyCli, root: string = EVIDENCE_ROOT, now = 
   let result = evaluateTallyAgainstLedger(gatherTallyInput(directory));
   if (!tallyCheckWellFormed(result)) result = { evaluated: false, outcome: "ERROR", reasons: ["m1.tally.evaluation_failed"], differences: [], ledgerSource: "none" };
   const evidence = new EvidenceRun("m1-tally-check", "m1-tally-check", now, root);
-  evidence.addJsonArtifact("m1-tally-check.json", {
+  evidence.addJsonArtifact("m1-tally-check.json", withResultProvenance("tally", {
     contract: "m1-tally-check-v1",
     scope: "M1 criterion 9: the plane's own outcome tally against the collector ledger (journal plus external reducer counters) for one finalized level; observation only",
     runId: cli.serverId,
@@ -117,7 +118,7 @@ export function m1TallyCheck(cli: TallyCli, root: string = EVIDENCE_ROOT, now = 
     differences: result.differences,
     ledgerSource: result.ledgerSource,
     claims: { defenseQualification: "not_claimed", notClaimed: ["pre-parser traffic and kernel drops are not seen by the tally", "events lost on the plane channel before numbering are outside every record"] },
-  });
+  }, { packageDirectory: directory }, now));
   evidence.finalize({
     git: collectGitState(), environment: collectEnvironment(), target: null, workload: null, ceilings: null, thresholds: ba0FieldFingerprint(BA0_FIELD_V1), engine: "offline-m1-tally-check",
     result: result.outcome === "PASS" ? "PASS" : result.outcome === "REJECT" ? "FAIL" : "ERROR", resultReasons: result.reasons.slice(0, 40),
