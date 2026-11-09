@@ -47,7 +47,7 @@ Claims are fixed: `defenseQualification: not_claimed` everywhere; receipts `auth
 ERROR (untrusted, malformed, unbound, disagreement) > REJECT (identity mismatch, a recomputed component not passed) > INCOMPLETE (component or authoritative input absent) > LOCALLY_CONSISTENT. Order of checks per component: identity, closed schema, authoritative input availability, result provenance against bytes read now, agreement with the recomputation, pass.
 
 ## 6. Fixtures
-The previous acceptance world used same-shape synthetic overlay and receipts results. They are now REAL: `tests/support/m1-receipt-fixture.ts` builds one package that satisfies Criterion 9, the receipt reconciliation (37 identities) and the status overlay at once, plus a matching generator report, so all five components are produced by their real writers and recomputed.
+The previous acceptance world used same-shape synthetic overlay and receipts results. They are now REAL: `tests/support/m1-receipt-fixture.ts` builds one package that satisfies Criterion 9, the receipt reconciliation and the status overlay at once, plus a matching generator report, so all five components are produced by their real writers and recomputed.
 
 ## 7. New findings
 1. `lab/m1/campaign.ts` `loadAcceptance` trusts a stored `m1-acceptance.json` after an identity match (by inspection; not probed). The same defect class one level up: a forged `LOCALLY_CONSISTENT` acceptance artifact would be consumed by the Criterion 7 wrapper. Smallest correction: the campaign wrapper re-runs `m1AcceptRun`'s evaluation per run from authoritative inputs. Not corrected (outside this authorization).
