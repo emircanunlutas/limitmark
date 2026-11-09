@@ -12,6 +12,8 @@ resource "google_project" "p" {
   deletion_policy     = "DELETE"
   auto_create_network = false # the default network (permissive firewall) is never created
   labels              = local.labels
+  # Campaign-level: a per-run teardown never touches these (see create_vms). Removing the projects, and with them the evidence, is a deliberate custodian act.
+  lifecycle { prevent_destroy = true }
 }
 
 resource "google_project_service" "compute" {
@@ -23,6 +25,11 @@ resource "google_project_service" "iap" {
   for_each = toset(["target", "generator", "observer"])
   project  = google_project.p[each.key].project_id
   service  = "iap.googleapis.com"
+}
+resource "google_project_service" "dns" {
+  for_each = toset(["target", "generator", "observer"])
+  project  = google_project.p[each.key].project_id
+  service  = "dns.googleapis.com"
 }
 resource "google_project_service" "evidence_apis" {
   for_each = toset(["storage.googleapis.com", "cloudfunctions.googleapis.com", "run.googleapis.com", "cloudbuild.googleapis.com", "cloudscheduler.googleapis.com", "pubsub.googleapis.com", "cloudbilling.googleapis.com", "billingbudgets.googleapis.com"])
@@ -56,6 +63,7 @@ resource "google_folder_organization_policy" "shielded" {
 
 # Structural cost bound: a regional vCPU cap. Even a runaway apply cannot exceed it.
 resource "google_service_usage_consumer_quota_override" "cpus" {
+  provider       = google-beta
   for_each       = toset(["target", "generator", "observer"])
   project        = google_project.p[each.value].project_id
   service        = "compute.googleapis.com"

@@ -11,6 +11,7 @@ resource "google_storage_bucket" "evidence" {
   public_access_prevention    = "enforced"
   force_destroy               = false
   labels                      = local.labels
+  lifecycle { prevent_destroy = true }
 
   versioning { enabled = true }
 

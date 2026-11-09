@@ -51,30 +51,32 @@ resource "google_cloudfunctions2_function" "killswitch" {
     service_account_email = google_service_account.killswitch.email
     ingress_settings      = "ALLOW_INTERNAL_ONLY"
     environment_variables = {
-      M1_PROJECTS         = join(",", [google_project.p["target"].project_id, google_project.p["generator"].project_id, google_project.p["observer"].project_id])
-      M1_ZONE             = var.zone
-      M1_RUN_MAX_SECONDS  = tostring(var.run_max_seconds)
-      M1_CAMPAIGN_ID      = var.campaign_id
-      M1_STOP_FRACTION    = "0.8"
-     
+      M1_PROJECTS        = join(",", [google_project.p["target"].project_id, google_project.p["generator"].project_id, google_project.p["observer"].project_id])
+      M1_ZONE            = var.zone
+      M1_RUN_MAX_SECONDS = tostring(var.run_max_seconds)
+      M1_CAMPAIGN_ID     = var.campaign_id
+      M1_RUN_ID          = var.run_id
+      M1_STOP_FRACTION   = "0.8"
+
     }
   }
   event_trigger {
-    trigger_region = var.region
-    event_type     = "google.cloud.pubsub.topic.v1.messagePublished"
-    pubsub_topic   = google_pubsub_topic.budget.id
-    retry_policy   = "RETRY_POLICY_RETRY"
+    trigger_region        = var.region
+    service_account_email = google_service_account.killswitch.email
+    event_type            = "google.cloud.pubsub.topic.v1.messagePublished"
+    pubsub_topic          = google_pubsub_topic.budget.id
+    retry_policy          = "RETRY_POLICY_RETRY"
   }
   depends_on = [google_project_service.evidence_apis]
 }
 
 # The scheduler invokes the same function with a reaper message (see killswitch/decide.js).
 resource "google_cloud_scheduler_job" "reaper" {
-  project     = google_project.p["evidence"].project_id
-  name        = "m1-ttl-reaper"
-  region      = var.region
-  schedule    = "*/5 * * * *"
-  time_zone   = "Etc/UTC"
+  project   = google_project.p["evidence"].project_id
+  name      = "m1-ttl-reaper"
+  region    = var.region
+  schedule  = "*/5 * * * *"
+  time_zone = "Etc/UTC"
   pubsub_target {
     topic_name = google_pubsub_topic.budget.id
     data       = base64encode(jsonencode({ kind = "reaper" }))
@@ -97,6 +99,29 @@ resource "google_billing_budget" "campaign" {
     specified_amount {
       currency_code = var.budget_currency
       units         = tostring(var.campaign_budget)
+    }
+  }
+  threshold_rules { threshold_percent = 0.5 }
+  threshold_rules { threshold_percent = 0.8 }
+  threshold_rules { threshold_percent = 1.0 }
+  all_updates_rule {
+    pubsub_topic = google_pubsub_topic.budget.id
+  }
+}
+
+# Per-run budget: the same notification path, filtered to resources labeled with this run (the label is set on every VM). A budget is a notification, not a cap; the
+# function treats a message whose display name ends in "-run" as a run-scoped stop (only instances labeled with this run id are selected).
+resource "google_billing_budget" "run" {
+  billing_account = var.billing_account
+  display_name    = "m1-${var.campaign_id}-${var.run_id}-run"
+  budget_filter {
+    projects = [for key, p in data.google_project.billing_projects : "projects/${p.number}"]
+    labels   = { run = var.run_id }
+  }
+  amount {
+    specified_amount {
+      currency_code = var.budget_currency
+      units         = tostring(var.run_budget)
     }
   }
   threshold_rules { threshold_percent = 0.5 }

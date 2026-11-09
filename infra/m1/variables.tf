@@ -49,36 +49,49 @@ variable "collector_port" {
 }
 variable "authorized_target_cidr" {
   type        = string
-  description = "The explicitly authorized disposable target address as a /32 (owner decision O-1)."
+  description = "The explicitly authorized disposable target address as a /32 inside 10.10.0.0/24 (owner decision O-1). The VM is created with exactly this address."
   validation {
-    condition     = can(regex("^[0-9.]+/32$", var.authorized_target_cidr))
-    error_message = "A single /32 only."
+    condition     = can(regex("^10[.]10[.]0[.](?:[2-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-3])/32$", var.authorized_target_cidr))
+    error_message = "A single /32 inside 10.10.0.0/24 (host .2 to .253)."
   }
 }
 variable "authorized_generator_cidr" {
   type = string
   validation {
-    condition     = can(regex("^[0-9.]+/32$", var.authorized_generator_cidr))
-    error_message = "A single /32 only."
+    condition     = can(regex("^10[.]20[.]0[.](?:[2-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-3])/32$", var.authorized_generator_cidr))
+    error_message = "A single /32 inside 10.20.0.0/24 (host .2 to .253)."
   }
 }
 variable "canary_cidr" {
   type = string
   validation {
-    condition     = can(regex("^[0-9.]+/32$", var.canary_cidr))
-    error_message = "A single /32 only."
+    condition     = can(regex("^10[.]30[.]0[.](?:[2-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-3])/32$", var.canary_cidr))
+    error_message = "A single /32 inside 10.30.0.0/24 (host .2 to .253)."
   }
 }
 variable "collector_cidr" {
   type = string
   validation {
-    condition     = can(regex("^[0-9.]+/32$", var.collector_cidr))
-    error_message = "A single /32 only."
+    condition     = can(regex("^10[.]30[.]0[.](?:[2-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-3])/32$", var.collector_cidr)) && var.collector_cidr != var.canary_cidr
+    error_message = "A single /32 inside 10.30.0.0/24, different from the canary."
   }
 }
 variable "target_image" {
   type        = string
-  description = "Pinned image (by id) built from the recorded clean commit."
+  description = "Pinned image (by id) of the target, built from the recorded clean commit."
+}
+variable "generator_image" {
+  type        = string
+  description = "Pinned image (by id) of the external generator."
+}
+variable "observer_image" {
+  type        = string
+  description = "Pinned image (by id) of the canary and the origin receipt collector (never the target image)."
+}
+variable "create_vms" {
+  type        = bool
+  default     = false
+  description = "Teardown switch. true creates the run's four VMs; applying with false deletes ONLY the VMs. Projects, network, IAM and evidence are campaign-level and are protected by prevent_destroy."
 }
 variable "operators_group" {
   type        = string

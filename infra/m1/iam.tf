@@ -84,14 +84,31 @@ resource "google_storage_bucket_iam_member" "custodian_write" {
     expression = "resource.name.startsWith(\"${local.bucket_objects}/c/\")"
   }
 }
-resource "google_project_iam_member" "custodian_bucket_admin" {
-  project = google_project.p["evidence"].project_id
-  role    = "roles/storage.admin"
-  member  = var.custodian_group
-  condition {
-    title      = "this-bucket-only"
-    expression = "resource.name == \"projects/_/buckets/${google_storage_bucket.evidence.name}\" || resource.name.startsWith(\"projects/_/buckets/${google_storage_bucket.evidence.name}/\")"
-  }
+# Bucket-level only (a project-level role would cover every bucket in the project). The retention policy, not this role, is what stops deletion before the period ends.
+resource "google_storage_bucket_iam_member" "custodian_bucket_admin" {
+  bucket = google_storage_bucket.evidence.name
+  role   = "roles/storage.admin"
+  member = var.custodian_group
+}
+# OS Login to a VM that has a service account attached also requires iam.serviceAccountUser on THAT service account (and only that one).
+resource "google_service_account_iam_member" "operators_act_as" {
+  for_each           = toset(["target", "generator"])
+  service_account_id = google_service_account.vm[each.value].name
+  role               = "roles/iam.serviceAccountUser"
+  member             = var.operators_group
+}
+resource "google_service_account_iam_member" "observers_act_as" {
+  for_each           = toset(["canary", "collector"])
+  service_account_id = google_service_account.vm[each.value].name
+  role               = "roles/iam.serviceAccountUser"
+  member             = var.observers_group
+}
+# The kill switch is triggered by Pub/Sub through Eventarc under its own identity.
+resource "google_project_iam_member" "kill_eventarc" {
+  for_each = toset(["roles/eventarc.eventReceiver", "roles/run.invoker"])
+  project  = google_project.p["evidence"].project_id
+  role     = each.value
+  member   = "serviceAccount:${google_service_account.killswitch.email}"
 }
 
 # ---- kill switch (C): may list, stop and delete instances in the THREE disposable projects; no role on the evidence bucket
