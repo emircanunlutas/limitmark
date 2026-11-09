@@ -6,13 +6,14 @@
 | Area | State |
 |---|---|
 | Local acceptance and campaign evaluation | implemented, recomputes from evidence, adversarially tested; QUALIFIED unreachable |
-| Migration registry | 44 entries, 6 APPROVED, 38 PENDING; 27 approve-ready, 3 dependency-blocked, 8 need boundary decisions (M1-MIGRATION-BLOCKER-CLOSURE.md) |
-| Historical guards | 2 fail, both only because of the 38 pending entries; unchanged and enforced; close only when all 38 are approved |
-| Remote infrastructure | design and runbook only; nothing provisioned |
+| Migration registry (updated at 956fc65) | 44 entries, 33 APPROVED, 11 PENDING; 3 lab mailbox files dependency-blocked, 8 need boundary decisions (M1-MIGRATION-BLOCKER-CLOSURE.md section 7) |
+| Historical guards | 2 fail, both only because of the 11 pending entries; unchanged and enforced; close only when all 11 are approved |
+| Remote infrastructure | Terraform definitions, kill switch, commitment, canary and completeness contracts written and (except Terraform, unvalidated) tested; nothing provisioned (M1-ENVIRONMENT-PREPARATION.md) |
+| Budget | provisional 750 TRY per run, 3,000 TRY per campaign; structural maximum about 50 TRY per run under ASSUMED unverified prices; prices and FX must be confirmed |
 | Authorized target | none; `gcp-sut-1` expired and not renewed |
 
-## 2. Hard blockers (each must be cleared)
-1. 38 pending migrations (guards red; the qualification baseline cannot be declared). Needs owner approval batches B1 to B5.
+## 2. Hard blockers (each must be cleared; items 4 to 9 partly addressed locally, see M1-ENVIRONMENT-PREPARATION.md)
+1. 11 pending migrations (guards red; the qualification baseline cannot be declared). Needs the owner decisions on D-1, D-3 and Gate 11A, then batches B4 and B5.
 2. Owner decisions D-1 (baseline v2), D-3 (export key), and the Gate 11A boundary.
 3. No authorized remote target and no expiry-bound policy entry.
 4. Observer processes are loopback prototypes; no independent canary or receipt collector exists off-host.
@@ -53,3 +54,13 @@ Any item in section 2 open; traffic or credentials able to reach a production en
 3. Build, each as a separate authorized change: acceptance and campaign CLI wrappers; off-host observers; commitment and sealing; provisioning and stop automation.
 4. Local rehearsal of the whole pipeline against disposable fixtures (not qualification evidence).
 5. Owner GO for one authorized campaign; three runs; recompute acceptance from sealed evidence; report.
+
+## 7. Status after the preparation cycle (2026-11-09, from 956fc65)
+Still **NO-GO**. Written locally and tested: commitment and fresh-instance check, canary acceptance contract (100 percent journeys; unexpected 429, challenge, timeout or false rejection fails; latency thresholds deliberately unset), explicit observation completeness check, kill-switch decision logic and cost-bound check. Written but unvalidated (Terraform not installed): `infra/m1/*.tf`. Remaining GO conditions, in addition to section 4:
+- Target and address space explicitly authorized (O-1); provider requirements confirmed (O-8).
+- Prices and exchange rate confirmed and `maxRunCost` run as a pre-run gate; reaper and budget stop verified in a sandbox project (not the real one).
+- Independent observer processes running off-host with the custody contract (they are loopback prototypes today); no CLI wrappers for the new contracts yet.
+- Canary latency thresholds fixed from the measurements listed in M1-ENVIRONMENT-PREPARATION.md section 3; operational actions named; heartbeat gap limit set (O-6).
+- A clean code-pinned run configuration (recorded commit, clean tree, `BA0_FIELD_V1` digest) in the pre-run commitment.
+- Retention lock decision (O-7) and billing-detachment decision (O-9).
+- The owner's written GO for the exact campaign.
