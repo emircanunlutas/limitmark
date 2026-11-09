@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { assessCostBound, maxRunCostWithRate, type CostComponent } from "../infra/m1/killswitch/decide";
 import { runCli } from "../lab/m1/cli";
-import { PILOT_CONTRACT, evaluatePilotResults } from "../lab/m1/pilot";
+import { CLEANUP_CATEGORIES, PILOT_CONTRACT, evaluatePilotResults } from "../lab/m1/pilot";
 
 // The pilot contract is evaluated, never executed here: these tests prove that a recorded pilot result cannot be a PILOT_PASS unless it is complete, ordered and clean, and that the
 // pilot cost ledger does not claim a spending cap. Nothing is provisioned and no traffic is generated.
@@ -14,9 +14,9 @@ const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 const T0 = Date.parse("2026-11-12T10:00:00Z"); const iso = (min: number): string => new Date(T0 + min * 60_000).toISOString().replace(/\.\d{3}Z$/u, "Z");
 function complete(): Record<string, unknown> {
   return {
-    schema: "m1-pilot-results-v1", runId: "pilot-r1", commit: "a".repeat(40), authorizationSha256: "b".repeat(64), trafficProfile: "smoke", attackTraffic: false, qualificationWorkload: false,
+    schema: "m1-pilot-results-v1", runId: "pilot-r1", commit: "a".repeat(40), authorizationSha256: "b".repeat(64), trafficProfile: "smoke", observationProfile: "REMOTE_PRIVATE", attackTraffic: false, qualificationWorkload: false,
     checks: PILOT_CONTRACT.map((def, i) => ({ id: def.id, status: "PASS", observedAt: iso(i * 5), evidence: def.evidenceKinds.map((kind) => ({ kind, ref: kind === "real-budget-delivery-status" ? "not-verified" : `gs://pilot/${def.id}/${kind}.json` })) })),
-    cleanup: { verifiedAt: iso(120), remainingDisposableResources: [] },
+    cleanup: { verifiedAt: iso(120), remainingDisposableResources: [], inventory: Object.fromEntries(CLEANUP_CATEGORIES.map((c) => [c, { remaining: 0 }])) },
   };
 }
 
@@ -95,4 +95,20 @@ test("pilot cost ledger: every enforcement row is unverified, so it is NOT stric
   const bound = maxRunCostWithRate({ vms: [{ count: 2, usdPerHour: 0.1 }, { count: 2, usdPerHour: 0.04 }], hours: 2, egressGb: 0.01, usdPerGb: 0.12, storageUsd: 0.5, runBudgetTry: 150 }, { high: 45, verified: false });
   assert.equal(bound.bounded, false, "an unverified exchange rate is never a bound");
   assert.ok(ledger.components.some((c) => /orphaned disks/u.test(c.residualAfterStop)) && ledger.components.some((c) => c.enforcement === "alert"));
+});
+
+test("the pilot record must declare the REMOTE_PRIVATE observation profile: absent is INCOMPLETE, any other is REJECT", () => {
+  const absent = complete(); delete absent.observationProfile; assert.equal(evaluatePilotResults(absent).outcome, "INCOMPLETE");
+  for (const profile of ["LOCAL_LOOPBACK", "PUBLIC", ""]) { const r = complete(); r.observationProfile = profile; const v = evaluatePilotResults(r); assert.equal(v.outcome, "REJECT", profile); assert.ok(v.reasons.includes("m1.pilot.observation_profile_not_remote_private")); }
+});
+
+test("cleanup inventory: every category must be listed; a remaining resource fails unless it is a bucket inside retention or a project pending deletion with a stated reason; budgets are not retainable", () => {
+  const withEntry = (category: string, entry: unknown): Record<string, unknown> => { const r = complete(); ((r.cleanup as { inventory: Record<string, unknown> }).inventory)[category] = entry; return r; };
+  const gone = complete(); delete (gone.cleanup as { inventory?: unknown }).inventory; assert.equal(evaluatePilotResults(gone).outcome, "INCOMPLETE");
+  const partial = complete(); delete ((partial.cleanup as { inventory: Record<string, unknown> }).inventory).billing_budgets; const p = evaluatePilotResults(partial); assert.equal(p.outcome, "INCOMPLETE"); assert.ok(p.reasons.includes("m1.pilot.cleanup_inventory_category_missing.billing_budgets"));
+  for (const bad of [{ remaining: -1 }, { remaining: 1.5 }, { remaining: "0" }, null]) assert.equal(evaluatePilotResults(withEntry("disks", bad)).outcome, "INCOMPLETE");
+  for (const category of ["instances", "disks", "scheduler_jobs", "functions", "eventarc_triggers", "billing_budgets", "firewall_rules"]) { const v = evaluatePilotResults(withEntry(category, { remaining: 1, retained: "I would like to keep it" })); assert.equal(v.outcome, "REJECT", category); assert.ok(v.reasons.includes(`m1.pilot.cleanup_resource_remains.${category}`)); }
+  assert.equal(evaluatePilotResults(withEntry("buckets", { remaining: 1, retained: "evidence inside the 30 day retention" })).outcome, "PILOT_PASS");
+  assert.equal(evaluatePilotResults(withEntry("projects", { remaining: 4, retained: "pending provider deletion" })).outcome, "PILOT_PASS");
+  assert.equal(evaluatePilotResults(withEntry("projects", { remaining: 4 })).outcome, "REJECT", "retained needs a reason");
 });

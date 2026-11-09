@@ -16,6 +16,8 @@
   "collectorCidr": "__OWNER_REQUIRED__",
   "budgetTry": { "run": "__OWNER_REQUIRED__", "campaign": "__OWNER_REQUIRED__" },
   "acknowledgesUnverifiedSpendCap": "__OWNER_REQUIRED__",
+  "acknowledgesResidualCharges": "__OWNER_REQUIRED__",
+  "observationProfile": "__OWNER_REQUIRED__",
   "tfvarsSha256": "__OWNER_REQUIRED__",
   "costInputsSha256": "__OWNER_REQUIRED__",
   "thresholdsSha256": null,

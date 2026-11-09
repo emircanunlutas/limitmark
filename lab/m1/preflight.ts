@@ -32,12 +32,16 @@ export type PreflightInput = {
   /** contents of infra/m1/*.tf by file name (null: not readable) */
   terraform: Record<string, string> | null;
 };
-export type PreflightResult = { outcome: PreflightStatus; checks: Check[]; reasons: string[]; digests: Record<string, string | null>; limitations: string[] };
+export type PreflightResult = { outcome: PreflightStatus; checks: Check[]; reasons: string[]; digests: Record<string, string | null>; limitations: string[];
+  /** cost exposure as computed from the supplied inputs; `strictlyBounded` is always false (no provider-side enforcement has been verified) */
+  exposure: { estimatedRunTry: number | null; worstCaseHours: number | null; worstCaseExposureTry: number | null; pilotCeilingTry: number; lifetimeAndCleanupVerified: false; strictlyBounded: false } };
 
 export const PLANNING_CEILING_TRY = { run: 750, campaign: 3000 } as const;
+/** The owner's provisional planning ceiling for the infrastructure-only pilot. A planning figure: NOT a provider-enforced cap and NOT authorization to incur charges. */
+export const PILOT_CEILING_TRY = 150;
 export const MAX_RATE_AGE_MS = 24 * 3_600_000;
 export const AUTHORIZATION_SCHEMA = "m1-authorization-v1"; export const COST_SCHEMA = "m1-cost-inputs-v1";
-const CHECK_IDS = ["git", "level_parameters", "terraform_structure", "terraform_variables", "network_scope", "authorization", "cost", "budget_ttl", "canary_journey", "heartbeat_limit", "evidence_custody", "identities", "ingress_lane"] as const;
+const CHECK_IDS = ["git", "level_parameters", "terraform_structure", "terraform_variables", "network_scope", "authorization", "cost", "budget_ttl", "observation_profile", "canary_journey", "heartbeat_limit", "evidence_custody", "identities", "ingress_lane"] as const;
 const FORBIDDEN_PORTS = [22, 80, 443, 3000, 5432, 55416, 55417];
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -138,6 +142,8 @@ export function evaluatePreflight(input: PreflightInput): PreflightResult {
       for (const explicit of ["run_budget", "campaign_budget", "run_max_seconds", "budget_currency", "retention_days", "lock_retention", "create_vms"]) if (vars[explicit] === undefined) c.missing(`m1.preflight.tfvars_must_state.${explicit}`);
       const str = (n: string): string | null => (typeof vars[n] === "string" && !unset(vars[n]) ? (vars[n] as string) : null);
       const prefix = str("project_prefix"); if (prefix !== null && !/^[a-z][a-z0-9]{3,11}$/u.test(prefix)) c.bad("m1.preflight.project_prefix_invalid");
+      // a pilot is torn down by DELETING its projects, so it must never share project ids with the campaign
+      if (prefix !== null) { if (input.mode === "pilot" && !prefix.startsWith("pilot")) c.bad("m1.preflight.pilot_project_prefix_must_start_with_pilot"); if (campaign && prefix.startsWith("pilot")) c.bad("m1.preflight.campaign_project_prefix_must_not_start_with_pilot"); }
       const cid = str("campaign_id"); if (cid !== null && !/^[a-z0-9-]{1,31}$/u.test(cid)) c.bad("m1.preflight.campaign_id_invalid");
       const rid = str("run_id"); if (rid !== null && !/^[A-Za-z0-9._-]{1,63}$/u.test(rid)) c.bad("m1.preflight.run_id_invalid");
       if (rid !== null) { if (input.mode === "pilot" && !rid.startsWith("pilot-")) c.bad("m1.preflight.pilot_run_id_must_start_with_pilot-"); if (campaign && rid.startsWith("pilot-")) c.bad("m1.preflight.campaign_run_id_must_not_be_a_pilot_id"); }
@@ -184,6 +190,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightResult {
           else if (until - from > MAX_REMOTE_TARGET_LIFETIME_HOURS * 3_600_000) c.bad("m1.preflight.authorization_window_exceeds_72h");
         }
       }
+      if (auth.acknowledgesResidualCharges !== true) c.missing("m1.preflight.owner_has_not_acknowledged_residual_charges_after_shutdown");
       if (auth.acknowledgesUnverifiedSpendCap !== true) c.missing("m1.preflight.owner_has_not_acknowledged_that_spending_is_not_hard_capped");
       if (vars !== null && !unset(auth.tfvarsSha256)) { if (auth.tfvarsSha256 !== digests.tfvars) c.bad("m1.preflight.tfvars_differ_from_what_the_owner_approved"); } else c.missing("m1.preflight.tfvars_digest_not_approved");
       if (cost !== null && !unset(auth.costInputsSha256)) { if (auth.costInputsSha256 !== digests.costInputs) c.bad("m1.preflight.cost_inputs_differ_from_what_the_owner_approved"); } else c.missing("m1.preflight.cost_digest_not_approved");
@@ -192,7 +199,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightResult {
     checks.push(c.done()); }
 
   // ---- cost estimate, price and exchange-rate freshness
-  let runCostTry: number | null = null;
+  let runCostTry: number | null = null; let worstCaseTry: number | null = null; let worstCaseHours: number | null = null;
   { const c = new Collector("cost");
     if (input.cost === undefined) c.missing("m1.preflight.cost_inputs_not_supplied");
     else if (cost === null) c.bad("m1.preflight.cost_inputs_not_an_object");
@@ -210,13 +217,26 @@ export function evaluatePreflight(input: PreflightInput): PreflightResult {
       const numeric = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
       if (vms === null || vms.length === 0 || !vms.every((v) => isRecord(v) && Number.isInteger(v.count) && (v.count as number) > 0 && numeric(v.usdPerHour) && (v.usdPerHour as number) > 0)) c.missing("m1.preflight.vm_prices_unknown");
       else if (vms.reduce((s, v) => s + (v as { count: number }).count, 0) !== 4) c.bad("m1.preflight.vm_count_is_not_the_fixed_fleet_of_four");
-      if (!numeric(cost.hours) || !numeric(cost.egressGb) || !numeric(cost.usdPerGb) || !numeric(cost.storageUsd) || (cost.hours as number) <= 0) c.missing("m1.preflight.cost_quantities_unknown");
+      // every material component must be stated: compute (vms x hours), networking, storage, logging and cleanup; an unknown one is INCOMPLETE
+      for (const [component, field] of [["egress_quantity", "egressGb"], ["egress_price", "usdPerGb"], ["storage", "storageUsd"], ["logging", "loggingUsd"], ["cleanup", "cleanupUsd"]] as const) if (!numeric(cost[field])) c.missing(`m1.preflight.cost_component_unknown.${component}`);
+      if (!numeric(cost.hours) || (cost.hours as number) <= 0) c.missing("m1.preflight.cost_component_unknown.compute_hours");
       else if (vars !== null && typeof vars.run_max_seconds === "number" && (cost.hours as number) < vars.run_max_seconds / 3600) c.bad("m1.preflight.cost_hours_below_the_enforced_vm_lifetime");
       const budget = auth !== null && isRecord(auth.budgetTry) ? auth.budgetTry : null;
       const runBudget = budget !== null && typeof budget.run === "number" ? budget.run : null;
       if (c.error.length === 0 && c.incomplete.length === 0 && fx !== null && vms !== null) {
-        const bound = maxRunCostWithRate({ vms: vms as { count: number; usdPerHour: number }[], hours: cost.hours as number, egressGb: cost.egressGb as number, usdPerGb: cost.usdPerGb as number, storageUsd: cost.storageUsd as number, runBudgetTry: runBudget ?? PLANNING_CEILING_TRY.run }, { high: fx.tryPerUsdHigh as number, verified: fx.verified === true });
+        const bound = maxRunCostWithRate({ vms: vms as { count: number; usdPerHour: number }[], hours: cost.hours as number, egressGb: cost.egressGb as number, usdPerGb: cost.usdPerGb as number, storageUsd: (cost.storageUsd as number) + (cost.loggingUsd as number) + (cost.cleanupUsd as number), runBudgetTry: runBudget ?? PLANNING_CEILING_TRY.run }, { high: fx.tryPerUsdHigh as number, verified: fx.verified === true });
         if (bound.tryAmount !== null) runCostTry = bound.tryAmount;
+        if (!campaign) {
+          // documented worst-case exposure: the provider-side lifetime AND our reaper both fail and the fleet runs for the stated number of hours
+          if (!numeric(cost.worstCaseHours)) c.missing("m1.preflight.worst_case_exposure_not_documented");
+          else if ((cost.worstCaseHours as number) < (cost.hours as number) || (cost.worstCaseHours as number) > 720) c.bad("m1.preflight.worst_case_hours_out_of_range");
+          else {
+            worstCaseHours = cost.worstCaseHours as number;
+            const perHour = (vms as { count: number; usdPerHour: number }[]).reduce((sum, v) => sum + v.count * v.usdPerHour, 0);
+            worstCaseTry = (perHour * worstCaseHours + (cost.egressGb as number) * (cost.usdPerGb as number) + (cost.storageUsd as number) + (cost.loggingUsd as number) + (cost.cleanupUsd as number)) * (fx.tryPerUsdHigh as number);
+          }
+          if (bound.tryAmount !== null && bound.tryAmount > PILOT_CEILING_TRY) c.bad("m1.preflight.pilot_estimate_exceeds_150_try_no_go");
+        }
         if (!bound.bounded) { if (bound.reason === "exchange-rate-not-verified" || bound.reason === "exchange-rate-missing") c.missing(`m1.preflight.cost_${bound.reason}`); else c.bad(`m1.preflight.cost_over_budget_or_unbounded.${bound.reason}`); }
       }
     }
@@ -228,6 +248,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightResult {
     const run = budget?.run; const total = budget?.campaign;
     if (typeof run !== "number" || typeof total !== "number" || !(run > 0) || !(total > 0)) c.missing("m1.preflight.owner_budget_not_stated");
     else {
+      if (!campaign && (run > PILOT_CEILING_TRY || total > PILOT_CEILING_TRY)) c.bad("m1.preflight.pilot_budget_above_150_try_ceiling");
       if (run > PLANNING_CEILING_TRY.run) c.bad("m1.preflight.run_budget_above_planning_ceiling"); if (total > PLANNING_CEILING_TRY.campaign) c.bad("m1.preflight.campaign_budget_above_planning_ceiling");
       if (run > total) c.bad("m1.preflight.run_budget_above_campaign_budget");
       if (vars !== null) { if (typeof vars.run_budget === "number" && vars.run_budget !== run) c.bad("m1.preflight.tfvars_run_budget_differs_from_authorization"); if (typeof vars.campaign_budget === "number" && vars.campaign_budget !== total) c.bad("m1.preflight.tfvars_campaign_budget_differs_from_authorization"); }
@@ -287,6 +308,15 @@ export function evaluatePreflight(input: PreflightInput): PreflightResult {
     }
     checks.push(c.done()); }
 
+  // ---- observation profile: chosen by the owner, committed before the run, verified later from the commitment (never from a result file)
+  { const c = new Collector("observation_profile");
+    if (auth === null) c.missing("m1.preflight.observation_profile_needs_authorization");
+    else if (unset(auth.observationProfile)) c.missing("m1.preflight.observation_profile_not_stated");
+    else if (auth.observationProfile === "LOCAL_LOOPBACK") c.bad("m1.preflight.local_loopback_profile_contradicts_the_remote_private_topology");
+    else if (auth.observationProfile !== "REMOTE_PRIVATE") c.bad("m1.preflight.observation_profile_unknown");
+    if (vars !== null && !unset(vars.canary_cidr) && vars.canary_cidr === vars.collector_cidr) c.bad("m1.preflight.canary_and_collector_not_distinct");
+    checks.push(c.done()); }
+
   // ---- lane: a private-lane pilot or campaign only; public ingress is a separate, unapproved category
   { const c = new Collector("ingress_lane");
     if (auth === null) c.missing("m1.preflight.lane_needs_authorization");
@@ -300,5 +330,5 @@ export function evaluatePreflight(input: PreflightInput): PreflightResult {
   for (const c of checks) reasons.push(...c.reasons);
   const complete = CHECK_IDS.every((id) => checks.some((c) => c.id === id));
   const outcome: PreflightStatus = input.loadProblems.length > 0 || checks.some((c) => c.status === "ERROR") || !complete ? "ERROR" : checks.some((c) => c.status === "INCOMPLETE") ? "INCOMPLETE" : "PASS";
-  return { outcome, checks, reasons: [...new Set(reasons)].sort(), digests, limitations };
+  return { outcome, checks, reasons: [...new Set(reasons)].sort(), digests, limitations, exposure: { estimatedRunTry: runCostTry, worstCaseHours, worstCaseExposureTry: worstCaseTry, pilotCeilingTry: PILOT_CEILING_TRY, lifetimeAndCleanupVerified: false, strictlyBounded: false } };
 }

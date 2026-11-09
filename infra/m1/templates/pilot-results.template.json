@@ -5,8 +5,9 @@
   "commit": "__OWNER_REQUIRED__",
   "authorizationSha256": "__OWNER_REQUIRED__",
   "trafficProfile": "smoke",
+  "observationProfile": "REMOTE_PRIVATE",
   "attackTraffic": false,
   "qualificationWorkload": false,
   "checks": [],
-  "cleanup": { "verifiedAt": null, "remainingDisposableResources": null }
+  "cleanup": { "verifiedAt": null, "remainingDisposableResources": null, "inventory": { "_comment": "one entry per category: { \"remaining\": N, \"retained\": \"reason (buckets and projects only)\" }; categories: instances, disks, addresses, firewall_rules, networks_and_peerings, routers, dns_zones, scheduler_jobs, functions, eventarc_triggers, pubsub_topics, service_accounts, buckets, billing_budgets, projects" } }
 }

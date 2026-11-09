@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { canonicalJson } from "../evidence/manifest";
 import { BA0_FIELD_V1 } from "../defense/field-thresholds";
 import { MAX_REMOTE_TARGET_LIFETIME_HOURS } from "../policy/target-policy";
+import { LOCAL_EXPECTATION, isPrivateIpv4, readIdentity, type ExpectedObservation, type ObservationProfile, type ObserverIdentity } from "./observation-profile";
 
 export const COMMITMENT_SCHEMA = "m1-prerun-commitment-v1";
 export const PARAMETERS_DIGEST = createHash("sha256").update(canonicalJson(BA0_FIELD_V1)).digest("hex");
@@ -22,6 +23,11 @@ export type CommitmentInput = {
   instance: { id: string; createdMs: number; imageId: string; bootId: string };
   counters: Record<string, number>;
   canaryThresholdsFixed: boolean; retentionDays: number; previousTeardownMs: number | null;
+  /**
+   * The environment commitment for the independent observers. Absent means LOCAL_LOOPBACK (the commitment digest of existing commitments does not change). REMOTE_PRIVATE commits to
+   * the deployment identity and private address of the canary and of the collector BEFORE the run; the verifier compares what the observers report against exactly this.
+   */
+  observation?: { profile: ObservationProfile; canary?: ObserverIdentity; collector?: ObserverIdentity };
 };
 export type Commitment = CommitmentInput & { schema: typeof COMMITMENT_SCHEMA };
 export type CommitmentResult = { outcome: "VALID" | "INVALID"; reasons: string[]; commitment: Commitment | null; digest: string | null };
@@ -53,6 +59,21 @@ export function buildCommitment(input: CommitmentInput): CommitmentResult {
     if (input.previousTeardownMs !== null && (!isTime(input.previousTeardownMs) || input.instance.createdMs <= input.previousTeardownMs)) reasons.push("m1.commit.instance_not_created_after_previous_teardown");
     const counters = Object.values(input.counters);
     if (counters.length === 0 || !counters.every((value) => value === 0)) reasons.push("m1.commit.counters_not_zero");
+    if (input.observation !== undefined) {
+      const o = input.observation;
+      if (o.profile !== "LOCAL_LOOPBACK" && o.profile !== "REMOTE_PRIVATE") reasons.push("m1.commit.observation_profile_unknown");
+      else if (o.profile === "LOCAL_LOOPBACK") { if (o.canary !== undefined || o.collector !== undefined) reasons.push("m1.commit.local_profile_must_not_declare_remote_observers"); }
+      else {
+        const canary = readIdentity(o.canary); const collector = readIdentity(o.collector);
+        if (canary === null || collector === null) reasons.push("m1.commit.remote_observer_identity_missing_or_invalid");
+        else {
+          if (canary.deploymentId === collector.deploymentId || canary.address === collector.address) reasons.push("m1.commit.remote_observers_not_distinct");
+          if (canary.address === input.target.ipv4 || collector.address === input.target.ipv4) reasons.push("m1.commit.remote_observer_address_equals_target");
+          if (canary.deploymentId === input.instance.id || collector.deploymentId === input.instance.id) reasons.push("m1.commit.remote_observer_identity_equals_target_instance");
+        }
+        if (!isPrivateIpv4(input.target.ipv4)) reasons.push("m1.commit.remote_profile_needs_a_private_target_address");
+      }
+    }
     if (input.canaryThresholdsFixed !== true) reasons.push("m1.commit.canary_thresholds_not_fixed");
     if (!Number.isSafeInteger(input.retentionDays) || input.retentionDays < 1) reasons.push("m1.commit.retention_invalid");
     if (reasons.length > 0) return invalid(reasons);
@@ -74,6 +95,7 @@ export function evaluateFreshness(runs: readonly { commitment: Commitment; diges
   // Criterion 7 (unchanged repeatability rules) requires a DISTINCT campaign id per run, so distinctness is what is checked here
   if (!unique(runs.map((r) => r.commitment.campaignId))) reasons.push("m1.fresh.campaign_id_reused");
   if (new Set(runs.map((r) => r.commitment.commit)).size !== 1) reasons.push("m1.fresh.commit_changed");
+  if (new Set(runs.map((r) => r.commitment.observation?.profile ?? "LOCAL_LOOPBACK")).size !== 1) reasons.push("m1.fresh.observation_profile_changed");
   const ordered = [...runs].sort((a, b) => a.commitment.window.startMs - b.commitment.window.startMs);
   for (let i = 1; i < ordered.length; i++) {
     const previous = ordered[i - 1]!.commitment; const current = ordered[i]!.commitment;
@@ -82,4 +104,10 @@ export function evaluateFreshness(runs: readonly { commitment: Commitment; diges
     if (current.previousTeardownMs === null || current.previousTeardownMs < previous.window.endMs) reasons.push("m1.fresh.previous_teardown_not_recorded");
   }
   return { outcome: reasons.length === 0 ? "FRESH" : "NOT_FRESH", reasons: [...new Set(reasons)] };
+}
+
+/** What the verifier expects from the observers, derived ONLY from a commitment that `buildCommitment` accepted. No commitment: the local loopback expectation. */
+export function expectedObservationFrom(commitment: Commitment | null, digest: string | null): ExpectedObservation {
+  if (commitment === null || commitment.observation === undefined || commitment.observation.profile === "LOCAL_LOOPBACK") return { ...LOCAL_EXPECTATION, commitmentDigest: commitment === null ? null : digest };
+  return { profile: "REMOTE_PRIVATE", canary: commitment.observation.canary ?? null, collector: commitment.observation.collector ?? null, targetAddress: commitment.target.ipv4, commitmentDigest: digest };
 }

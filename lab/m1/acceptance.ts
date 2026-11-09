@@ -36,6 +36,7 @@ import { parseGeneratorReport, type GeneratorReport } from "../defense/generator
 import { SERVER_LEVEL_SCHEMA, finalFrom, type ServerLevelEvidence } from "../defense/reconcile";
 import { M1_STATUS_CONTRACT_ID, evaluateStatusOverlay, m1Accepted, overlayIsWellFormed } from "../defense/m1-status-contract";
 import { BA0_FIELD_V1, ba0FieldFingerprint, fieldLevel } from "../defense/field-thresholds";
+import type { ExpectedObservation } from "./observation-profile";
 import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory } from "../evidence/manifest";
 import { identityBlock, identityDifferences, identityDigest, identityFromPackage, parseIdentity, type M1Identity } from "./identity";
 import { verifyMandatoryInventory } from "./inventory";
@@ -196,7 +197,7 @@ function recomputeReceipts(src: AuthoritySources): Recomputed {
 function recomputeObservation(src: AuthoritySources): Recomputed {
   if (!src.observerDirectory) return unavailable("observer_records_not_supplied");
   const files = observerFiles(src.observerDirectory);
-  const bundle = evaluateObservationFiles({ runId: src.identity.runId, campaignId: src.identity.campaignId }, src.observerDirectory, src.maxHeartbeatGapMs);
+  const bundle = evaluateObservationFiles({ runId: src.identity.runId, campaignId: src.identity.campaignId }, src.observerDirectory, src.maxHeartbeatGapMs, src.expectedObservation ?? null);
   if (bundle.limitMissing) return unavailable("heartbeat_gap_limit_not_set");
   const result = bundle.result;
   const digest = (file: string): string | null => { try { return sha256(readFileSync(file)); } catch { return null; } };
@@ -295,7 +296,7 @@ export function loadComponent(root: string, id: string | undefined, name: Compon
 /** The result evidence runs to judge, plus the authoritative inputs acceptance reads ITSELF to recompute them (any not supplied makes its component INCOMPLETE). */
 export type AcceptCli = { serverId: string; resultIds: Partial<Record<ComponentName, string>>; generatorReportPath?: string | null; observerDirectory?: string | null; retainedDirectory?: string | null };
 /** Verifier-side settings that are NOT part of the run evidence (the CLI type above takes ids and input locations only). */
-export type VerifierSettings = { maxHeartbeatGapMs?: number | null };
+export type VerifierSettings = { maxHeartbeatGapMs?: number | null; /** the observation profile and committed observer identities, derived from a verified commitment; a function selects them per run (campaign). Absent: LOCAL_LOOPBACK. */ expectedObservation?: ExpectedObservation | null | ((serverId: string) => ExpectedObservation | null) };
 export type AcceptOutcome = { result: AcceptanceResult; evidenceId: string };
 
 /** The complete per-run evaluation, WITHOUT writing anything: re-derives the package identity, loads each supplied result and recomputes from the authoritative inputs. The campaign wrapper uses this same function. */
@@ -304,7 +305,7 @@ export function evaluateRunFromEvidence(cli: AcceptCli, root: string = EVIDENCE_
   const { identity, problems } = identityFromPackage(packageDirectory);
   const loaded: Partial<Record<ComponentName, LoadedComponent>> = {}; const inputs: Record<string, string | null> = {};
   for (const name of COMPONENT_NAMES) { const component = loadComponent(root, cli.resultIds[name], name); loaded[name] = component; inputs[`${name}Sha256`] = "sha256" in component && component.sha256 ? component.sha256 : null; }
-  const sources: InputSources = { packageDirectory, generatorReportPath: cli.generatorReportPath ?? null, observerDirectory: cli.observerDirectory ?? null, retainedDirectory: cli.retainedDirectory ?? null, maxHeartbeatGapMs: verifier.maxHeartbeatGapMs ?? null };
+  const sources: InputSources = { packageDirectory, generatorReportPath: cli.generatorReportPath ?? null, observerDirectory: cli.observerDirectory ?? null, retainedDirectory: cli.retainedDirectory ?? null, maxHeartbeatGapMs: verifier.maxHeartbeatGapMs ?? null, expectedObservation: typeof verifier.expectedObservation === "function" ? verifier.expectedObservation(cli.serverId) : (verifier.expectedObservation ?? null) };
   const authority = gatherAuthority(identity, sources);
   return { result: evaluateAcceptance({ packageIdentity: identity, packageProblems: problems, components: loaded, authority }), packageDirectory, inputs };
 }

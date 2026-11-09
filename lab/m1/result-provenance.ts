@@ -1,3 +1,4 @@
+import type { ExpectedObservation } from "./observation-profile";
 /**
  * Additive RESULT PROVENANCE contract for the M1 component results (tally, receipts, overlay, observation, provenance). A `resultProvenance` block is written INTO each
  * result artifact by its writer and is checked by the unified acceptance evaluator against the bytes it reads itself. It is reproducible-evaluation metadata, NOT
@@ -33,7 +34,7 @@ export const EVALUATOR_CONTRACT: Record<ResultComponent, string> = {
   overlay: "m1-status-overlay", tally: "m1-tally-check-v1", receipts: "m1-receipt-check-v1", observation: "m1-observation-check-v1", provenance: "m1-provenance-check-v1",
 };
 
-export type InputSources = { packageDirectory: string; generatorReportPath?: string | null; observerDirectory?: string | null; retainedDirectory?: string | null; maxHeartbeatGapMs?: number | null };
+export type InputSources = { packageDirectory: string; generatorReportPath?: string | null; observerDirectory?: string | null; retainedDirectory?: string | null; maxHeartbeatGapMs?: number | null; expectedObservation?: ExpectedObservation | null };
 export type InputRole = { role: string; sha256: string | null };
 
 const sha256 = (data: Buffer | string): string => createHash("sha256").update(data).digest("hex");

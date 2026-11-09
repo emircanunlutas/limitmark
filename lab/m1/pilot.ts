@@ -22,6 +22,13 @@ export const PILOT_CONTRACT: readonly PilotCheckDefinition[] = [
   { id: "resource_cleanup", title: "Complete resource cleanup", probe: "create_vms=false apply, then list every resource of the three disposable projects (instances, disks, addresses, routers, functions, topics, jobs) and the evidence project", passWhen: "no instance, disk or address remains in the disposable projects; remaining campaign-level resources are exactly the documented list; the owner confirms the teardown", evidenceKinds: ["resource-inventory-after-teardown", "owner-teardown-confirmation"], costRelevant: true },
 ] as const;
 
+/**
+ * Teardown inventory: every category of resource the stack creates must be listed with the number remaining AFTER teardown. Only a bucket still inside its retention period and a project
+ * in the provider's pending-deletion state may be retained (with a stated reason); anything else remaining is a failed cleanup. A missing category is INCOMPLETE, never clean.
+ */
+export const CLEANUP_CATEGORIES = ["instances", "disks", "addresses", "firewall_rules", "networks_and_peerings", "routers", "dns_zones", "scheduler_jobs", "functions", "eventarc_triggers", "pubsub_topics", "service_accounts", "buckets", "billing_budgets", "projects"] as const;
+const RETAINABLE = new Set<string>(["buckets", "projects"]);
+
 export type PilotOutcome = "PILOT_PASS" | "INCOMPLETE" | "REJECT" | "ERROR";
 export type PilotEvaluation = { outcome: PilotOutcome; reasons: string[]; checks: { id: string; status: "PASS" | "FAIL" | "MISSING" | "INVALID" }[] };
 
@@ -38,6 +45,8 @@ export function evaluatePilotResults(value: unknown): PilotEvaluation {
   if (typeof value.authorizationSha256 !== "string" || !/^[0-9a-f]{64}$/u.test(value.authorizationSha256)) reasons.push("m1.pilot.authorization_digest_missing");
   if (value.trafficProfile !== "smoke") reasons.push("m1.pilot.traffic_profile_not_smoke");
   if (value.attackTraffic !== false) reasons.push("m1.pilot.attack_traffic_not_excluded");
+  // the pilot verifies the private-lane topology the observers will use; it must declare REMOTE_PRIVATE (the profile itself is judged later, from the commitment, by the observation check)
+  if (value.observationProfile === undefined) reasons.push("m1.pilot.observation_profile_missing"); else if (value.observationProfile !== "REMOTE_PRIVATE") reasons.push("m1.pilot.observation_profile_not_remote_private");
   if (value.qualificationWorkload !== false) reasons.push("m1.pilot.qualification_workload_not_excluded");
   const list = Array.isArray(value.checks) ? value.checks : null;
   if (list === null) return { outcome: "ERROR", reasons: [...reasons, "m1.pilot.checks_missing"], checks };
@@ -49,7 +58,7 @@ export function evaluatePilotResults(value: unknown): PilotEvaluation {
     if (seen.has(entry.id)) { reasons.push(`m1.pilot.check_duplicated.${entry.id}`); continue; }
     seen.set(entry.id, entry);
   }
-  let latestOtherMs = 0; let cleanupMs: number | null = null; let incomplete = false; let failed = false;
+  let latestOtherMs = 0; let cleanupMs: number | null = null; let incomplete = reasons.includes("m1.pilot.observation_profile_missing"); let failed = false;
   for (const def of PILOT_CONTRACT) {
     const entry = seen.get(def.id);
     if (entry === undefined) { checks.push({ id: def.id, status: "MISSING" }); reasons.push(`m1.pilot.check_missing.${def.id}`); incomplete = true; continue; }
@@ -73,8 +82,15 @@ export function evaluatePilotResults(value: unknown): PilotEvaluation {
   const cleanup = isRecord(value.cleanup) ? value.cleanup : null;
   if (cleanup === null || !Array.isArray(cleanup.remainingDisposableResources) || at(cleanup.verifiedAt) === null) { reasons.push("m1.pilot.cleanup_record_missing"); incomplete = true; }
   else if (cleanup.remainingDisposableResources.length > 0) { reasons.push("m1.pilot.resources_remain_after_teardown"); failed = true; }
+  const inventory = cleanup !== null && isRecord(cleanup.inventory) ? cleanup.inventory : null;
+  if (inventory === null) { reasons.push("m1.pilot.cleanup_inventory_missing"); incomplete = true; }
+  else for (const category of CLEANUP_CATEGORIES) {
+    const entry = inventory[category];
+    if (!isRecord(entry) || typeof entry.remaining !== "number" || !Number.isInteger(entry.remaining) || entry.remaining < 0) { reasons.push(`m1.pilot.cleanup_inventory_category_missing.${category}`); incomplete = true; }
+    else if (entry.remaining > 0 && !(RETAINABLE.has(category) && typeof entry.retained === "string" && entry.retained.length > 0)) { reasons.push(`m1.pilot.cleanup_resource_remains.${category}`); failed = true; }
+  }
   if (cleanupMs !== null && cleanupMs < latestOtherMs) { reasons.push("m1.pilot.cleanup_not_last"); failed = true; }
-  const structural = reasons.some((r) => !r.startsWith("m1.pilot.check_missing.") && !r.startsWith("m1.pilot.evidence_missing.") && !r.startsWith("m1.pilot.check_status_invalid.") && !r.startsWith("m1.pilot.check_time_invalid.") && !r.startsWith("m1.pilot.check_failed.") && !r.startsWith("m1.pilot.real_budget_delivery_status") && r !== "m1.pilot.cleanup_record_missing" && r !== "m1.pilot.resources_remain_after_teardown" && r !== "m1.pilot.cleanup_not_last");
+  const structural = reasons.some((r) => !r.startsWith("m1.pilot.check_missing.") && !r.startsWith("m1.pilot.evidence_missing.") && !r.startsWith("m1.pilot.check_status_invalid.") && !r.startsWith("m1.pilot.check_time_invalid.") && !r.startsWith("m1.pilot.check_failed.") && !r.startsWith("m1.pilot.real_budget_delivery_status") && r !== "m1.pilot.observation_profile_missing" && r !== "m1.pilot.cleanup_record_missing" && !r.startsWith("m1.pilot.cleanup_inventory") && !r.startsWith("m1.pilot.cleanup_resource_remains") && r !== "m1.pilot.resources_remain_after_teardown" && r !== "m1.pilot.cleanup_not_last");
   const outcome: PilotOutcome = structural || failed ? "REJECT" : incomplete ? "INCOMPLETE" : "PILOT_PASS";
   return { outcome, reasons: [...new Set(reasons)].sort(), checks };
 }

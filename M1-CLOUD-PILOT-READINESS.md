@@ -1,6 +1,6 @@
 # M1 cloud pilot readiness (2026-11-09, from baseline 7ae95b3)
 
-Local only. Nothing was provisioned, planned against an account, applied, deployed or sent over a network; no credential was requested or stored; no attack traffic exists; public ingress is not enabled. The migration registry (44 / 33 approved / 11 pending), the two historical guards and the acceptance and campaign evaluators are untouched. `QUALIFIED` stays unreachable. Builds on `M1-EXECUTION-READINESS.md`.
+Local only. Nothing was provisioned, planned against an account, applied, deployed or sent over a network; no credential was requested or stored; no attack traffic exists; public ingress is not enabled. The migration registry (44 / 33 approved / 11 pending), the two historical guards and the acceptance and campaign evaluators are untouched. `QUALIFIED` stays unreachable. Builds on `M1-EXECUTION-READINESS.md`. **Update: the off-host observation incompatibility described in section 3 and in the blocker table is corrected by explicit observation profiles; see M1-PILOT-FINAL-READINESS.md.**
 
 ## 1. Preflight (`npm run lab:m1 -- preflight`)
 ```

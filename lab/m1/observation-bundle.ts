@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { evaluateObservation, type ObservationResult } from "./observation-check";
+import type { ExpectedObservation } from "./observation-profile";
 import { evaluateObservationCompleteness, type CompletenessResult } from "./observation-completeness";
 import { readObservation, type ObservationFiles } from "./observation/run";
 
@@ -27,11 +28,11 @@ export type ObservationBundle = {
   limitMissing: boolean; limitSource: "verifier" | "observer-meta" | "none";
 };
 
-export function evaluateObservationFiles(identity: { runId: string; campaignId: string }, observerDirectory: string, verifierMaxHeartbeatGapMs: number | null | undefined): ObservationBundle {
+export function evaluateObservationFiles(identity: { runId: string; campaignId: string }, observerDirectory: string, verifierMaxHeartbeatGapMs: number | null | undefined, expected: ExpectedObservation | null = null): ObservationBundle {
   const files = observerFiles(observerDirectory);
   const read = readObservation(files);
-  const base = evaluateObservation({ identity, canary: read.canary, receipts: read.receipts, meta: read.meta });
   const declaration = readJson(files.declarationFile);
+  const base = evaluateObservation({ identity, canary: read.canary, receipts: read.receipts, meta: read.meta, declaration, expected });
   const meta = isRecord(read.meta) ? read.meta : {};
   const metaLimit = isRecord(meta.completeness) && typeof meta.completeness.maxHeartbeatGapMs === "number" ? meta.completeness.maxHeartbeatGapMs : null;
   const verifierLimit = typeof verifierMaxHeartbeatGapMs === "number" && Number.isFinite(verifierMaxHeartbeatGapMs) && verifierMaxHeartbeatGapMs > 0 ? verifierMaxHeartbeatGapMs : null;

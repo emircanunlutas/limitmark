@@ -13,8 +13,10 @@ export type CollectorConfig = {
   listenHost?: string; listenPort?: number; upstreamHost?: string;
   /** optional append-only monitoring log of heartbeats (one JSON line each); the declaration remains the authoritative record */
   heartbeatLogFile?: string;
+  /** self-reported deployment identity of this collector (REMOTE_PRIVATE profile); written into the closing declaration */
+  observer?: { deploymentId: string; address: string };
 };
-export type Declaration = { schema: "m1-collector-declaration-v1"; runId: string | null; campaignId: string | null; receiptCount: number; lastSeq: number; coverageStartMs: number; coverageEndMs: number; heartbeatMs: number; heartbeatsMs: number[] };
+export type Declaration = { schema: "m1-collector-declaration-v1"; runId: string | null; campaignId: string | null; receiptCount: number; lastSeq: number; coverageStartMs: number; coverageEndMs: number; heartbeatMs: number; heartbeatsMs: number[]; observer?: { deploymentId: string; address: string } };
 export type RunningCollector = { port: number; host: string; pid: number; stop: () => Promise<Declaration> };
 
 export function startCollector(config: CollectorConfig): Promise<RunningCollector> {
@@ -42,7 +44,7 @@ export function startCollector(config: CollectorConfig): Promise<RunningCollecto
         finished ??= new Promise<Declaration>((done) => {
           clearInterval(beat);
           server.close(() => {
-            const declaration: Declaration = { schema: "m1-collector-declaration-v1", runId: config.runId ?? null, campaignId: config.campaignId ?? null, receiptCount: seq, lastSeq: seq, coverageStartMs, coverageEndMs: Date.now(), heartbeatMs: config.heartbeatMs ?? 100, heartbeatsMs };
+            const declaration: Declaration = { schema: "m1-collector-declaration-v1", runId: config.runId ?? null, campaignId: config.campaignId ?? null, receiptCount: seq, lastSeq: seq, coverageStartMs, coverageEndMs: Date.now(), heartbeatMs: config.heartbeatMs ?? 100, heartbeatsMs, ...(config.observer ? { observer: config.observer } : {}) };
             if (config.declarationFile) { const temporary = `${config.declarationFile}.partial`; writeFileSync(temporary, `${JSON.stringify(declaration)}\n`); renameSync(temporary, config.declarationFile); }
             done(declaration);
           });

@@ -4,7 +4,7 @@
  * trusted: acceptance and the campaign recompute from the authoritative inputs. Authoritative evidence is only read; commands that record a result write a NEW evidence run.
  *
  * Usage:  tsx lab/m1/cli.ts <command> [--flag value ...]      (also: npm run lab:m1 -- <command> ...)
- *   observe       --server ID --observer-dir DIR [--max-heartbeat-gap-ms N]
+ *   observe       --server ID --observer-dir DIR [--max-heartbeat-gap-ms N] [--commitment FILE]   (the observation PROFILE comes from the verified commitment; none = LOCAL_LOOPBACK)
  *   completeness  --server ID --observer-dir DIR --max-heartbeat-gap-ms N            (check only; writes nothing)
  *   provenance    --server ID --retained-dir DIR
  *   accept        --server ID --generator-report FILE --observer-dir DIR --retained-dir DIR --max-heartbeat-gap-ms N
@@ -27,7 +27,8 @@ import path from "node:path";
 import { EVIDENCE_ROOT, REPOSITORY_ROOT, canonicalJson, collectGitState, resolveEvidenceDirectory } from "../evidence/manifest";
 import { COMPONENT_NAMES, evaluateRunFromEvidence, m1AcceptRun, type AcceptCli, type ComponentName } from "./acceptance";
 import { m1LocalCampaign, type CampaignCli } from "./campaign";
-import { buildCommitment, type CommitmentInput } from "./commitment";
+import { buildCommitment, expectedObservationFrom, type Commitment, type CommitmentInput } from "./commitment";
+import { type ExpectedObservation } from "./observation-profile";
 import { identityFromPackage } from "./identity";
 import { evaluateCanaryContract } from "./canary-contract";
 import { evaluateLatencyAgainstThresholds, validateOwnerThresholds } from "./canary-thresholds";
@@ -72,7 +73,7 @@ function gap(flags: Flags, required: boolean): number | null {
   return n;
 }
 const allowedFlags: Record<string, readonly string[]> = {
-  observe: ["server", "observer-dir", "max-heartbeat-gap-ms", "evidence-root"], completeness: ["server", "observer-dir", "max-heartbeat-gap-ms", "evidence-root"],
+  observe: ["server", "observer-dir", "max-heartbeat-gap-ms", "commitment", "evidence-root"], completeness: ["server", "observer-dir", "max-heartbeat-gap-ms", "commitment", "evidence-root"],
   provenance: ["server", "retained-dir", "evidence-root"],
   accept: ["server", "generator-report", "observer-dir", "retained-dir", "max-heartbeat-gap-ms", "result", "require-seal", "commitment", "evidence-root"],
   campaign: ["runs-file", "max-heartbeat-gap-ms", "require-seal", "evidence-root"], commitment: ["commitment", "server", "evidence-root"],
@@ -111,7 +112,7 @@ function readCommitment(file: string): { value: CommitmentFile | null; problems:
   } catch { return { value: null, problems: ["m1.cli.commitment_file_unreadable"] }; }
 }
 /** Rebuilds the commitment with the SAME builder and compares the digest; the file's own claim decides nothing. */
-function checkCommitment(file: string, identity: { runId: string; campaignId: string; gitSha: string } | null): { digest: string | null; outcome: "VALID" | "INVALID" | "ERROR"; reasons: string[] } {
+function checkCommitment(file: string, identity: { runId: string; campaignId: string; gitSha: string } | null): { digest: string | null; outcome: "VALID" | "INVALID" | "ERROR"; reasons: string[]; commitment?: Commitment | null } {
   const read = readCommitment(file);
   if (read.value === null) return { digest: null, outcome: "ERROR", reasons: read.problems };
   const input = { ...(read.value.commitment as CommitmentInput & { schema?: string }) };
@@ -125,7 +126,14 @@ function checkCommitment(file: string, identity: { runId: string; campaignId: st
     if (built.commitment!.campaignId !== identity.campaignId) reasons.push("m1.cli.commitment_campaign_mismatch");
     if (built.commitment!.commit !== identity.gitSha) reasons.push("m1.cli.commitment_commit_mismatch");
   }
-  return { digest: built.digest, outcome: reasons.length === 0 ? "VALID" : "INVALID", reasons };
+  return { digest: built.digest, outcome: reasons.length === 0 ? "VALID" : "INVALID", reasons, commitment: built.commitment };
+}
+/** The profile and committed observer identities the VERIFIER expects: from a commitment that was rebuilt and matched against the server package, else the local loopback expectation. */
+function expectedFrom(file: string | null, identity: { runId: string; campaignId: string; gitSha: string }): { expected: ExpectedObservation | null; failure: { outcome: "ERROR" | "REJECT"; reasons: string[] } | null } {
+  if (file === null) return { expected: null, failure: null };
+  const checked = checkCommitment(file, identity);
+  if (checked.outcome !== "VALID") return { expected: null, failure: { outcome: checked.outcome === "ERROR" ? "ERROR" : "REJECT", reasons: ["m1.cli.environment_commitment_not_valid", ...checked.reasons] } };
+  return { expected: expectedObservationFrom(checked.commitment ?? null, checked.digest), failure: null };
 }
 
 function sealCheck(flagsDir: string, identity: { runId: string; campaignId: string; gitSha: string }, commitmentFile: string) {
@@ -158,7 +166,7 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
       let git: GitProbe;
       if (io.git) git = io.git(); else { const g = collectGitState(); git = /^[0-9a-f]{40}$/u.test(g.gitSha) ? { sha: g.gitSha, trackedChanges: g.dirtyFileCount, untracked: g.untrackedFileCount } : null; }
       const verdict = evaluatePreflight({ mode: mode as PreflightMode, nowMs: now.getTime(), git, expectedCommit: one(flags, "commit", false), authorization, tfvars, cost, thresholds, loadProblems, terraform });
-      return finish(io, { command, outcome: verdict.outcome, exitCode: fromOutcome(verdict.outcome), reasons: verdict.reasons, details: { mode, provisioned: false, checks: verdict.checks, digests: verdict.digests, limitations: verdict.limitations } });
+      return finish(io, { command, outcome: verdict.outcome, exitCode: fromOutcome(verdict.outcome), reasons: verdict.reasons, details: { mode, provisioned: false, exposure: verdict.exposure, checks: verdict.checks, digests: verdict.digests, limitations: verdict.limitations } });
     }
     if (command === "pilot") {
       let raw: unknown;
@@ -170,14 +178,16 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
       const serverId = one(flags, "server")!; const observerDir = directory(flags, "observer-dir"); const limit = gap(flags, command === "completeness");
       const id = packageIdentity(serverId, root);
       if (id.identity === null) return finish(io, { command, outcome: "ERROR", exitCode: EXIT.ERROR, reasons: id.problems });
+      const env = expectedFrom(one(flags, "commitment", false), id.identity);
+      if (env.failure) return finish(io, { command, outcome: env.failure.outcome, exitCode: fromOutcome(env.failure.outcome), reasons: env.failure.reasons });
       if (command === "completeness") {
-        const bundle = evaluateObservationFiles({ runId: id.identity.runId, campaignId: id.identity.campaignId }, observerDir, limit);
+        const bundle = evaluateObservationFiles({ runId: id.identity.runId, campaignId: id.identity.campaignId }, observerDir, limit, env.expected);
         const completeness = bundle.completeness;
         const outcome = completeness === null ? "ERROR" : bundle.result.reasons.some((r) => r.startsWith("m1.complete.")) && completeness.outcome === "PASS" ? "REJECT" : completeness.outcome;
-        return finish(io, { command, outcome, exitCode: fromOutcome(outcome), reasons: bundle.result.reasons.filter((r) => r.startsWith("m1.complete.")), details: { runId: id.identity.runId, limitSource: bundle.limitSource } });
+        return finish(io, { command, outcome, exitCode: fromOutcome(outcome), reasons: bundle.result.reasons.filter((r) => r.startsWith("m1.complete.")), details: { runId: id.identity.runId, limitSource: bundle.limitSource, observationProfile: (env.expected?.profile ?? "LOCAL_LOOPBACK") } });
       }
-      const written = writeObservationResult(serverId, observerDir, root, now, limit);
-      return finish(io, { command, outcome: written.result.outcome, exitCode: fromOutcome(written.result.outcome), reasons: written.result.reasons, details: { runId: id.identity.runId, summary: written.result.summary }, record: written.evidenceId });
+      const written = writeObservationResult(serverId, observerDir, root, now, limit, env.expected);
+      return finish(io, { command, outcome: written.result.outcome, exitCode: fromOutcome(written.result.outcome), reasons: written.result.reasons, details: { runId: id.identity.runId, observationProfile: (env.expected?.profile ?? "LOCAL_LOOPBACK"), summary: written.result.summary }, record: written.evidenceId });
     }
     if (command === "provenance") {
       const serverId = one(flags, "server")!; const retained = directory(flags, "retained-dir");
@@ -196,14 +206,17 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
         resultIds[name as ComponentName] = value;
       }
       const cli: AcceptCli = { serverId, resultIds, generatorReportPath: directory(flags, "generator-report"), observerDirectory: directory(flags, "observer-dir"), retainedDirectory: directory(flags, "retained-dir") };
+      const commitmentOpt = one(flags, "commitment", false);
+      const env = expectedFrom(commitmentOpt, id.identity);
+      if (env.failure) return finish(io, { command, outcome: env.failure.outcome, exitCode: fromOutcome(env.failure.outcome), reasons: env.failure.reasons });
       if (flags.has("require-seal")) {
         const commitmentFile = one(flags, "commitment")!;
         const checked = sealCheck(cli.observerDirectory!, id.identity, commitmentFile);
         if (checked.outcome !== "VERIFIED") return finish(io, { command, outcome: checked.outcome === "ERROR" ? "ERROR" : "REJECT", exitCode: checked.outcome === "ERROR" ? EXIT.ERROR : EXIT.REJECT, reasons: ["m1.cli.seal_not_verified", ...checked.reasons] });
       }
       const limit = gap(flags, true);
-      const written = m1AcceptRun(cli, root, now, { maxHeartbeatGapMs: limit });
-      return finish(io, { command, outcome: written.result.outcome, exitCode: fromOutcome(written.result.outcome), reasons: written.result.reasons, details: { runId: id.identity.runId, components: written.result.components, qualification: written.result.qualification.reachable }, record: written.evidenceId });
+      const written = m1AcceptRun(cli, root, now, { maxHeartbeatGapMs: limit, expectedObservation: env.expected });
+      return finish(io, { command, outcome: written.result.outcome, exitCode: fromOutcome(written.result.outcome), reasons: written.result.reasons, details: { runId: id.identity.runId, components: written.result.components, observationProfile: (env.expected?.profile ?? "LOCAL_LOOPBACK"), qualification: written.result.qualification.reachable }, record: written.evidenceId });
     }
     if (command === "campaign") {
       const limit = gap(flags, true);
@@ -223,8 +236,18 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
         const set = verifySealSet(sealed);
         if (set.outcome !== "DISTINCT") return finish(io, { command, outcome: "REJECT", exitCode: EXIT.REJECT, reasons: ["m1.cli.seal_set_not_distinct", ...set.problems] });
       }
-      const written = m1LocalCampaign({ runs } as CampaignCli, root, now, { maxHeartbeatGapMs: limit });
-      return finish(io, { command, outcome: written.result.outcome, exitCode: fromOutcome(written.result.outcome), reasons: written.result.reasons, details: { freshState: written.result.freshState, qualification: written.result.qualification.reachable }, record: written.evidenceId });
+      const expectations = new Map<string, ExpectedObservation | null>();
+      for (const run of runs) {
+        const id = packageIdentity(run.serverId, root);
+        if (id.identity === null) return finish(io, { command, outcome: "ERROR", exitCode: EXIT.ERROR, reasons: [...id.problems, `m1.cli.run.${run.serverId}`] });
+        const env = expectedFrom(run.commitmentFile ?? null, id.identity);
+        if (env.failure) return finish(io, { command, outcome: env.failure.outcome, exitCode: fromOutcome(env.failure.outcome), reasons: [...env.failure.reasons, `m1.cli.run.${run.serverId}`] });
+        expectations.set(run.serverId, env.expected);
+      }
+      const profiles = new Set([...expectations.values()].map((e) => e?.profile ?? "LOCAL_LOOPBACK"));
+      if (profiles.size !== 1) return finish(io, { command, outcome: "REJECT", exitCode: EXIT.REJECT, reasons: ["m1.cli.observation_profile_mixed_across_runs"] });
+      const written = m1LocalCampaign({ runs } as CampaignCli, root, now, { maxHeartbeatGapMs: limit, expectedObservation: (serverId) => expectations.get(serverId) ?? null });
+      return finish(io, { command, outcome: written.result.outcome, exitCode: fromOutcome(written.result.outcome), reasons: written.result.reasons, details: { freshState: written.result.freshState, observationProfile: [...profiles][0], qualification: written.result.qualification.reachable }, record: written.evidenceId });
     }
     if (command === "thresholds") {
       let raw: unknown;

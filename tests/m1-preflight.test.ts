@@ -26,7 +26,7 @@ const fixedThresholds = (): OwnerCanaryThresholds => ({
 function build(mode: PreflightMode) {
   const pilot = mode === "pilot";
   const tfvars: Record<string, unknown> = {
-    folder_id: "123456789012", billing_account: "0A1B2C-3D4E5F-6A7B8C", project_prefix: "m1lab", campaign_id: pilot ? "pilot-c1" : "camp-c1", run_id: pilot ? "pilot-r1" : "run-r1", plane_port: 9443,
+    folder_id: "123456789012", billing_account: "0A1B2C-3D4E5F-6A7B8C", project_prefix: pilot ? "pilotlab" : "camplab", campaign_id: pilot ? "pilot-c1" : "camp-c1", run_id: pilot ? "pilot-r1" : "run-r1", plane_port: 9443,
     authorized_target_cidr: "10.10.0.10/32", authorized_generator_cidr: "10.20.0.10/32", canary_cidr: "10.30.0.10/32", collector_cidr: "10.30.0.11/32",
     target_image: "projects/img-proj-one/global/images/target-v1", generator_image: "projects/img-proj-one/global/images/generator-v1", observer_image: "projects/img-proj-two/global/images/observer-v1",
     operators_group: "group:ops-team@lab.test", observers_group: "group:obs-team@lab.test", custodian_group: "group:cust-team@lab.test",
@@ -34,14 +34,14 @@ function build(mode: PreflightMode) {
   };
   const cost = {
     schema: "m1-cost-inputs-v1", priceSource: { name: "provider price list", checkedAt: iso(-3_600_000) }, fx: { tryPerUsdHigh: 45, checkedAt: iso(-3_600_000), source: "central bank daily rate", verified: true },
-    vms: [{ role: "std", count: 2, usdPerHour: 0.1 }, { role: "small", count: 2, usdPerHour: 0.04 }], hours: 2, egressGb: 0.01, usdPerGb: 0.12, storageUsd: 0.5,
+    vms: [{ role: "std", count: 2, usdPerHour: 0.1 }, { role: "small", count: 2, usdPerHour: 0.04 }], hours: 2, egressGb: 0.01, usdPerGb: 0.12, storageUsd: 0.5, loggingUsd: 0.2, cleanupUsd: 0.1, worstCaseHours: 48,
   };
   const thresholds = pilot ? undefined : fixedThresholds();
   const authorization: Record<string, unknown> = {
     schema: "m1-authorization-v1", mode, lane: "PRIVATE-LANE", publicIngress: false, approval: { approvedBy: "owner", approvedAt: iso(-3_600_000), expiresAt: iso(24 * 3_600_000), reference: "GO-1" },
     commit: SHA, parametersId: "ba0-field-v1", parametersDigest: PARAMETERS_DIGEST, campaignId: tfvars.campaign_id, runId: tfvars.run_id,
     targetCidr: tfvars.authorized_target_cidr, generatorCidr: tfvars.authorized_generator_cidr, canaryCidr: tfvars.canary_cidr, collectorCidr: tfvars.collector_cidr,
-    budgetTry: { run: tfvars.run_budget, campaign: tfvars.campaign_budget }, acknowledgesUnverifiedSpendCap: true, tfvarsSha256: sha(tfvars), costInputsSha256: sha(cost),
+    budgetTry: { run: tfvars.run_budget, campaign: tfvars.campaign_budget }, acknowledgesUnverifiedSpendCap: true, acknowledgesResidualCharges: true, observationProfile: "REMOTE_PRIVATE", tfvarsSha256: sha(tfvars), costInputsSha256: sha(cost),
     thresholdsSha256: thresholds ? validateOwnerThresholds(thresholds).digest : null, privateLaneAcceptedAsExternalGenerator: pilot ? null : true, retentionLockApproved: false,
   };
   const git: GitProbe = { sha: SHA, trackedChanges: 0, untracked: 0 };
@@ -70,7 +70,8 @@ test("consistent inputs PASS in both modes, are deterministic, and say plainly t
     assert.equal(first.outcome, "PASS", first.reasons.join(","));
     assert.deepEqual(first, second);
     assert.ok(first.limitations.some((l) => l.includes("does not prove a spending cap")));
-    assert.equal(first.checks.length, 13);
+    assert.equal(first.checks.length, 14);
+    assert.equal(first.exposure.strictlyBounded, false); assert.equal(first.exposure.lifetimeAndCleanupVerified, false);
   }
 });
 
@@ -221,4 +222,32 @@ test("the shipped templates are INCOMPLETE, never PASS: every owner value is an 
   assert.ok(result.reasons.includes("m1.preflight.tfvars_unset.folder_id"));
   const withComment = evaluatePreflight({ ...input, tfvars: read("tfvars.template.json") });
   assert.equal(withComment.outcome, "ERROR"); assert.ok(withComment.reasons.includes("m1.preflight.tfvars_unknown_variable._comment"));
+});
+
+test("observation profile: the owner must state REMOTE_PRIVATE; the local profile contradicts the remote topology, an unknown one is refused", () => {
+  assert.equal(outcomeOf(variant("pilot", (i) => { delete i.authorization.observationProfile; }), "m1.preflight.observation_profile_not_stated"), "INCOMPLETE");
+  assert.equal(outcomeOf(variant("pilot", (i) => { i.authorization.observationProfile = "LOCAL_LOOPBACK"; }), "m1.preflight.local_loopback_profile_contradicts_the_remote_private_topology"), "ERROR");
+  assert.equal(outcomeOf(variant("campaign", (i) => { i.authorization.observationProfile = "REMOTE_PUBLIC"; }), "m1.preflight.observation_profile_unknown"), "ERROR");
+  assert.equal(evaluatePreflight(build("campaign")).checks.find((c) => c.id === "observation_profile")!.status, "PASS");
+});
+
+test("pilot cost gate: above the 150 TRY ceiling is NO-GO (ERROR), an unknown material component is INCOMPLETE, the worst case must be documented, residual charges acknowledged, and nothing is ever strictly bounded", () => {
+  assert.equal(outcomeOf(variant("pilot", (i) => { (i.cost.fx as { tryPerUsdHigh: number }).tryPerUsdHigh = 130; }, true), "m1.preflight.pilot_estimate_exceeds_150_try_no_go"), "ERROR");
+  assert.equal(outcomeOf(variant("pilot", (i) => { i.authorization.budgetTry = { run: 151, campaign: 151 }; i.tfvars.run_budget = 151; i.tfvars.campaign_budget = 151; }, true), "m1.preflight.pilot_budget_above_150_try_ceiling"), "ERROR");
+  for (const [field, component] of [["egressGb", "egress_quantity"], ["usdPerGb", "egress_price"], ["storageUsd", "storage"], ["loggingUsd", "logging"], ["cleanupUsd", "cleanup"]] as const)
+    assert.equal(outcomeOf(variant("pilot", (i) => { i.cost[field] = null; }, true), `m1.preflight.cost_component_unknown.${component}`), "INCOMPLETE", field);
+  assert.equal(outcomeOf(variant("pilot", (i) => { i.cost.hours = null; }, true), "m1.preflight.cost_component_unknown.compute_hours"), "INCOMPLETE");
+  assert.equal(outcomeOf(variant("pilot", (i) => { delete i.cost.worstCaseHours; }, true), "m1.preflight.worst_case_exposure_not_documented"), "INCOMPLETE");
+  assert.equal(outcomeOf(variant("pilot", (i) => { i.cost.worstCaseHours = 1; }, true), "m1.preflight.worst_case_hours_out_of_range"), "ERROR");
+  assert.equal(outcomeOf(variant("pilot", (i) => { i.authorization.acknowledgesResidualCharges = false; }), "m1.preflight.owner_has_not_acknowledged_residual_charges_after_shutdown"), "INCOMPLETE");
+  const ok = evaluatePreflight(build("pilot"));
+  assert.equal(ok.outcome, "PASS"); assert.ok(ok.exposure.estimatedRunTry! > 0 && ok.exposure.estimatedRunTry! < 150);
+  assert.ok(ok.exposure.worstCaseExposureTry! > ok.exposure.estimatedRunTry!, "the documented worst case (everything keeps running) exceeds the planned run");
+  assert.deepEqual([ok.exposure.strictlyBounded, ok.exposure.lifetimeAndCleanupVerified, ok.exposure.pilotCeilingTry], [false, false, 150]);
+  assert.equal(evaluatePreflight(build("campaign")).outcome, "PASS", "a campaign does not need the pilot worst-case field");
+});
+
+test("a pilot's projects can never be the campaign's: the pilot prefix must start with pilot and the campaign's must not (pilot teardown deletes projects)", () => {
+  assert.equal(outcomeOf(variant("pilot", (i) => { i.tfvars.project_prefix = "camplab"; }, true), "m1.preflight.pilot_project_prefix_must_start_with_pilot"), "ERROR");
+  assert.equal(outcomeOf(variant("campaign", (i) => { i.tfvars.project_prefix = "pilotlab"; }, true), "m1.preflight.campaign_project_prefix_must_not_start_with_pilot"), "ERROR");
 });

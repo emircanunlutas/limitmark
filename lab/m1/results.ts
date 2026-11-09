@@ -1,3 +1,4 @@
+import type { ExpectedObservation } from "./observation-profile";
 /**
  * Result writers for the two M1 components that had no artifact of their own: the independent observation check and the provenance check. Each writes a NEW evidence run
  * carrying the canonical identity of the server package it evaluated (derived from the package, never from its directory name). Inputs are read, never modified.
@@ -23,14 +24,14 @@ function finish(evidence: EvidenceRun, engine: string, outcome: "PASS" | "REJECT
 }
 
 /** Evaluates the observer's evidence (kept OUTSIDE the SUT evidence directory) against the identity of the server package. */
-export function writeObservationResult(serverId: string, observerDirectory: string, root: string = EVIDENCE_ROOT, now = new Date(), maxHeartbeatGapMs: number | null = null): { evidenceId: string; result: ObservationResult } {
+export function writeObservationResult(serverId: string, observerDirectory: string, root: string = EVIDENCE_ROOT, now = new Date(), maxHeartbeatGapMs: number | null = null, expected: ExpectedObservation | null = null): { evidenceId: string; result: ObservationResult } {
   const directory = resolveEvidenceDirectory(serverId, root);
   const block = identityBlock(directory);
   const files = observerFiles(observerDirectory);
   const digest = (file: string): string | null => { try { return sha(readFileSync(file)); } catch { return null; } };
   const result = block.identity === null
     ? ({ contract: "m1-observation-check-v1", outcome: "ERROR", reasons: ["m1.obs.identity_missing"], summary: null, limitations: [] } as ObservationResult)
-    : evaluateObservationFiles({ runId: block.identity.runId, campaignId: block.identity.campaignId }, observerDirectory, maxHeartbeatGapMs).result;
+    : evaluateObservationFiles({ runId: block.identity.runId, campaignId: block.identity.campaignId }, observerDirectory, maxHeartbeatGapMs, expected).result;
   const evidence = new EvidenceRun("m1-observation-check", "m1-observation-check", now, root);
   evidence.addJsonArtifact("m1-observation-check.json", withResultProvenance("observation", {
     contract: result.contract, scope: "independent canary and origin receipt collector (separate local loopback processes) against one server package; not independent organizational custody",

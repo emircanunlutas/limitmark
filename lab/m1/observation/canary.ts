@@ -10,7 +10,7 @@ const STEPS: { name: string; method: "GET" | "POST"; path: string }[] = [
   { name: "form", method: "GET", path: "/test-talep-et" }, { name: "submit", method: "POST", path: "/api/talep" }, { name: "thanks", method: "GET", path: "/tesekkurler" },
 ];
 
-export type CanaryConfig = { frontPort: number; frontHost?: string; runId: string; campaignId: string; plan: { baseline: number; window: number; recovery: number }; timeoutMs: number; outFile: string; /** spacing between journeys (ms); 0 locally */ journeyGapMs?: number };
+export type CanaryConfig = { frontPort: number; frontHost?: string; runId: string; campaignId: string; plan: { baseline: number; window: number; recovery: number }; timeoutMs: number; outFile: string; /** spacing between journeys (ms); 0 locally */ journeyGapMs?: number; /** self-reported deployment identity of this canary (REMOTE_PRIVATE profile) */ observer?: { deploymentId: string; address: string } };
 
 /** Runs the whole journey plan and writes the result file. Used by the local fork entry below and by the standalone launcher (launch.ts). */
 export async function runCanary(config: CanaryConfig): Promise<{ startedAtMs: number; endedAtMs: number }> {
@@ -39,7 +39,7 @@ export async function runCanary(config: CanaryConfig): Promise<{ startedAtMs: nu
       }
     }
   }
-  writeFileSync(config.outFile, `${JSON.stringify({ schema: "m1-canary-results-v1", runId: config.runId, campaignId: config.campaignId, pid: process.pid, timeoutMs: config.timeoutMs, plan: config.plan, steps })}\n`);
+  writeFileSync(config.outFile, `${JSON.stringify({ schema: "m1-canary-results-v1", runId: config.runId, campaignId: config.campaignId, pid: process.pid, timeoutMs: config.timeoutMs, plan: config.plan, ...(config.observer ? { observer: config.observer } : {}), steps })}\n`);
   return { startedAtMs, endedAtMs: Date.now() };
 }
 
