@@ -1,6 +1,6 @@
 # M1 execution readiness (2026-11-09, from baseline e298ba5)
 
-Local only: nothing provisioned, planned against an account, applied, deployed, or sent over a network (the one external fetch was the Terraform binary and its provider plugins for `init`). Production, Gates 9/10/11A and the 11 pending migrations are untouched. `QUALIFIED` stays unreachable; a dry run is not remote qualification.
+Local only: nothing provisioned, planned against an account, applied, deployed, or sent over a network (the one external fetch was the Terraform binary and its provider plugins for `init`). Production, Gates 9/10/11A and the 11 pending migrations are untouched. `QUALIFIED` stays unreachable; a dry run is not remote qualification. **Next step: M1-CLOUD-PILOT-READINESS.md (preflight gate, plan stages, observer launcher, pilot contract).**
 
 ## 1. Terraform (`infra/m1`)
 | Step | Result |

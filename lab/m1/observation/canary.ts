@@ -10,11 +10,15 @@ const STEPS: { name: string; method: "GET" | "POST"; path: string }[] = [
   { name: "form", method: "GET", path: "/test-talep-et" }, { name: "submit", method: "POST", path: "/api/talep" }, { name: "thanks", method: "GET", path: "/tesekkurler" },
 ];
 
-async function main(): Promise<void> {
-  const config = JSON.parse(process.argv[2] ?? "{}") as { frontPort: number; frontHost?: string; runId: string; campaignId: string; plan: { baseline: number; window: number; recovery: number }; timeoutMs: number; outFile: string };
+export type CanaryConfig = { frontPort: number; frontHost?: string; runId: string; campaignId: string; plan: { baseline: number; window: number; recovery: number }; timeoutMs: number; outFile: string; /** spacing between journeys (ms); 0 locally */ journeyGapMs?: number };
+
+/** Runs the whole journey plan and writes the result file. Used by the local fork entry below and by the standalone launcher (launch.ts). */
+export async function runCanary(config: CanaryConfig): Promise<{ startedAtMs: number; endedAtMs: number }> {
+  const startedAtMs = Date.now();
   const steps: unknown[] = [];
   for (const phase of ["baseline", "window", "recovery"] as const) {
     for (let journey = 1; journey <= config.plan[phase]; journey++) {
+      if ((config.journeyGapMs ?? 0) > 0 && journey > 1) await new Promise((resolve) => setTimeout(resolve, config.journeyGapMs));
       for (const step of STEPS) {
         const requestId = `${phase}.${journey}.${step.name}`;
         const controller = new AbortController();
@@ -36,6 +40,7 @@ async function main(): Promise<void> {
     }
   }
   writeFileSync(config.outFile, `${JSON.stringify({ schema: "m1-canary-results-v1", runId: config.runId, campaignId: config.campaignId, pid: process.pid, timeoutMs: config.timeoutMs, plan: config.plan, steps })}\n`);
+  return { startedAtMs, endedAtMs: Date.now() };
 }
 
-if (process.send) { main().then(() => { process.send?.({ type: "done" }); process.exit(0); }, () => process.exit(1)); }
+if (process.send) { runCanary(JSON.parse(process.argv[2] ?? "{}") as CanaryConfig).then(() => { process.send?.({ type: "done" }); process.exit(0); }, () => process.exit(1)); }

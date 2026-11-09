@@ -13,6 +13,8 @@
  *   commitment    --commitment FILE [--server ID]                                  (FILE: {"commitment": {...}, "digest": "<sha256>"})
  *   canary        --observer-dir DIR [--operational-action NAME ...] [--thresholds FILE]   (legitimate-user contract; 100 percent of journeys; latency only if thresholds are FIXED)
  *   thresholds    --file FILE                                                      (owner canary thresholds record: FIXED exits 0, UNSET 20, INVALID 10)
+ *   preflight     --mode pilot|campaign --authorization FILE --tfvars FILE --cost FILE [--thresholds FILE] [--terraform-dir DIR] [--commit SHA]   (read-only go/no-go; PASS 0, INCOMPLETE 20, ERROR 30)
+ *   pilot         --results FILE                                                   (evaluates a recorded infrastructure pilot result; never qualification)
  *   seal          --observer-dir DIR --destination DIR --server ID --commitment FILE
  *   verify-seal   --directory DIR --server ID --commitment FILE
  *   --evidence-root DIR   (all commands) the evidence root; defaults to the repository evidence root.
@@ -20,9 +22,9 @@
  * Output: one line of canonical JSON on stdout. `record` (the id of the evidence run just written) is the only non-deterministic field and is always last.
  */
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { EVIDENCE_ROOT, canonicalJson, resolveEvidenceDirectory } from "../evidence/manifest";
+import { EVIDENCE_ROOT, REPOSITORY_ROOT, canonicalJson, collectGitState, resolveEvidenceDirectory } from "../evidence/manifest";
 import { COMPONENT_NAMES, evaluateRunFromEvidence, m1AcceptRun, type AcceptCli, type ComponentName } from "./acceptance";
 import { m1LocalCampaign, type CampaignCli } from "./campaign";
 import { buildCommitment, type CommitmentInput } from "./commitment";
@@ -32,9 +34,11 @@ import { evaluateLatencyAgainstThresholds, validateOwnerThresholds } from "./can
 import { evaluateObservationFiles } from "./observation-bundle";
 import { writeObservationResult, writeProvenanceResult } from "./results";
 import { verifySeal, verifySealSet, exportAndSeal } from "./seal";
+import { evaluatePreflight, type GitProbe, type PreflightMode } from "./preflight";
+import { evaluatePilotResults } from "./pilot";
 
 export const EXIT = { POSITIVE: 0, REJECT: 10, INCOMPLETE: 20, ERROR: 30, USAGE: 64 } as const;
-export type CliIo = { stdout: (line: string) => void; evidenceRoot?: string; now?: Date };
+export type CliIo = { stdout: (line: string) => void; evidenceRoot?: string; now?: Date; /** test seam: the git state the preflight sees (default: the real repository) */ git?: () => GitProbe };
 type Flags = Map<string, string[]>;
 
 class UsageError extends Error {}
@@ -73,6 +77,7 @@ const allowedFlags: Record<string, readonly string[]> = {
   accept: ["server", "generator-report", "observer-dir", "retained-dir", "max-heartbeat-gap-ms", "result", "require-seal", "commitment", "evidence-root"],
   campaign: ["runs-file", "max-heartbeat-gap-ms", "require-seal", "evidence-root"], commitment: ["commitment", "server", "evidence-root"],
   canary: ["observer-dir", "operational-action", "thresholds", "evidence-root"], thresholds: ["file", "evidence-root"],
+  preflight: ["mode", "authorization", "tfvars", "cost", "thresholds", "terraform-dir", "commit", "evidence-root"], pilot: ["results", "evidence-root"],
   seal: ["observer-dir", "destination", "server", "commitment", "evidence-root"], "verify-seal": ["directory", "server", "commitment", "evidence-root"],
 };
 
@@ -82,7 +87,7 @@ const finish = (io: CliIo, e: Emit): number => {
   return e.exitCode;
 };
 const fromOutcome = (outcome: string): number => {
-  if (["PASS", "LOCALLY_CONSISTENT", "LOCAL_REPEATABILITY_PASS", "VALID", "VERIFIED", "CONSISTENT_WITH_RECORDS", "FRESH", "DISTINCT", "FIXED"].includes(outcome)) return EXIT.POSITIVE;
+  if (["PASS", "LOCALLY_CONSISTENT", "LOCAL_REPEATABILITY_PASS", "VALID", "VERIFIED", "CONSISTENT_WITH_RECORDS", "FRESH", "DISTINCT", "FIXED", "PILOT_PASS"].includes(outcome)) return EXIT.POSITIVE;
   if (["REJECT", "INVALID", "FAILED", "NOT_FRESH", "REPLAY"].includes(outcome)) return EXIT.REJECT;
   if (outcome === "INCOMPLETE" || outcome === "UNSET") return EXIT.INCOMPLETE;
   return EXIT.ERROR;
@@ -139,6 +144,28 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
     const root = io.evidenceRoot ?? (one(flags, "evidence-root", false) !== null ? path.resolve(one(flags, "evidence-root", false)!) : EVIDENCE_ROOT);
     const now = io.now ?? new Date();
 
+    if (command === "preflight") {
+      const mode = one(flags, "mode")!; if (mode !== "pilot" && mode !== "campaign") throw new UsageError("--mode is pilot or campaign");
+      const loadProblems: string[] = [];
+      const load = (name: string): unknown => {
+        const file = one(flags, name, false); if (file === null) return undefined;
+        try { return JSON.parse(readFileSync(path.resolve(file), "utf8")) as unknown; } catch { loadProblems.push(`m1.preflight.${name}_unreadable_or_not_json`); return undefined; }
+      };
+      const authorization = load("authorization"); const tfvars = load("tfvars"); const cost = load("cost"); const thresholds = load("thresholds");
+      const terraformDir = path.resolve(one(flags, "terraform-dir", false) ?? path.join(REPOSITORY_ROOT, "infra", "m1"));
+      let terraform: Record<string, string> | null = null;
+      try { terraform = {}; for (const name of readdirSync(terraformDir).filter((n) => n.endsWith(".tf")).sort()) terraform[name] = readFileSync(path.join(terraformDir, name), "utf8"); if (Object.keys(terraform).length === 0) terraform = null; } catch { terraform = null; }
+      let git: GitProbe;
+      if (io.git) git = io.git(); else { const g = collectGitState(); git = /^[0-9a-f]{40}$/u.test(g.gitSha) ? { sha: g.gitSha, trackedChanges: g.dirtyFileCount, untracked: g.untrackedFileCount } : null; }
+      const verdict = evaluatePreflight({ mode: mode as PreflightMode, nowMs: now.getTime(), git, expectedCommit: one(flags, "commit", false), authorization, tfvars, cost, thresholds, loadProblems, terraform });
+      return finish(io, { command, outcome: verdict.outcome, exitCode: fromOutcome(verdict.outcome), reasons: verdict.reasons, details: { mode, provisioned: false, checks: verdict.checks, digests: verdict.digests, limitations: verdict.limitations } });
+    }
+    if (command === "pilot") {
+      let raw: unknown;
+      try { raw = JSON.parse(readFileSync(directory(flags, "results"), "utf8")); } catch { return finish(io, { command, outcome: "ERROR", exitCode: EXIT.ERROR, reasons: ["m1.cli.pilot_results_unreadable"] }); }
+      const verdict = evaluatePilotResults(raw);
+      return finish(io, { command, outcome: verdict.outcome, exitCode: fromOutcome(verdict.outcome), reasons: verdict.reasons, details: { checks: verdict.checks, qualification: "not_applicable" } });
+    }
     if (command === "observe" || command === "completeness") {
       const serverId = one(flags, "server")!; const observerDir = directory(flags, "observer-dir"); const limit = gap(flags, command === "completeness");
       const id = packageIdentity(serverId, root);
