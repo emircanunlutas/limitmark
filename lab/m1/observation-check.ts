@@ -50,7 +50,7 @@ function readReceipt(value: unknown): Receipt | null {
 /** Judges the evidence under the profile the verifier expects; remote results carry the remote limitations and the profile. */
 export function evaluateObservation(input: ObservationInput): ObservationResult {
   const base = evaluateObservationCore(input);
-  const profile: ObservationProfile = input.expected?.profile ?? "LOCAL_LOOPBACK";
+  const profile: ObservationProfile = (input as ObservationInput | null)?.expected?.profile ?? "LOCAL_LOOPBACK";
   return profile === "REMOTE_PRIVATE" ? { ...base, profile, limitations: [...base.limitations.filter((l) => l !== "separate_local_processes_not_independent_custody"), "observation_profile_remote_private_selected_by_verified_commitment", ...REMOTE_LIMITATIONS] } : { ...base, profile };
 }
 
