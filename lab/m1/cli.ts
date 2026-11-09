@@ -11,6 +11,8 @@
  *                 [--result overlay=ID --result tally=ID --result receipts=ID --result observation=ID --result provenance=ID] [--require-seal --commitment FILE]
  *   campaign      --runs-file FILE --max-heartbeat-gap-ms N [--require-seal]      (FILE: JSON array of run objects, see CampaignRunFile)
  *   commitment    --commitment FILE [--server ID]                                  (FILE: {"commitment": {...}, "digest": "<sha256>"})
+ *   canary        --observer-dir DIR [--operational-action NAME ...] [--thresholds FILE]   (legitimate-user contract; 100 percent of journeys; latency only if thresholds are FIXED)
+ *   thresholds    --file FILE                                                      (owner canary thresholds record: FIXED exits 0, UNSET 20, INVALID 10)
  *   seal          --observer-dir DIR --destination DIR --server ID --commitment FILE
  *   verify-seal   --directory DIR --server ID --commitment FILE
  *   --evidence-root DIR   (all commands) the evidence root; defaults to the repository evidence root.
@@ -25,6 +27,8 @@ import { COMPONENT_NAMES, evaluateRunFromEvidence, m1AcceptRun, type AcceptCli, 
 import { m1LocalCampaign, type CampaignCli } from "./campaign";
 import { buildCommitment, type CommitmentInput } from "./commitment";
 import { identityFromPackage } from "./identity";
+import { evaluateCanaryContract } from "./canary-contract";
+import { evaluateLatencyAgainstThresholds, validateOwnerThresholds } from "./canary-thresholds";
 import { evaluateObservationFiles } from "./observation-bundle";
 import { writeObservationResult, writeProvenanceResult } from "./results";
 import { verifySeal, verifySealSet, exportAndSeal } from "./seal";
@@ -68,6 +72,7 @@ const allowedFlags: Record<string, readonly string[]> = {
   provenance: ["server", "retained-dir", "evidence-root"],
   accept: ["server", "generator-report", "observer-dir", "retained-dir", "max-heartbeat-gap-ms", "result", "require-seal", "commitment", "evidence-root"],
   campaign: ["runs-file", "max-heartbeat-gap-ms", "require-seal", "evidence-root"], commitment: ["commitment", "server", "evidence-root"],
+  canary: ["observer-dir", "operational-action", "thresholds", "evidence-root"], thresholds: ["file", "evidence-root"],
   seal: ["observer-dir", "destination", "server", "commitment", "evidence-root"], "verify-seal": ["directory", "server", "commitment", "evidence-root"],
 };
 
@@ -77,9 +82,9 @@ const finish = (io: CliIo, e: Emit): number => {
   return e.exitCode;
 };
 const fromOutcome = (outcome: string): number => {
-  if (["PASS", "LOCALLY_CONSISTENT", "LOCAL_REPEATABILITY_PASS", "VALID", "VERIFIED", "CONSISTENT_WITH_RECORDS", "FRESH", "DISTINCT"].includes(outcome)) return EXIT.POSITIVE;
+  if (["PASS", "LOCALLY_CONSISTENT", "LOCAL_REPEATABILITY_PASS", "VALID", "VERIFIED", "CONSISTENT_WITH_RECORDS", "FRESH", "DISTINCT", "FIXED"].includes(outcome)) return EXIT.POSITIVE;
   if (["REJECT", "INVALID", "FAILED", "NOT_FRESH", "REPLAY"].includes(outcome)) return EXIT.REJECT;
-  if (outcome === "INCOMPLETE") return EXIT.INCOMPLETE;
+  if (outcome === "INCOMPLETE" || outcome === "UNSET") return EXIT.INCOMPLETE;
   return EXIT.ERROR;
 };
 
@@ -193,6 +198,31 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
       }
       const written = m1LocalCampaign({ runs } as CampaignCli, root, now, { maxHeartbeatGapMs: limit });
       return finish(io, { command, outcome: written.result.outcome, exitCode: fromOutcome(written.result.outcome), reasons: written.result.reasons, details: { freshState: written.result.freshState, qualification: written.result.qualification.reachable }, record: written.evidenceId });
+    }
+    if (command === "thresholds") {
+      let raw: unknown;
+      try { raw = JSON.parse(readFileSync(directory(flags, "file"), "utf8")); } catch { return finish(io, { command, outcome: "ERROR", exitCode: EXIT.ERROR, reasons: ["m1.cli.thresholds_unreadable"] }); }
+      const status = validateOwnerThresholds(raw);
+      const outcome = status.status === "INVALID" ? "INVALID" : status.status;
+      return finish(io, { command, outcome, exitCode: fromOutcome(outcome), reasons: [...status.problems, ...status.missing.map((m) => `m1.thresholds.unset.${m}`)], details: { digest: status.digest } });
+    }
+    if (command === "canary") {
+      let canary: unknown;
+      try { canary = JSON.parse(readFileSync(path.join(directory(flags, "observer-dir"), "canary-results.json"), "utf8")); } catch { return finish(io, { command, outcome: "ERROR", exitCode: EXIT.ERROR, reasons: ["m1.cli.canary_results_unreadable"] }); }
+      const steps = isRecord(canary) ? canary.steps : undefined;
+      const contract = evaluateCanaryContract({ steps, operationalActions: flags.get("operational-action") ?? [] });
+      const reasons = [...contract.reasons, ...contract.openItems];
+      let outcome = contract.outcome as string; const details: Record<string, unknown> = { journeys: contract.journeys, failures: contract.failures, latency: contract.latency, latencyThresholds: contract.latencyThresholds };
+      const thresholdsFile = one(flags, "thresholds", false);
+      if (thresholdsFile !== null) {
+        let record: unknown;
+        try { record = JSON.parse(readFileSync(path.resolve(thresholdsFile), "utf8")); } catch { return finish(io, { command, outcome: "ERROR", exitCode: EXIT.ERROR, reasons: ["m1.cli.thresholds_unreadable"] }); }
+        const latency = evaluateLatencyAgainstThresholds(contract, record);
+        details.latencyEvaluation = latency.outcome; reasons.push(...latency.reasons);
+        if (latency.outcome === "REJECT" && outcome === "PASS") outcome = "REJECT";
+        if (latency.outcome === "NOT_EVALUATED" && outcome === "PASS") outcome = "INCOMPLETE";
+      }
+      return finish(io, { command, outcome, exitCode: fromOutcome(outcome), reasons, details });
     }
     if (command === "commitment") {
       const serverId = one(flags, "server", false); const id = serverId === null ? null : packageIdentity(serverId, root);

@@ -1,5 +1,5 @@
 # DEFINITIONS ONLY. Not applied, not planned against any account. No Terraform state exists. Applying requires the owner written GO for the exact campaign
-# (M1-QUALIFICATION-GO-NOGO.md) and is outside the authorization of the cycle that wrote this file. `terraform` was not installed when this was written, so it is UNVALIDATED.
+# (M1-QUALIFICATION-GO-NOGO.md) and is outside the authorization of the cycle that wrote this file. Validated with Terraform 1.9.8 (fmt -check, init -backend=false, validate); `plan` has NOT run (it needs credentials, projects and billing).
 terraform {
   required_version = ">= 1.6.0"
   required_providers {

@@ -1,16 +1,16 @@
 # M1 disposable environment preparation (2026-11-09, from HEAD 956fc65)
 
-Local definitions only. Nothing is provisioned, planned, applied or deployed; no traffic, no production endpoint, no bucket, no retention lock. **`terraform` is not installed on this machine, so `infra/m1/*.tf` is unvalidated** (no `fmt`, `validate` or `plan` was possible); the JavaScript and TypeScript parts are tested. Builds on `M1-REMOTE-QUALIFICATION-RUNBOOK.md` and does not change it. `QUALIFIED` stays unreachable.
+Local definitions only. Nothing is provisioned, planned, applied or deployed; no traffic, no production endpoint, no bucket, no retention lock. **Update (execution readiness cycle): `infra/m1/*.tf` now passes `terraform fmt -check`, `init -backend=false` and `validate` (Terraform 1.9.8, isolated copy); `plan` has not run.** See M1-EXECUTION-READINESS.md for the defects found and corrected. Builds on `M1-REMOTE-QUALIFICATION-RUNBOOK.md` and does not change it. `QUALIFIED` stays unreachable.
 
 ## 1. What now exists
 | Path | Role | Verified |
 |---|---|---|
-| `infra/m1/versions.tf`, `variables.tf` | provider, inputs; owner decisions have NO default (`plane_port`, the four /32 addresses, image, three groups, folder, billing account), `lock_retention=false` | not validated |
-| `infra/m1/projects.tf` | 4 projects (target, generator, observer, evidence) in one dedicated folder, no default network; folder policies (no SA keys, OS Login, no external IP, shielded VM); regional vCPU quota override | not validated |
-| `infra/m1/network.tf` | one VPC per project, default-deny both directions, IAP-only SSH (22), plane port only from the generator and canary /32, target egress only to the collector, generator egress only to the target /32, peering only target-generator and target-observer | not validated |
-| `infra/m1/iam.tf` | per-VM service accounts, three principal groups, create-only evidence prefixes, kill-switch service account with a custom delete role | not validated |
-| `infra/m1/compute.tf` | 2 x e2-standard-2 (target, generator), 2 x e2-small (canary, collector); private only, shielded, OS Login, provider-enforced `max_run_duration` with DELETE, disks auto-delete, outputs the instance facts for the commitment | not validated |
-| `infra/m1/evidence.tf` | evidence bucket: versioning, uniform access, public access prevented, 30 day retention policy, lock OFF; data-access audit logs | not validated |
+| `infra/m1/versions.tf`, `variables.tf` | provider, inputs; owner decisions have NO default (`plane_port`, the four /32 addresses, image, three groups, folder, billing account), `lock_retention=false` | fmt and validate pass; not planned |
+| `infra/m1/projects.tf` | 4 projects (target, generator, observer, evidence) in one dedicated folder, no default network; folder policies (no SA keys, OS Login, no external IP, shielded VM); regional vCPU quota override | fmt and validate pass; not planned |
+| `infra/m1/network.tf` | one VPC per project, default-deny both directions, IAP-only SSH (22), plane port only from the generator and canary /32, target egress only to the collector, generator egress only to the target /32, peering only target-generator and target-observer | fmt and validate pass; not planned |
+| `infra/m1/iam.tf` | per-VM service accounts, three principal groups, create-only evidence prefixes, kill-switch service account with a custom delete role | fmt and validate pass; not planned |
+| `infra/m1/compute.tf` | 2 x e2-standard-2 (target, generator), 2 x e2-small (canary, collector); private only, shielded, OS Login, provider-enforced `max_run_duration` with DELETE, disks auto-delete, outputs the instance facts for the commitment | fmt and validate pass; not planned |
+| `infra/m1/evidence.tf` | evidence bucket: versioning, uniform access, public access prevented, 30 day retention policy, lock OFF; data-access audit logs | fmt and validate pass; not planned |
 | `infra/m1/killswitch.tf`, `killswitch/` | custodian-owned TTL reaper (every 5 minutes) and budget-triggered stop, campaign budget with 50/80/100 percent alerts | logic tested; Terraform not validated |
 | `lab/m1/commitment.ts` | pre-run commitment builder and cross-run fresh-instance check | 3 tests |
 | `lab/m1/canary-contract.ts` | legitimate-user acceptance contract | 4 tests |

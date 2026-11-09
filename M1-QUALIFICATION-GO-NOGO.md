@@ -56,7 +56,7 @@ Any item in section 2 open; traffic or credentials able to reach a production en
 5. Owner GO for one authorized campaign; three runs; recompute acceptance from sealed evidence; report.
 
 ## 7. Status after the preparation cycle (2026-11-09, from 956fc65)
-Still **NO-GO**. Written locally and tested: commitment and fresh-instance check, canary acceptance contract (100 percent journeys; unexpected 429, challenge, timeout or false rejection fails; latency thresholds deliberately unset), explicit observation completeness check, kill-switch decision logic and cost-bound check. Written but unvalidated (Terraform not installed): `infra/m1/*.tf`. Remaining GO conditions, in addition to section 4:
+Still **NO-GO**. Written locally and tested: commitment and fresh-instance check, canary acceptance contract (100 percent journeys; unexpected 429, challenge, timeout or false rejection fails; latency thresholds deliberately unset), explicit observation completeness check, kill-switch decision logic and cost-bound check. `infra/m1/*.tf` passes fmt and validate (not planned, not applied). Remaining GO conditions, in addition to section 4:
 - Target and address space explicitly authorized (O-1); provider requirements confirmed (O-8).
 - Prices and exchange rate confirmed and `maxRunCost` run as a pre-run gate; reaper and budget stop verified in a sandbox project (not the real one).
 - Independent observer processes running off-host with the custody contract (they are loopback prototypes today); no CLI wrappers for the new contracts yet.

@@ -1,0 +1,14 @@
+{
+  "note": "Planning ledger, not a measurement. Prices and exchange rate are ASSUMED and unverified (no price list or rate was available offline). verified=false everywhere: nothing here has been exercised in a real project. enforcement: none | alert | provider_limit | automated_stop.",
+  "assumptions": { "e2-standard-2 usd/h": 0.1, "e2-small usd/h": 0.04, "egress usd/gb": 0.12, "try per usd (high case)": 45, "hours per run (max_run_duration)": 2, "level traffic ceiling gb": 1.5 },
+  "components": [
+    { "name": "vm-compute (2 x e2-standard-2, 2 x e2-small)", "estimatedUsd": 0.56, "enforcement": "provider_limit", "verified": false, "residualAfterStop": "none after instance deletion; boot disks auto-delete with the instance" },
+    { "name": "vm-count and size (vCPU quota override, 8 per project)", "estimatedUsd": 0, "enforcement": "provider_limit", "verified": false, "residualAfterStop": "none" },
+    { "name": "network egress (level ceiling 1,500 requests x 1 MiB)", "estimatedUsd": 0.18, "enforcement": "none", "verified": false, "residualAfterStop": "none once traffic stops; the ceiling is a property of the generator, not a provider limit" },
+    { "name": "persistent disks", "estimatedUsd": 0.1, "enforcement": "automated_stop", "verified": false, "residualAfterStop": "orphaned disks if an instance is deleted but disk auto-delete failed; not covered by the reaper" },
+    { "name": "VPC flow logs and Cloud Logging", "estimatedUsd": 0.2, "enforcement": "none", "verified": false, "residualAfterStop": "log storage continues at provider default retention" },
+    { "name": "evidence bucket (versioning, 7 day soft delete, 30 day retention)", "estimatedUsd": 0.05, "enforcement": "none", "verified": false, "residualAfterStop": "storage is billed for the whole retention period; a locked retention would make it impossible to delete earlier" },
+    { "name": "kill-switch function, Pub/Sub, Scheduler", "estimatedUsd": 0.05, "enforcement": "none", "verified": false, "residualAfterStop": "runs every 5 minutes for as long as the campaign stack exists" },
+    { "name": "provider budget alerts", "estimatedUsd": null, "enforcement": "alert", "verified": false, "residualAfterStop": "alerts lag billing data by hours and do not stop spend" }
+  ]
+}
