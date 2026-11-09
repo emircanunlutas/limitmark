@@ -266,6 +266,7 @@ function parseRunsFile(value: unknown): CampaignRunFile[] | null {
 // The recomputing evaluation without writing anything is also exposed for callers that only need a verdict.
 export { evaluateRunFromEvidence, sha as _sha };
 
-if (require.main === module) {
+// Entry guard without `require`/`import.meta` (the repository import scan must be able to prove every module reference): run only when this very file is the script.
+if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === path.resolve(__filename)) {
   runCli(process.argv.slice(2), { stdout: (line) => process.stdout.write(`${line}\n`) }).then((code) => { process.exitCode = code; });
 }
