@@ -27,8 +27,10 @@ const PATHS_DCF10AF8 = ["defense", "src", "workers", "lab/policy", "lab/defense/
   "lab/defense/n2-measurement.ts", "lab/defense/external-reducer.ts", "lab/defense/external-accounting.ts", "lab/defense/canary.ts", "lab/defense/field-canary.ts", "lab/defense/collector.ts",
   "lab/defense/exposure-proof.ts", "lab/evidence"];
 const PATHS_AFF793E = ["defense", "lab/defense/n2-measurement.ts"];
-const GUARDS: Array<[string, string, string[], number]> = [["64ccc9d", MIGRATION_BASELINES[0], PATHS_64CCC9D, 40], ["dcf10af8", MIGRATION_BASELINES[1], PATHS_DCF10AF8, 40], ["aff793e", MIGRATION_BASELINES[2], PATHS_AFF793E, 0]];
+const GUARDS: Array<[string, string, string[], number]> = [["64ccc9d", MIGRATION_BASELINES[0], PATHS_64CCC9D, 39], ["dcf10af8", MIGRATION_BASELINES[1], PATHS_DCF10AF8, 39], ["aff793e", MIGRATION_BASELINES[2], PATHS_AFF793E, 0]];
 const NEW_APPROVALS = ["workers/admin-gateway/index.ts", "workers/lab-operator-lifecycle-executor.ts"];
+// Owner decision of 2026-11-09 ('Unified Acceptance False-PASS Closure and Targeted Migration Review'): exactly this one further entry, at its reviewed blob.
+const JWKS_APPROVAL = "workers/shared/bounded-jwks.ts";
 const INSTRUMENTATION = ["defense/core/outcome-counters.ts", "defense/plane/runtime.ts"];
 
 const approve = (registry: readonly ReviewedMigration[], which: (entry: ReviewedMigration) => boolean): ReviewedMigration[] =>
@@ -66,8 +68,13 @@ test("registry shape: a closed, versioned list of exact files, only the two inst
   ]);
   // Owner decision of 2026-11-09: exactly these two further entries are approved, each at its reviewed blob, with this authorization; the lab observer and every other entry stay PENDING.
   const approvedNow = REVIEWED_MIGRATIONS.filter((entry) => entry.status === "APPROVED").map((entry) => entry.path).sort();
-  assert.deepEqual(approvedNow, [...INSTRUMENTATION, ...NEW_APPROVALS].sort());
-  assert.equal(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "PENDING").length, 40);
+  assert.deepEqual(approvedNow, [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL].sort());
+  assert.equal(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "PENDING").length, 39);
+  const jwks = REVIEWED_MIGRATIONS.find((entry) => entry.path === JWKS_APPROVAL)!;
+  assert.deepEqual([jwks.historicalBlob, jwks.reviewedBlob, jwks.reviewId, jwks.hold], ["00c28240f03c35f82fd08fd44e70cfaf9bb5fcc6", "7941034b7c1de456796a3cdd31fcb56de5eef699", "BASELINE-V2/SHARED_FIX", "none"]);
+  assert.match(jwks.authorization ?? "", /^Owner decision 'Unified Acceptance False-PASS Closure and Targeted Migration Review' \(2026-11-09\)/u);
+  assert.match(jwks.scope, /no deployment or production enablement/u);
+  assert.match(jwks.scope, /separate PENDING entry and is not approved/u);
   for (const entry of REVIEWED_MIGRATIONS.filter((candidate) => NEW_APPROVALS.includes(candidate.path))) {
     assert.match(entry.authorization ?? "", /^Owner decision 'Criterion 9 Closure, Two Migration Approvals, and Observer Isolation' \(2026-11-09\)/u, entry.path);
     assert.match(entry.scope, /no deployment or production enablement/u, entry.path);
@@ -79,12 +86,12 @@ test("registry shape: a closed, versioned list of exact files, only the two inst
   assert.deepEqual([holds("none"), holds("shared-production-module"), holds("guard-export")], [28, 11, 5]);
 });
 
-test("real repository: every file that differs from each baseline is registered and unmodified since review (no unreviewed drift), and everything except the four approved entries is still PENDING", () => {
+test("real repository: every file that differs from each baseline is registered and unmodified since review (no unreviewed drift), and everything except the five approved entries is still PENDING", () => {
   for (const [name, baseline, paths, expected] of GUARDS) {
     const result = classifyDrift(root, baseline, paths);
     assert.deepEqual(result.unreviewed, [], `${name}: unreviewed drift`);
     assert.deepEqual(result.modifiedAfterReview, [], `${name}: modified after review`);
-    assert.deepEqual([...result.authorized].sort(), name === "aff793e" ? INSTRUMENTATION : [...INSTRUMENTATION, ...NEW_APPROVALS].sort(), `${name}: exactly the approved entries inside this guard's paths are authorized`);
+    assert.deepEqual([...result.authorized].sort(), name === "aff793e" ? INSTRUMENTATION : [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL].sort(), `${name}: exactly the approved entries inside this guard's paths are authorized`);
     assert.equal(result.pending.length, expected, `${name}: pending drift`);
   }
 });
@@ -167,7 +174,8 @@ test("the three historical guards are wired to the registry (and stay wired): th
 test("exact-file approval is not dependency closure and not deployment authorization: the pending dependencies of the two approved entries stay pending, and no approval is inherited through imports", () => {
   const byPath = new Map(REVIEWED_MIGRATIONS.map((entry) => [entry.path, entry]));
   const dependencies: Record<string, string[]> = {
-    "workers/admin-gateway/index.ts": ["src/lib/ingress-protocol.ts", "workers/shared/bounded-jwks.ts"],
+    // bounded-jwks is a dependency of the gateway but is approved ONLY by its own explicit owner decision (JWKS_APPROVAL, asserted in the registry-shape test), never by this entry
+    "workers/admin-gateway/index.ts": ["src/lib/ingress-protocol.ts"],
     "workers/lab-operator-lifecycle-executor.ts": ["src/lib/ingress-protocol.ts", "workers/admission-service/authority.ts", "workers/admission-service/operator-command.ts"],
   };
   for (const [approved, pending] of Object.entries(dependencies)) {
