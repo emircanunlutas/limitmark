@@ -23,7 +23,7 @@ function identity(n: number, overrides: Partial<M1Identity> = {}): M1Identity {
 }
 const components = { overlay: "PASS", tally: "PASS", receipts: "PASS", observation: "PASS", provenance: "PASS" } as const;
 function run(n: number, accept: Partial<CampaignRun["acceptance"]> = {}, repeat: Partial<RepeatabilityRun> | null = {}): CampaignRun {
-  return { acceptance: { outcome: "LOCALLY_CONSISTENT", identity: identity(n), components: { ...components }, ...accept }, repeat: repeat === null ? null : facts(n, repeat) };
+  return { acceptance: { outcome: "LOCALLY_CONSISTENT", identity: identity(n), components: { ...components }, ...accept }, repeat: repeat === null ? null : facts(n, repeat), audit: "agrees" };
 }
 const three = (...overrides: Partial<CampaignRun>[]): CampaignRun[] => [1, 2, 3].map((n, i) => ({ ...run(n), ...(overrides[i] ?? {}) }));
 const evaluate = (runs: CampaignRun[]) => { const result = evaluateLocalCampaign(runs); assert.notEqual(result.outcome as string, "QUALIFIED"); assert.equal(result.qualification.reachable, false); return result; };
@@ -47,6 +47,12 @@ test("every per-run acceptance condition is required before repeatability is eve
   assert.deepEqual(evaluate(noReceipts).reasons, ["m1.campaign.run1.receipts_not_passed"]);
   assert.equal(evaluate(three({ acceptance: { outcome: "QUALIFIED" as never, identity: identity(1), components } })).outcome, "ERROR", "an unrecognized acceptance outcome is never trusted");
   assert.equal(evaluate([run(1), run(2), run(3, {}, null)]).outcome, "ERROR", "missing repeatability facts");
+});
+
+test("the stored acceptance is only an audit record: a missing one is INCOMPLETE, one that disagrees or was never verified is ERROR, and neither can pass", () => {
+  const missing = three(); missing[1] = { ...run(2), audit: "missing" };
+  assert.deepEqual([evaluate(missing).outcome, evaluate(missing).reasons], ["INCOMPLETE", ["m1.campaign.run2.stored_acceptance_missing"]]);
+  for (const audit of ["disagrees", undefined] as const) { const bad = three(); bad[0] = { ...run(1), audit }; const result = evaluate(bad); assert.equal(result.outcome, "ERROR"); assert.ok(result.reasons.includes("m1.campaign.run1.stored_acceptance_not_verified")); assert.equal(result.repeatability, null); }
 });
 
 test("exactly three runs: fewer is INCOMPLETE, more is ERROR", () => {
@@ -86,7 +92,7 @@ test("the existing repeatability rules are preserved exactly: shed share +/-5 po
 test("through the IO wrapper a missing or unusable run is ERROR (never a pass) and the artifact claims no qualification", () => {
   const root = testRoot("campaign");
   try {
-    const outcome = m1LocalCampaign({ runs: [1, 2, 3].map((n) => ({ serverId: `20260101T00000${n}Z-nothing-00000${n}`, acceptanceId: `20260101T00000${n}Z-nothing-00000${n}`, reportPath: path.join(root, "missing", "generator-report.json") })) }, root);
+    const outcome = m1LocalCampaign({ runs: [1, 2, 3].map((n) => ({ serverId: `20260101T00000${n}Z-nothing-00000${n}`, acceptanceId: `20260101T00000${n}Z-nothing-00000${n}`, resultIds: {}, reportPath: path.join(root, "missing", "generator-report.json") })) }, root);
     assert.equal(outcome.result.outcome, "ERROR");
     const artifact = JSON.parse(fs.readFileSync(path.join(root, outcome.evidenceId, "m1-campaign.json"), "utf8")) as { qualification: { reachable: boolean }; claims: Record<string, string>; campaign: { outcome: string } };
     assert.deepEqual([artifact.campaign.outcome, artifact.qualification.reachable, artifact.claims.machineFreshness], ["ERROR", false, "not_provable_from_evidence"]);

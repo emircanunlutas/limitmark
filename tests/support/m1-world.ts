@@ -13,7 +13,7 @@ import { runObservation, type FrontFaults } from "../../lab/m1/observation/run";
 import { writeObservationResult, writeProvenanceResult } from "../../lab/m1/results";
 import { RetainedRecords } from "../../lab/provenance/prototype";
 import { writeFieldLikeEvidence, type EvidenceOptions } from "./m1-evidence-dir";
-import { generatorReportFor, receiptValidOptions } from "./m1-receipt-fixture";
+import { generatorReportFor, receiptValidOptions, slotFacts, slotMutations } from "./m1-receipt-fixture";
 import type { InputSources } from "../../lab/m1/result-provenance";
 
 // A complete, disposable "world" for ONE run: a finalized server package with an active external lane (the criterion 9 fixture), and the result evidence runs of every M1 component.
@@ -35,9 +35,11 @@ export function syntheticResult(root: string, serverId: string, file: string, bo
   return run.id;
 }
 
-export async function buildWorld(root: string, options: { evidence?: EvidenceOptions; faults?: FrontFaults; fields?: { campaignId?: string } } = {}): Promise<World> {
+export async function buildWorld(root: string, options: { evidence?: EvidenceOptions; faults?: FrontFaults; fields?: { campaignId?: string }; slot?: number; window?: Partial<ReturnType<typeof slotFacts>> } = {}): Promise<World> {
   const base = receiptValidOptions(); const extra = options.evidence ?? {};
   const mutate: Record<string, (content: Record<string, unknown>) => void> = { ...base.mutate };
+  const slot = options.slot ?? 0; const facts = { ...slotFacts(slot), ...(options.window ?? {}) };
+  for (const [name, change] of Object.entries(slotMutations(slot))) { const before = mutate[name]; mutate[name] = (content) => { before?.(content); change(content); }; }
   for (const [name, change] of Object.entries(extra.mutate ?? {})) { const before = mutate[name]; mutate[name] = (content) => { before?.(content); change(content); }; }
   const serverId = writeFieldLikeEvidence(root, { ...base, ...extra, mutate });
   const directory = resolveEvidenceDirectory(serverId, root);
@@ -46,7 +48,7 @@ export async function buildWorld(root: string, options: { evidence?: EvidenceOpt
   // the generator report is a separate party's file, kept OUTSIDE every evidence directory; overlay and receipts are the REAL writers
   const reportDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "m1-world-generator-"));
   const reportPath = path.join(reportDirectory, "generator-report.json");
-  fs.writeFileSync(reportPath, JSON.stringify(generatorReportFor(options.fields?.campaignId)));
+  fs.writeFileSync(reportPath, JSON.stringify(generatorReportFor(options.fields?.campaignId ?? facts.campaignId, facts.runId, facts.startedAt, facts.endedAt)));
   ids.overlay = m1Reconcile({ serverId, reportPath, finalId: null }, root).evidenceId ?? undefined;
   ids.receipts = m1ReceiptCheck({ serverId, reportPath }, root).evidenceId ?? undefined;
   const observerDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "m1-world-observer-"));

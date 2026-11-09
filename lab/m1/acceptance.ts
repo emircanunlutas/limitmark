@@ -296,15 +296,20 @@ export function loadComponent(root: string, id: string | undefined, name: Compon
 export type AcceptCli = { serverId: string; resultIds: Partial<Record<ComponentName, string>>; generatorReportPath?: string | null; observerDirectory?: string | null; retainedDirectory?: string | null };
 export type AcceptOutcome = { result: AcceptanceResult; evidenceId: string };
 
-/** Re-derives the package identity, loads each supplied result and writes `m1-acceptance.json` as a NEW evidence run. */
-export function m1AcceptRun(cli: AcceptCli, root: string = EVIDENCE_ROOT, now = new Date()): AcceptOutcome {
+/** The complete per-run evaluation, WITHOUT writing anything: re-derives the package identity, loads each supplied result and recomputes from the authoritative inputs. The campaign wrapper uses this same function. */
+export function evaluateRunFromEvidence(cli: AcceptCli, root: string = EVIDENCE_ROOT): { result: AcceptanceResult; packageDirectory: string; inputs: Record<string, string | null> } {
   const packageDirectory = resolveEvidenceDirectory(cli.serverId, root);
   const { identity, problems } = identityFromPackage(packageDirectory);
   const loaded: Partial<Record<ComponentName, LoadedComponent>> = {}; const inputs: Record<string, string | null> = {};
   for (const name of COMPONENT_NAMES) { const component = loadComponent(root, cli.resultIds[name], name); loaded[name] = component; inputs[`${name}Sha256`] = "sha256" in component && component.sha256 ? component.sha256 : null; }
   const sources: InputSources = { packageDirectory, generatorReportPath: cli.generatorReportPath ?? null, observerDirectory: cli.observerDirectory ?? null, retainedDirectory: cli.retainedDirectory ?? null };
   const authority = gatherAuthority(identity, sources);
-  const result = evaluateAcceptance({ packageIdentity: identity, packageProblems: problems, components: loaded, authority });
+  return { result: evaluateAcceptance({ packageIdentity: identity, packageProblems: problems, components: loaded, authority }), packageDirectory, inputs };
+}
+
+/** Re-derives the package identity, loads each supplied result and writes `m1-acceptance.json` as a NEW evidence run. */
+export function m1AcceptRun(cli: AcceptCli, root: string = EVIDENCE_ROOT, now = new Date()): AcceptOutcome {
+  const { result, packageDirectory, inputs } = evaluateRunFromEvidence(cli, root);
   const evidence = new EvidenceRun("m1-acceptance", "m1-acceptance", now, root);
   evidence.addJsonArtifact("m1-acceptance.json", {
     contract: result.contract, scope: "unified M1 acceptance prototype over the result artifacts of ONE run; additive, replaces no base verdict",
