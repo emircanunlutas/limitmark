@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import test from "node:test";
+import { decide, maxRunCost } from "../infra/m1/killswitch/decide.js";
 import { PARAMETERS_DIGEST, buildCommitment, evaluateFreshness, type CommitmentInput } from "../lab/m1/commitment";
-
-const require_ = createRequire(import.meta.url);
-const { decide, maxRunCost } = require_("../infra/m1/killswitch/decide.js") as {
-  decide: (message: unknown, now: number, instances: unknown[], config: Record<string, unknown>) => { action: string; reason: string; targets: { name: string }[] };
-  maxRunCost: (input: Record<string, unknown>) => { bounded: boolean; usd: number | null; tryAmount: number | null; reason: string };
-};
 
 const H = 3_600_000; const A0 = 1_800_000_000_000;
 const base = (run: number, over: Partial<CommitmentInput> = {}): CommitmentInput => ({
