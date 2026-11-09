@@ -82,7 +82,7 @@ Per run, ACCEPT-RUN requires all of the following bound to the same identity tup
 | 4 | Receipt reconciliation | `ba0-m1-receipt-check` | PASS with generator report present | REJECT/ERROR, missing report |
 | 5 | Legitimate-user canary | base verdict (JCR 100%, p95 window latency) plus receipt link `canary_client_mutations_equal_ledger` | both hold | either missing |
 | 6 | Provenance | prototype only | `CONSISTENT_WITH_RECORDS`, reported as `unauthenticated` | absent store, any FAILED level |
-Per campaign, ACCEPT-CAMPAIGN additionally requires criterion 7 (3-run repeatability, `ba0-m1-repeatability`) over three ACCEPT-RUN results with distinct run ids in one campaign. The composed label must carry the provenance level: with authenticity UNVERIFIED the strongest honest label is "ACCEPTED, LOCALLY CONSISTENT, AUTHENTICITY UNVERIFIED"; it must never read "qualified" or "authenticated".
+Per campaign, ACCEPT-CAMPAIGN additionally requires criterion 7 (3-run repeatability, `ba0-m1-repeatability`) over three ACCEPT-RUN results with distinct run ids, campaign ids and generator run ids (corrected in M1-UNIFIED-EVIDENCE-BINDING-AND-LOCAL-ACCEPTANCE.md). The composed label must carry the provenance level: with authenticity UNVERIFIED the strongest honest label is "ACCEPTED, LOCALLY CONSISTENT, AUTHENTICITY UNVERIFIED"; it must never read "qualified" or "authenticated".
 
 ### Missing dependencies (why no gate yet)
 1. **A common identity record.** `m1-tally-check.json` and `m1-receipt-check.json` carry only the server run id; there is no binding to campaign, git SHA and fingerprints in their outputs, and the overlay/repeatability tools do not consume them. A composer needs each result to carry the digest of the exact input it evaluated.
