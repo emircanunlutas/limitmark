@@ -27,7 +27,7 @@ const PATHS_DCF10AF8 = ["defense", "src", "workers", "lab/policy", "lab/defense/
   "lab/defense/n2-measurement.ts", "lab/defense/external-reducer.ts", "lab/defense/external-accounting.ts", "lab/defense/canary.ts", "lab/defense/field-canary.ts", "lab/defense/collector.ts",
   "lab/defense/exposure-proof.ts", "lab/evidence"];
 const PATHS_AFF793E = ["defense", "lab/defense/n2-measurement.ts"];
-const GUARDS: Array<[string, string, string[], number]> = [["64ccc9d", MIGRATION_BASELINES[0], PATHS_64CCC9D, 11], ["dcf10af8", MIGRATION_BASELINES[1], PATHS_DCF10AF8, 11], ["aff793e", MIGRATION_BASELINES[2], PATHS_AFF793E, 0]];
+const GUARDS: Array<[string, string, string[], number]> = [["64ccc9d", MIGRATION_BASELINES[0], PATHS_64CCC9D, 5], ["dcf10af8", MIGRATION_BASELINES[1], PATHS_DCF10AF8, 5], ["aff793e", MIGRATION_BASELINES[2], PATHS_AFF793E, 0]];
 const NEW_APPROVALS = ["workers/admin-gateway/index.ts", "workers/lab-operator-lifecycle-executor.ts"];
 // Owner decision of 2026-11-09 ('Unified Acceptance False-PASS Closure and Targeted Migration Review'): exactly this one further entry, at its reviewed blob.
 const JWKS_APPROVAL = "workers/shared/bounded-jwks.ts";
@@ -42,12 +42,29 @@ export const BATCH_APPROVALS = [
   "src/lib/public-inquiry-runtime.server.ts", "src/app/test-talep-et/page.tsx", "src/lib/public-inquiry-otel.server.ts", "src/lib/public-inquiry-telemetry.server.ts",
   "workers/ingress-signer/google-id-token.ts", "workers/ingress-signer/signer.ts", "workers/ingress-signer/index.ts", "workers/ingress-signer/laboratory-index.ts", "workers/lab-lifecycle-observer.ts",
 ];
-// Entries that must stay PENDING: the Gate 11A guard-export set, the production enablement set (D-1) and the lab mailbox files that import the Gate 11A dispatch guard.
-export const STILL_PENDING = [
-  "src/app/api/public-inquiries/route.ts", "src/lib/public-inquiry-production-runtime.server.ts", "src/lib/production-launch-policy.ts",
-  "workers/lifecycle-mailbox/guard-export.ts", "workers/lifecycle-mailbox/guard-reader.ts", "workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/index.ts", "workers/lifecycle-observer.ts",
-  "workers/lifecycle-mailbox/lab-dispatch-guard.ts", "workers/lifecycle-mailbox/lab-processor.ts", "workers/lifecycle-mailbox/lab-index.ts",
+// Owner decision of 2026-11-10 ('Owner Authorization: Six Reviewed Migrations'): exactly these six entries, each at its reviewed blob (pinned below). File-scoped and blob-specific;
+// the production-preparation three authorize no enablement, deployment or real-provider claim; the laboratory three are limited to the isolated laboratory runtime.
+export const PRODUCTION_PREPARATION_APPROVALS: Array<[string, string]> = [
+  ["src/app/api/public-inquiries/route.ts", "6e2ad42b582b3afe9eaa8a34ed7939098a69f612"],
+  ["src/lib/production-launch-policy.ts", "c7c6efdbe7b35f305828fd39867684a3520a019d"],
+  ["src/lib/public-inquiry-production-runtime.server.ts", "60feab9014d6bf091262fb390b2bd2688f893f64"],
 ];
+export const LABORATORY_MAILBOX_APPROVALS: Array<[string, string]> = [
+  ["workers/lifecycle-mailbox/lab-dispatch-guard.ts", "90785956c990ef9496bb8829a84dcb151d28c0c3"],
+  ["workers/lifecycle-mailbox/lab-index.ts", "c0fa2d23fd4b07f404c326251b80b5c4a7b5053a"],
+  ["workers/lifecycle-mailbox/lab-processor.ts", "0e702b3bdd60b3ce877839d858ab7e0e64b76017"],
+];
+const SIX_APPROVALS = [...PRODUCTION_PREPARATION_APPROVALS, ...LABORATORY_MAILBOX_APPROVALS].map(([file]) => file);
+// Entries that must stay PENDING: the Gate 11A guard-export set (owner decision 2026-11-10: the legacy operator-key verifier is not approved as an interim design).
+// Each is pinned with its historical blob, reviewed blob and hold, so neither its identity nor its hold can change unnoticed.
+export const STILL_PENDING_PINS: Array<[string, string | null, string]> = [
+  ["workers/lifecycle-mailbox/dispatch-guard.ts", "8080226f215ab351cca3560b49ecd7db66ce4302", "b73b00460913469ae642b70764724ff01f6c9b23"],
+  ["workers/lifecycle-mailbox/guard-export.ts", null, "201335cf0bba26f6c003eeeeb00beae05c1c177f"],
+  ["workers/lifecycle-mailbox/guard-reader.ts", null, "8714bd2e776fb92b0d12acb03f88c89c8636f80c"],
+  ["workers/lifecycle-mailbox/index.ts", "3464a3e0bb00ff8192cb2fea1d81f613c3e30020", "c030292698f396cd4875e0851f0fa673e47fae2d"],
+  ["workers/lifecycle-observer.ts", "04c47007be9f3df61f108b67c4f18d571bff7c2f", "cb2f9cc72ba944c10425eefd3aad8a232236b9c7"],
+];
+export const STILL_PENDING = STILL_PENDING_PINS.map(([file]) => file);
 const INSTRUMENTATION = ["defense/core/outcome-counters.ts", "defense/plane/runtime.ts"];
 
 const approve = (registry: readonly ReviewedMigration[], which: (entry: ReviewedMigration) => boolean): ReviewedMigration[] =>
@@ -85,9 +102,32 @@ test("registry shape: a closed, versioned list of exact files, only the two inst
   ]);
   // Owner decision of 2026-11-09: exactly these two further entries are approved, each at its reviewed blob, with this authorization; the lab observer and every other entry stay PENDING.
   const approvedNow = REVIEWED_MIGRATIONS.filter((entry) => entry.status === "APPROVED").map((entry) => entry.path).sort();
-  assert.deepEqual(approvedNow, [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL, ...BATCH_APPROVALS].sort());
-  assert.equal(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "PENDING").length, 11);
+  assert.deepEqual(approvedNow, [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL, ...BATCH_APPROVALS, ...SIX_APPROVALS].sort());
+  assert.equal(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "PENDING").length, 5);
   assert.deepEqual(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "PENDING").map((entry) => entry.path).sort(), [...STILL_PENDING].sort());
+  // The five Gate 11A entries: still PENDING, same historical and reviewed blobs, same hold, no authorization, no scope.
+  for (const [file, historicalBlob, reviewedBlob] of STILL_PENDING_PINS) {
+    const entry = REVIEWED_MIGRATIONS.find((candidate) => candidate.path === file)!;
+    assert.deepEqual([entry.status, entry.historicalBlob, entry.reviewedBlob, entry.hold, entry.reviewId, entry.authorization, entry.scope],
+      ["PENDING", historicalBlob, reviewedBlob, "guard-export", "BASELINE-V2/GATE_11A_GUARD_EXPORT", null, ""], file);
+  }
+  // The six approvals of 2026-11-10: blob-specific (the authorization names the exact reviewed blob), never a Gate 11A entry, and each group carries its own restriction in the authorization itself.
+  for (const [group, restriction] of [[PRODUCTION_PREPARATION_APPROVALS, /as a production-preparation artifact; it does not authorize production enablement, deployment, or claims about untested external providers/u],
+    [LABORATORY_MAILBOX_APPROVALS, /limited to the isolated laboratory runtime; it does not extend to the production lifecycle guard or to Gate 11A export functionality/u]] as const) {
+    for (const [file, reviewedBlob] of group) {
+      const entry = REVIEWED_MIGRATIONS.find((candidate) => candidate.path === file)!;
+      assert.deepEqual([entry.status, entry.reviewedBlob, entry.hold], ["APPROVED", reviewedBlob, "none"], file);
+      assert.match(entry.authorization ?? "", /^Owner decision 'Owner Authorization: Six Reviewed Migrations' \(2026-11-10\)/u, file);
+      assert.ok((entry.authorization ?? "").includes(`recognizes only the reviewed current blob ${reviewedBlob} of this file`), `${file}: the authorization is blob-specific`);
+      assert.match(entry.authorization ?? "", restriction, file);
+      assert.match(entry.authorization ?? "", /is not inherited by other files or by any future blob version$/u, file);
+      assert.match(entry.scope, /file-scoped and not transitive/u, file);
+      assert.match(entry.scope, /authorizes no deployment or production enablement/u, file);
+      assert.equal(/GATE_11A/u.test(entry.reviewId), false, file);
+    }
+  }
+  for (const [file] of PRODUCTION_PREPARATION_APPROVALS) assert.match(REVIEWED_MIGRATIONS.find((candidate) => candidate.path === file)!.scope, /makes no claim about real-provider integration$/u, file);
+  for (const [file] of LABORATORY_MAILBOX_APPROVALS) assert.match(REVIEWED_MIGRATIONS.find((candidate) => candidate.path === file)!.scope, /does not approve the production dispatch guard$/u, file);
   for (const entry of REVIEWED_MIGRATIONS.filter((candidate) => BATCH_APPROVALS.includes(candidate.path))) {
     assert.match(entry.authorization ?? "", /^Owner decision 'Migration Batch Closure and M1 Environment Preparation' \(2026-11-09\)/u, entry.path);
     assert.match(entry.scope, /file-scoped and not transitive/u, entry.path);
@@ -115,12 +155,12 @@ test("registry shape: a closed, versioned list of exact files, only the two inst
   assert.deepEqual([holds("none"), holds("shared-production-module"), holds("guard-export")], [28, 11, 5]);
 });
 
-test("real repository: every file that differs from each baseline is registered and unmodified since review (no unreviewed drift), and everything except the thirty-three approved entries is still PENDING", () => {
+test("real repository: every file that differs from each baseline is registered and unmodified since review (no unreviewed drift), and everything except the thirty-nine approved entries is still PENDING", () => {
   for (const [name, baseline, paths, expected] of GUARDS) {
     const result = classifyDrift(root, baseline, paths);
     assert.deepEqual(result.unreviewed, [], `${name}: unreviewed drift`);
     assert.deepEqual(result.modifiedAfterReview, [], `${name}: modified after review`);
-    assert.deepEqual([...result.authorized].sort(), name === "aff793e" ? INSTRUMENTATION : [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL, ...BATCH_APPROVALS].sort(), `${name}: exactly the approved entries inside this guard's paths are authorized`);
+    assert.deepEqual([...result.authorized].sort(), name === "aff793e" ? INSTRUMENTATION : [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL, ...BATCH_APPROVALS, ...SIX_APPROVALS].sort(), `${name}: exactly the approved entries inside this guard's paths are authorized`);
     assert.equal(result.pending.length, expected, `${name}: pending drift`);
   }
 });
@@ -207,11 +247,17 @@ test("exact-file approval is not dependency closure and not deployment authoriza
     "workers/admin-gateway/index.ts": [],
     // authority.ts and operator-command.ts are now approved, each ONLY by its own entry in BATCH_APPROVALS (never through this executor)
     "workers/lab-operator-lifecycle-executor.ts": [],
-    // approved batch entries whose importers remain held: the held importer is not approved by its import being approved
-    "src/lib/admission-client.server.ts": ["src/lib/public-inquiry-production-runtime.server.ts"],
-    "workers/admission-service/authority.ts": ["workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/lab-dispatch-guard.ts"],
-    "workers/admission-service/operator-command.ts": ["workers/lifecycle-mailbox/lab-processor.ts"],
-    "src/lib/public-inquiry-handler.server.ts": ["src/app/api/public-inquiries/route.ts"],
+    // approved batch entries whose importers remain held: the held importer is not approved by its import being approved.
+    // (Their former held importers -- the production runtime factory, the route, the laboratory dispatch guard and processor -- are approved since 2026-11-10,
+    // each ONLY by its own entry in the six approvals asserted in the registry-shape test, never through these imports.)
+    "src/lib/admission-client.server.ts": [],
+    "workers/admission-service/authority.ts": ["workers/lifecycle-mailbox/dispatch-guard.ts"],
+    "workers/admission-service/operator-command.ts": ["workers/lifecycle-mailbox/dispatch-guard.ts"],
+    "src/lib/public-inquiry-handler.server.ts": [],
+    // approving the laboratory mailbox files does not approve the production dispatch guard they name in a type-only import, nor anything else in the Gate 11A set
+    "workers/lifecycle-mailbox/lab-dispatch-guard.ts": ["workers/lifecycle-mailbox/dispatch-guard.ts"],
+    "workers/lifecycle-mailbox/lab-processor.ts": ["workers/lifecycle-mailbox/dispatch-guard.ts"],
+    "workers/lifecycle-mailbox/lab-index.ts": [...STILL_PENDING],
   };
   for (const [approved, pending] of Object.entries(dependencies)) {
     assert.equal(byPath.get(approved)?.status, "APPROVED", approved);
