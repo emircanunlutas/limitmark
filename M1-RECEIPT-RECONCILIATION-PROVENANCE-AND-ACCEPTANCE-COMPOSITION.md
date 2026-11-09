@@ -53,7 +53,7 @@ Proposal (no production protocol or receipt format changed): an additive evidenc
 
 ## 4. Provenance prototype (`lab/provenance/prototype.ts`, 54c2148; tests `tests/m1-provenance-prototype.test.ts`, 8)
 Records are held outside the evidence directory by a separate party (modelled by a separate directory): `commitment.json` (campaign, level, code-pinned parameter fingerprint, git SHA, commit time, nonce, seal), `beacons.ndjson` (hash chain `link_n = sha256(link_{n-1}:n:runId:bytes:digest)` seeded by the commitment seal, each beacon a journal prefix digest), `final.json` (run id, last beacon, chain head, digest of `SHA256SUMS`, journal digest). No keys, no signatures, no network.
-The verifier reports separate levels: byteIntegrity, artifactCompleteness, runBinding, producerIdentity (always `CLAIMED_UNVERIFIED`), independentCorroboration, authenticity (always `UNVERIFIED`), plus the fixed claims `authenticated: false`, `independent: false`. Its strongest overall statement is `CONSISTENT_WITH_RETAINED_RECORDS`.
+The verifier reports separate levels: byteIntegrity, artifactCompleteness, runBinding, producerIdentity (always `CLAIMED_UNVERIFIED`), independentCorroboration, authenticity (always `UNVERIFIED`), plus the fixed claims `authenticated: false`, `independent: false`. Its strongest overall statement is `CONSISTENT_WITH_RECORDS`.
 
 Substitution, replay and tamper results (all in the test file):
 | Case | Result |
@@ -69,7 +69,7 @@ Substitution, replay and tamper results (all in the test file):
 | journal rewritten after the beacons, package re-hashed consistently | FAILED (`journal_prefix_mismatch`) |
 | journal extended after the last beacon | FAILED |
 | retained store missing | INCOMPLETE (corroboration ABSENT), never consistent |
-| **same actor forges the package AND the retained store** | **CONSISTENT_WITH_RETAINED_RECORDS, authenticity UNVERIFIED, authenticated false, independent false.** The honest store exposes the same forgery (FAILED). |
+| **same actor forges the package AND the retained store** | **CONSISTENT_WITH_RECORDS, authenticity UNVERIFIED, authenticated false, independent false.** The honest store exposes the same forgery (FAILED). |
 This prototype shows what a separately held record can detect. It does not show independence: independence is custody (different principal, host and write path) and cannot be read from file content.
 
 ## 5. Proposed M1 acceptance composition (design only; no gate implemented)
@@ -81,7 +81,7 @@ Per run, ACCEPT-RUN requires all of the following bound to the same identity tup
 | 3 | Criterion 9 tally | `ba0-m1-tally-check` | PASS | REJECT/ERROR/REFUSED |
 | 4 | Receipt reconciliation | `ba0-m1-receipt-check` | PASS with generator report present | REJECT/ERROR, missing report |
 | 5 | Legitimate-user canary | base verdict (JCR 100%, p95 window latency) plus receipt link `canary_client_mutations_equal_ledger` | both hold | either missing |
-| 6 | Provenance | prototype only | `CONSISTENT_WITH_RETAINED_RECORDS`, reported as `unauthenticated` | absent store, any FAILED level |
+| 6 | Provenance | prototype only | `CONSISTENT_WITH_RECORDS`, reported as `unauthenticated` | absent store, any FAILED level |
 Per campaign, ACCEPT-CAMPAIGN additionally requires criterion 7 (3-run repeatability, `ba0-m1-repeatability`) over three ACCEPT-RUN results with distinct run ids in one campaign. The composed label must carry the provenance level: with authenticity UNVERIFIED the strongest honest label is "ACCEPTED, LOCALLY CONSISTENT, AUTHENTICITY UNVERIFIED"; it must never read "qualified" or "authenticated".
 
 ### Missing dependencies (why no gate yet)

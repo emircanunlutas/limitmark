@@ -58,7 +58,7 @@ test("honest package and retained records: consistent, and the verifier still cl
   try {
     const report = verifyProvenance(w.evidence, w.retained.directory);
     assert.deepEqual(report.problems, []);
-    assert.equal(report.overall, "CONSISTENT_WITH_RETAINED_RECORDS");
+    assert.equal(report.overall, "CONSISTENT_WITH_RECORDS");
     assert.deepEqual(report.levels, { byteIntegrity: "VERIFIED", artifactCompleteness: "VERIFIED", runBinding: "VERIFIED", producerIdentity: "CLAIMED_UNVERIFIED", independentCorroboration: "CONSISTENT", authenticity: "UNVERIFIED" });
     assert.deepEqual(report.claims, { authenticated: false, independent: false });
     assert.equal(report.claimedProducer.gitSha, gitSha, "producer identity is reported as a claim only");
@@ -159,7 +159,7 @@ test("beacon chain: truncation, alteration, reordering, a rewritten journal and 
   try {
     fs.rmSync(none.retained.directory, { recursive: true, force: true });
     const report = verifyProvenance(none.evidence, none.retained.directory);
-    assert.notEqual(report.overall, "CONSISTENT_WITH_RETAINED_RECORDS");
+    assert.notEqual(report.overall, "CONSISTENT_WITH_RECORDS");
     assert.equal(report.overall, "INCOMPLETE");
     assert.equal(report.levels.independentCorroboration, "ABSENT");
   } finally { cleanup(none); }
@@ -175,7 +175,7 @@ test("a fully forged package whose actor also controls the retained records is C
     forgedStore.commit({ campaignId: "campaign-a", levelId: "ba0-l7-c1", paramsSha256: pinned, gitSha, committedAt: new Date(Date.now() - 3_600_000).toISOString(), nonce: "f".repeat(16) });
     announce(forgedStore, w.evidence, w.runId, 4);
     const report = verifyProvenance(w.evidence, forgedStore.directory);
-    assert.equal(report.overall, "CONSISTENT_WITH_RETAINED_RECORDS", "the verifier cannot tell a same-actor forgery from an honest package");
+    assert.equal(report.overall, "CONSISTENT_WITH_RECORDS", "the verifier cannot tell a same-actor forgery from an honest package");
     assert.equal(report.levels.authenticity, "UNVERIFIED");
     assert.equal(report.levels.producerIdentity, "CLAIMED_UNVERIFIED");
     assert.deepEqual(report.claims, { authenticated: false, independent: false });

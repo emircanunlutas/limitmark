@@ -92,6 +92,8 @@ export type FieldRunSeams = {
   onTopology?: (info: { pids: TopologyPids; ports: { plane: number; boundary: number; app: number; control: number }; ingress: IngressBind }) => void;
   /** Called when the plane acknowledges that its public ingress is closed (a test updates its fake /proc here). */
   onIngressClosed?: () => void;
+  /** Optional provenance lifecycle hooks (disposable local runs): announced when the run and its journal exist, and when the evidence package is finalized. Failures never affect the run. */
+  provenance?: { started(info: { runId: string; directory: string; journalPath: string }): void; finalized(directory: string): void };
   /** Called when the level is ARMED (a test may inject stray traffic here). */
   onArmed?: (info: { ingress: IngressBind }) => void;
   /** Replaces waiting for a remote generator: opens and closes the window on a timer, so a loopback run can drive the whole machine. */
@@ -214,6 +216,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
   // ====================================================================================== runtime state
   const baselineAmbient = preflight.ambientNonLoopbackPorts;
   const collector = new Collector(path.join(evidence.directory, "ledger-journal-field.ndjson"), { ...t.collector });
+  try { seams.provenance?.started({ runId: evidence.id, directory: evidence.directory, journalPath: path.join(evidence.directory, "ledger-journal-field.ndjson") }); } catch { /* provenance is optional and never changes the run */ }
   const salvo = args.levelId === "ba0-l7-c2-salvo" ? new SalvoServerObserver(n2ExerciseSpec(t)) : undefined;
   const n2 = args.levelId === "ba0-l7-c2" ? new N2ServerObserver(n2ExerciseSpec(t)) : salvo;
   collector.enableOriginStreams();
@@ -537,6 +540,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
         externalAccepted: counters.accepted, anomalyTotal,
       },
     });
+    try { seams.provenance?.finalized(evidence.directory); } catch { /* the verifier reports an incomplete retained record */ }
     return { exit: status === "complete" ? FIELD_EXIT.complete : status === "invalid" ? FIELD_EXIT.invalid : FIELD_EXIT.aborted, status, serverSide, refusals: [], evidenceId: evidence.id, evidenceDirectory: evidence.directory, bundle, write };
   };
 

@@ -78,8 +78,8 @@ export type ProvenanceReport = {
   claimedProducer: { gitSha: string | null; engine: string | null };
   problems: string[];
   claims: { authenticated: false; independent: false };
-  /** CONSISTENT_WITH_RETAINED_RECORDS is the strongest statement this verifier can make. */
-  overall: "CONSISTENT_WITH_RETAINED_RECORDS" | "FAILED" | "INCOMPLETE";
+  /** CONSISTENT_WITH_RECORDS is the strongest statement this verifier can make. */
+  overall: "CONSISTENT_WITH_RECORDS" | "FAILED" | "INCOMPLETE";
 };
 
 const readJson = (file: string): unknown => { try { return JSON.parse(readFileSync(file, "utf8")); } catch { return undefined; } };
@@ -158,5 +158,5 @@ export function verifyProvenance(evidenceDirectory: string, retainedDirectory: s
 
   const failed = Object.values(levels).includes("FAILED");
   const incomplete = !failed && Object.values(levels).includes("ABSENT");
-  return { schema: PROVENANCE_SCHEMA, levels, claimedProducer, problems, claims: { authenticated: false, independent: false }, overall: failed ? "FAILED" : incomplete ? "INCOMPLETE" : "CONSISTENT_WITH_RETAINED_RECORDS" };
+  return { schema: PROVENANCE_SCHEMA, levels, claimedProducer, problems, claims: { authenticated: false, independent: false }, overall: failed ? "FAILED" : incomplete ? "INCOMPLETE" : "CONSISTENT_WITH_RECORDS" };
 }
