@@ -103,7 +103,7 @@ test("a collector that dies before finalizing leaves NO declaration, and the evi
   const front = await forkFixture("fixture-front.ts", { upstreamPort: ready.port, faults: {} });
   const canary = launcher(["canary", "--run-id", RUN, "--campaign-id", CAMPAIGN, "--output-dir", dir, "--target-host", "127.0.0.1", "--target-port", String(front.port), "--process", `a=${front.pid}`, "--process", `b=${ready.pid as number}`, "--process", `c=${site.pid}`, "--process", `d=${process.pid}`]);
   assert.equal(await canary.exited, 0);
-  collector.child.kill(); await collector.exited; front.child.kill(); site.child.kill();
+  collector.child.kill("SIGKILL"); await collector.exited; front.child.kill(); site.child.kill();
   assert.ok(!fs.existsSync(path.join(dir, "collector-declaration.json")));
   const bundle = evaluateObservationFiles({ runId: RUN, campaignId: CAMPAIGN }, dir, 1_000);
   assert.notEqual(bundle.result.outcome, "PASS"); assert.equal(bundle.completeness?.outcome, "ERROR");
