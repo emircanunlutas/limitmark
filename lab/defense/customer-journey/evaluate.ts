@@ -7,7 +7,7 @@ import { Collector, type AppFin, type BoundaryFin, type PlaneFin } from "../coll
 import { TickMonitor, type HarnessSample } from "../field-monitor";
 import { BA0_FIELD_V1 as config } from "../field-thresholds";
 import { plan, type CanaryResult, type ClientRecord, type Phase } from "./canary";
-import { evaluateFixture, type FixtureEvidence } from "./adverse";
+import { evaluateFixture, isValidNonNegative, isValidPercent, isValidPositive, type FixtureEvidence } from "./adverse";
 
 export type Evidence = {
   gitSha: string; platform: string; runId: string;
@@ -129,7 +129,11 @@ export function evaluate(e: Evidence, adverseRun = false) {
   for (const { at, tick } of e.ticks) {
     now = at;
     for (const reason of monitor.observe(tick)) failures.push(reason.detail ?? reason.code);
-    check(Object.values(tick.sample).every(v => Number.isFinite(v) && v >= 0) && tick.sample.rssMb > 0, `invalid ${tick.role} resource sample`);
+    const sample = tick.sample;
+    check(!!sample && isValidNonNegative(sample.eldP50Ms) && isValidNonNegative(sample.eldP99Ms) &&
+      isValidNonNegative(sample.eldMaxMs) && isValidPositive(sample.rssMb) &&
+      isValidNonNegative(sample.cpuUserMs) && isValidNonNegative(sample.cpuSystemMs) &&
+      Object.values(sample).every(v => isValidNonNegative(v)), `invalid ${tick.role} resource sample`);
   }
   const gapLimit = config.telemetry.gapToleranceMs;
   function checkCoverage(times: number[], name: string) {
@@ -146,11 +150,18 @@ export function evaluate(e: Evidence, adverseRun = false) {
   checkCoverage(e.host.map(h => h.at), "host");
   for (const h of e.host) {
     check(h.otherListeners === 0 && h.loopbackPorts.length === 3 && e.ports.every(port => h.loopbackPorts.includes(port)), "listener exposure");
-    check(!!h.sample.proc.host && Object.keys(e.pids).every(role => {
-      const s = h.sample.proc.perRole[role];
-      return s?.alive && s.rssMb > 0 && s.fds > 0 && (s.fdLimit ?? 0) > 0;
-    }), "incomplete host or process sample");
-    for (const reason of monitor.observeHarness(h.sample)) failures.push(reason.detail ?? reason.code);
+    const host = h.sample?.proc?.host;
+    check(!!host && isValidPercent(host.cpuBusyPct), "invalid or missing host CPU sample");
+    check(!!host && isValidPercent(host.memAvailablePct) && isValidNonNegative(host.memAvailableMb) &&
+      isValidNonNegative(h.sample.eldP99Ms) && isValidNonNegative(h.sample.eldMaxMs) &&
+      Object.keys(e.pids).every(role => {
+        const s = h.sample.proc.perRole?.[role];
+        return s?.alive === true && isValidPositive(s.rssMb) && isValidPositive(s.fds) &&
+          isValidPositive(s.fdLimit) && isValidNonNegative(s.cpuMsDelta);
+      }), "incomplete host or process sample");
+    if (h.sample?.proc?.perRole) {
+      for (const reason of monitor.observeHarness(h.sample)) failures.push(reason.detail ?? reason.code);
+    }
   }
   const continuity = adverseRun ? evaluateFixture(e, fixtureRecords, protectedRecords, failures) : undefined;
   return { verdict: failures.length ? "FAIL" : "PASS", failures, counts, totals, latency, windowLimitMs, quietMs, anomalyTotal, directStatus, ticks, hostSamples: e.host.length,

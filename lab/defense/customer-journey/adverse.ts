@@ -71,6 +71,32 @@ function layerCounts(rows: LedgerRecord[]) {
     mutations: app.filter(v => v.kind === "APP_MUTATED").length, reasons };
 }
 
+export function isValidPercent(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
+}
+
+export function isValidNonNegative(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+export function isValidPositive(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function reduceMetric(
+  values: readonly unknown[],
+  validate: (value: unknown) => value is number,
+  reduce: (a: number, b: number) => number,
+): number | null {
+  if (values.length === 0) return null;
+  let current: number | null = null;
+  for (const value of values) {
+    if (!validate(value)) return null;
+    current = current === null ? value : reduce(current, value);
+  }
+  return current !== null && validate(current) ? current : null;
+}
+
 export function evaluateFixture(e: Evidence, rows: LedgerRecord[], customers: LedgerRecord[], failures: string[]) {
   const fixture = e.fixture;
   if (!fixture || !Array.isArray(fixture.requests) || !Array.isArray(fixture.observations)) {
@@ -134,8 +160,9 @@ export function evaluateFixture(e: Evidence, rows: LedgerRecord[], customers: Le
   const lastResponse = rows.at(-1)?.plane.find(v => v.kind === "INGRESS_RESPONDED");
   const nextHome = window.filter(r => r.meta.step === 1).map(r => r.plane.find(v => v.kind === "INGRESS_ACCEPTED"))
     .find(v => v && lastResponse && v.seq > lastResponse.seq);
-  const residualDelayMs = nextHome && lastResponse ? nextHome.t - lastResponse.t : null;
-  check(residualDelayMs !== null && residualDelayMs >= 0 && residualDelayMs <= config.canary.gapMs + config.telemetry.gapToleranceMs,
+  const rawResidualDelayMs = nextHome && lastResponse ? nextHome.t - lastResponse.t : null;
+  const residualDelayMs = isValidNonNegative(rawResidualDelayMs) ? rawResidualDelayMs : null;
+  check(residualDelayMs !== null && residualDelayMs <= config.canary.gapMs + config.telemetry.gapToleranceMs,
     "missing immediate post-fixture customer journey");
   const recoveryStart = customers.find(r => r.meta.phase === "recovery")?.plane.find(v => v.kind === "INGRESS_ACCEPTED")?.t;
   const planeTicks = e.ticks.filter(v => v.tick.role === "plane").map(v => v.tick as PlaneTick);
@@ -148,11 +175,22 @@ export function evaluateFixture(e: Evidence, rows: LedgerRecord[], customers: Le
   const samples = e.host.filter(h => h.at >= fixture.windowNoticeMs && h.at <= lastFixtureEnd);
   const windowTicks = e.ticks.filter(v => v.at >= fixture.windowNoticeMs && v.at <= lastFixtureEnd && v.tick.role === "plane");
   check(samples.length > 0 && windowTicks.length > 0, "missing resource observations in fixture window");
+  const hostCpuPeakPct = reduceMetric(samples.map(h => h.sample?.proc?.host?.cpuBusyPct), isValidPercent, Math.max);
+  const availableMemoryMinPct = reduceMetric(samples.map(h => h.sample?.proc?.host?.memAvailablePct), isValidPercent, Math.min);
+  const planeRssPeakMiB = reduceMetric(windowTicks.map(v => v.tick.sample?.rssMb), isValidPositive, Math.max);
+  const planeEventLoopP99PeakMs = reduceMetric(windowTicks.map(v => v.tick.sample?.eldP99Ms), isValidNonNegative, Math.max);
+  check(hostCpuPeakPct !== null, "invalid or missing host CPU observations in fixture window");
+  check(availableMemoryMinPct !== null, "invalid or missing host memory observations in fixture window");
+  check(planeRssPeakMiB !== null && planeEventLoopP99PeakMs !== null, "invalid or missing plane resource observations in fixture window");
   return { customer, adverse, overlapGroups, residualDelayMs, recovered,
-    creditedTokensBeforeRecovery: lanes ? lanes.credited.levelUnits / UNIT : null,
-    unverifiedTokensBeforeRecovery: lanes ? lanes.unverified.levelUnits / UNIT : null, liveUseRecords: lanes?.ledger.size,
-    windowResources: { samples: samples.length, hostCpuPeakPct: Math.max(...samples.map(h => h.sample.proc.host?.cpuBusyPct ?? NaN)),
-      availableMemoryMinPct: Math.min(...samples.map(h => h.sample.proc.host?.memAvailablePct ?? NaN)),
-      planeRssPeakMiB: Math.max(...windowTicks.map(v => v.tick.sample.rssMb)),
-      planeEventLoopP99PeakMs: Math.max(...windowTicks.map(v => v.tick.sample.eldP99Ms)) } };
+    creditedTokensBeforeRecovery: lanes && isValidNonNegative(lanes.credited?.levelUnits) ? lanes.credited.levelUnits / UNIT : null,
+    unverifiedTokensBeforeRecovery: lanes && isValidNonNegative(lanes.unverified?.levelUnits) ? lanes.unverified.levelUnits / UNIT : null,
+    liveUseRecords: lanes?.ledger.size,
+    windowResources: {
+      samples: samples.length,
+      hostCpuPeakPct,
+      availableMemoryMinPct,
+      planeRssPeakMiB,
+      planeEventLoopP99PeakMs,
+    } };
 }
