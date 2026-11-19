@@ -1,0 +1,5 @@
+# Partial backend configuration for the private state bucket (see STAGES.md, stage 1).
+# Contains no credentials: authenticate with a short-lived GOOGLE_OAUTH_ACCESS_TOKEN or ADC.
+# Usage after the bucket exists:  terraform init -migrate-state -backend-config=backend.gcs.hcl
+bucket = "limitmark-field-qual-1045646810362-tfstate"
+prefix = "cloud-lab"

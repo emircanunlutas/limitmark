@@ -137,9 +137,13 @@ function claimed(ledger: FaultLedger): void {
   assert.equal(ledger.count("SELECT COUNT(*) AS count FROM claims"), 1);
   assert.equal(ledger.count("SELECT COUNT(*) AS count FROM latch"), 1);
 }
-test("compiled guard prototype exposes only the three reviewed lifecycle operations", () => {
+test("compiled guard prototype exposes only the three reviewed lifecycle operations plus the one reviewed read-only ledger export", () => {
+  // Gate 11A (approved): `exportLedger` is the ONLY addition. The dispatch/mutation surface is unchanged and still exactly these three; the export is
+  // operator-authenticated and SELECT-only (pinned by tests/guard-export-method.test.ts and tests/workers/guard-export.integration.ts).
   assert.deepEqual(Object.getOwnPropertyNames(Guard.prototype).sort(),
-    ["constructor", "processInitialization", "processRotation", "settle"].sort());
+    ["constructor", "exportLedger", "processInitialization", "processRotation", "settle"].sort());
+  assert.deepEqual(Object.getOwnPropertyNames(Guard.prototype).filter((name) => name !== "constructor" && name !== "exportLedger").sort(),
+    ["processInitialization", "processRotation", "settle"]);
 });
 async function duplicateCannotDispatch(h: ReturnType<typeof harness>): Promise<GuardOutcome> {
   const outcome = await h.construct().processInitialization(sealed);

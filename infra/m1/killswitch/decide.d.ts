@@ -1,0 +1,15 @@
+export type KillInstance = { name: string; project: string; createdMs: number; labels: Record<string, string> };
+export type KillConfig = { campaignId: string; runId?: string; runMaxSeconds: number; stopFraction: number };
+export type KillDecision = { action: "none" | "delete"; reason: string; targets: KillInstance[] };
+export type CostInput = { vms: { count: number; usdPerHour: number }[]; hours: number; egressGb: number; usdPerGb: number; storageUsd: number; tryPerUsd: number; runBudgetTry: number };
+export type CostBound = { bounded: boolean; usd: number | null; tryAmount: number | null; reason: string };
+export function parseMessage(message: unknown): { kind: "reaper" } | { kind: "budget"; fraction: number } | { kind: "invalid" };
+export function decide(message: unknown, nowMs: number, instances: KillInstance[], config: KillConfig): KillDecision;
+export function maxRunCost(input: CostInput): CostBound;
+export const LABEL_PURPOSE: string;
+export type DeleteOutcome = { deleted: string[]; alreadyGone: string[]; failed: { name: string; reason: string }[] };
+export function executeDeletes(targets: { name: string; project: string }[], deleteFn: (target: { name: string; project: string }) => Promise<"deleted" | "gone">, options: { timeoutMs: number }): Promise<DeleteOutcome>;
+export function settle(listFn: () => Promise<KillInstance[]>, config: KillConfig, options: { attempts: number; intervalMs: number; runScoped: boolean; nowMs: () => number; sleep: (ms: number) => Promise<void> }): Promise<{ remaining: string[]; attempts: number }>;
+export type CostComponent = { name: string; estimatedUsd: number | null; enforcement: "none" | "alert" | "provider_limit" | "automated_stop"; verified: boolean; residualAfterStop: string };
+export function assessCostBound(components: CostComponent[]): { strictlyBounded: boolean; estimatedUsd: number; unverified: { name: string; enforcement: string; verified: boolean; reason: string }[]; residual: { name: string; residual: string }[] };
+export function maxRunCostWithRate(input: Omit<CostInput, "tryPerUsd">, fx: { high: number; verified: boolean } | null): CostBound;

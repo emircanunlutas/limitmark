@@ -16,7 +16,8 @@ import { executeHttpWorkload, warmUp, type EngineResult } from "./load/engine";
 import { runK6 } from "./load/k6";
 import { executeClosedLoop } from "./load/closed-loop";
 import { fieldLevelForWorkload, ba0FieldFingerprint } from "./defense/field-thresholds";
-import { buildGeneratorReport, campaignIdPattern, workloadFingerprint } from "./defense/generator-report";
+import { isCampaignId, CAMPAIGN_ID_RULE } from "./defense/campaign-id";
+import { buildGeneratorReport, workloadFingerprint } from "./defense/generator-report";
 import { assertSameLabAppContainer, inspectLabContainer } from "./host/docker";
 import { runAppRestart } from "./failure/app-restart";
 import { runPostgresOutage, type OutageMode } from "./failure/postgres-outage";
@@ -34,7 +35,7 @@ import { applyKnownFaultVerdict, libraryFaults } from "./postgres/known-faults";
 import { evidenceSafeError } from "./evidence/redact";
 
 const VALUE_FLAGS = new Set(["--target", "--workload", "--thresholds", "--max-rate", "--max-concurrency", "--max-duration", "--pg", "--outage-mode", "--engine", "--k6-netns-container", "--app-container", "--campaign"]);
-const BOOLEAN_FLAGS = new Set(["--manage-app", "--dry-run"]);
+const BOOLEAN_FLAGS = new Set(["--manage-app", "--dry-run", "--local-only"]);
 export const OPERATOR_TARGETS_FILE = path.join(REPOSITORY_ROOT, "artifacts", "lab", "targets.json");
 
 export type ParsedArguments = {
@@ -42,6 +43,8 @@ export type ParsedArguments = {
   /** The campaign id of a BA0 field level (a plain label chosen by the operator; recorded in the evidence, never an input to any decision). */
   campaign?: string;
   limits: CliLimits; manageApp: boolean; dryRun: boolean;
+  /** Explicit local-only mode: built-in loopback fixtures only, the operator inventory is never read (see `registryForRun`). */
+  localOnly: boolean;
 };
 
 /** Strict parser: unknown flags, duplicates, positionals, `--flag=value` and URL-ish values are all refused. */
@@ -67,7 +70,7 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
   return {
     target: values["--target"], workload: values["--workload"], thresholds: values["--thresholds"], pg: values["--pg"],
     outageMode: values["--outage-mode"], engine: values["--engine"], k6Netns: values["--k6-netns-container"], appContainer: values["--app-container"], campaign: values["--campaign"],
-    limits, manageApp: flags.has("--manage-app"), dryRun: flags.has("--dry-run"),
+    limits, manageApp: flags.has("--manage-app"), dryRun: flags.has("--dry-run"), localOnly: flags.has("--local-only"),
   };
 }
 
@@ -83,6 +86,31 @@ export function loadOperatorTargets(file = OPERATOR_TARGETS_FILE): unknown[] {
     }
   }
   return parsed;
+}
+
+/** The only targets --local-only may select: the built-in loopback fixtures of the disposable local parity environment. */
+export const LOCAL_ONLY_TARGET_IDS: readonly string[] = Object.freeze(["local-app", "local-app-alt"]);
+
+/**
+ * The registry a run authorizes against.
+ *   - Ordinary mode: built-ins plus the operator inventory, validated entry by entry; ONE invalid or expired entry fails the whole load (fail closed, unchanged).
+ *   - `--local-only`: the built-in loopback fixtures only. The operator inventory is not opened, so a stale or invalid remote entry is neither used nor
+ *     silently ignored in the ordinary path. This is a mode the caller must name on the command line; there is no environment variable or file that enables it.
+ */
+export function registryForRun(args: Pick<ParsedArguments, "localOnly">, now: Date, loadOperator: () => unknown[] = loadOperatorTargets): ReturnType<typeof buildRegistry> {
+  return buildRegistry(args.localOnly ? [] : loadOperator(), now);
+}
+
+/**
+ * --local-only is for HTTP workloads against a destination the lab itself established inside the disposable local environment. Anything else is refused
+ * BEFORE any traffic: a non-fixture target id, a non-lab-local class, a non-loopback host, no destination proof, or a postgres workload. Pure.
+ */
+export function checkLocalOnly(args: Pick<ParsedArguments, "localOnly" | "manageApp" | "appContainer" | "k6Netns">, target: { id: string; class: string; host: string }): PolicyRefusal | null {
+  if (!args.localOnly) return null;
+  const loopback = target.host === "127.0.0.1" || target.host === "::1" || target.host === "[::1]";
+  if (target.class !== "lab-local" || !LOCAL_ONLY_TARGET_IDS.includes(target.id) || !loopback) return new PolicyRefusal("target-unknown", "--local-only selects only the built-in loopback fixtures local-app and local-app-alt");
+  if (!args.manageApp && args.appContainer === undefined && args.k6Netns === undefined) return new PolicyRefusal("target-listener-unproven", "--local-only needs a lab-established destination (--manage-app, --app-container or --k6-netns-container)");
+  return null;
 }
 
 /**
@@ -139,6 +167,7 @@ async function main(): Promise<number> {
   }
 
   const workloadId = args.workload ?? "";
+  if (args.localOnly && isWorkloadId(workloadId) && WORKLOADS[workloadId].engine === "managed-postgres") return refuse(new PolicyRefusal("limit-invalid", "--local-only is for HTTP workloads against the loopback fixtures"), "local-only-refused");
   if (isWorkloadId(workloadId) && WORKLOADS[workloadId].engine === "managed-postgres") {
     return runPostgres(args, git, startedAt, refuse);
   }
@@ -147,12 +176,14 @@ async function main(): Promise<number> {
   try {
     run = authorizeRun({
       targetId: args.target ?? "", workloadId, limits: args.limits,
-      registry: buildRegistry(loadOperatorTargets(), startedAt), now: startedAt, treeIsClean: !git.dirty,
+      registry: registryForRun(args, startedAt), now: startedAt, treeIsClean: !git.dirty,
     });
   } catch (error) {
     if (error instanceof PolicyRefusal) return refuse(error, "refused");
     throw error;
   }
+  const notLocal = checkLocalOnly(args, run.target);
+  if (notLocal) return refuse(notLocal, "local-only-refused");
   const unproven = checkDestinationProof(run.target.class, run.workload.engine, args);
   if (unproven) return refuse(unproven, "listener-unproven");
   // A closed-loop BA0 level has its own engine, its own parameter set and its own report; the open-loop engine below never runs it.
@@ -253,7 +284,7 @@ async function main(): Promise<number> {
 async function runClosedLoopLevel(run: AuthorizedRun, args: ParsedArguments, git: ReturnType<typeof collectGitState>, startedAt: Date, refuse: (e: PolicyRefusal, label: string) => number): Promise<number> {
   const field = fieldLevelForWorkload(run.workload.id)?.thresholds;
   if (field === undefined) return refuse(new PolicyRefusal("limit-invalid", "closed-loop workload is not a reviewed field level"), "level-not-reviewed");
-  if (args.campaign === undefined || !campaignIdPattern.test(args.campaign)) return refuse(new PolicyRefusal("limit-invalid", "--campaign must be a plain label (lowercase letters, digits, hyphens; 6 to 41 characters)"), "bad-campaign");
+  if (!isCampaignId(args.campaign)) return refuse(new PolicyRefusal("limit-invalid", `--campaign must be ${CAMPAIGN_ID_RULE}`), "bad-campaign");
   if (args.engine !== undefined || args.manageApp || args.appContainer !== undefined || args.k6Netns !== undefined || args.thresholds !== undefined) {
     return refuse(new PolicyRefusal("limit-invalid", "a closed-loop level takes only --target, --workload and --campaign"), "bad-options");
   }

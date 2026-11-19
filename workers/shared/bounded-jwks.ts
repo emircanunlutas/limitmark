@@ -126,7 +126,10 @@ export class BoundedRs256JwksResolver {
     const endpoint = new URL(options.endpoint.href);
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.port || endpoint.search || endpoint.hash) throw new Error("jwks-endpoint");
     this.endpoint = endpoint;
-    this.request = options.fetch ?? fetch;
+    // Workers' native fetch throws "Illegal invocation" when invoked with any receiver other than the global. Storing it as an instance property and
+    // calling `this.request(...)` would invoke it with the resolver as `this`, so it is always wrapped and called as a plain function.
+    const request = options.fetch ?? fetch;
+    this.request = (input, init) => request(input, init);
     this.now = options.now ?? Date.now;
     this.limits = {
       maximumResponseBytes: options.maximumResponseBytes ?? JWKS_DEFAULTS.maximumResponseBytes,

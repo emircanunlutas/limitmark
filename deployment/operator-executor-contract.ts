@@ -98,3 +98,40 @@ export function validateRenderedStagingOperatorExecutorConfig(config: unknown): 
   try { decodeCanonicalBase64url(key, 32); }
   catch { throw new Error("invalid-operator-public-key"); }
 }
+
+// ---------------------------------------------------------------------------
+// Laboratory environment (third environment). Distinct pinned identities: a lab config can never satisfy the Production or staging
+// validators (wrong name/main/service/entrypoint/environment) and vice versa. No pattern acceptance of environment names.
+// ---------------------------------------------------------------------------
+export const LAB_EXECUTOR_NAME = "limitmark-authority-operator-executor-lab";
+export const LAB_ADMISSION_SERVICE_NAME = "limitmark-admission-service-lab";
+export const LAB_EXECUTOR_MAIN = "../workers/lab-operator-lifecycle-executor.ts";
+export const LAB_EXECUTOR_TEMPLATE_MAIN = "__REQUIRED_RENDERED_LAB_EXECUTOR_MAIN__.ts";
+export const LAB_EXECUTOR_TEMPLATE_KEY = "__REQUIRED_LAB_OPERATOR_ED25519_PUBLIC_KEY__";
+export const LAB_EXECUTOR_TEMPLATE_ENV = "__REQUIRED_LAB_ENVIRONMENT__";
+
+/** The only raw lab-template shape. Not deployable: `main` does not exist. */
+export function validateLabOperatorExecutorTemplate(config: unknown): void {
+  base(config, "LabAuthorityLifecycleOnly");
+  if (config.name !== LAB_EXECUTOR_NAME || config.main !== LAB_EXECUTOR_TEMPLATE_MAIN ||
+      config.account_id !== EXECUTOR_TEMPLATE_ACCOUNT ||
+      (config.services as Array<Record<string, unknown>>)[0].service !== LAB_ADMISSION_SERVICE_NAME ||
+      (config.vars as Record<string, unknown>).AUTHORITY_OPERATOR_PUBLIC_KEY !== LAB_EXECUTOR_TEMPLATE_KEY ||
+      (config.vars as Record<string, unknown>).OPERATOR_EXECUTOR_ENVIRONMENT !== LAB_EXECUTOR_TEMPLATE_ENV) {
+    throw new Error("unsafe-private-operator-executor-template");
+  }
+}
+
+/** Mandatory local preflight for a rendered, reviewed lab executor config. */
+export function validateRenderedLabOperatorExecutorConfig(config: unknown): void {
+  base(config, "LabAuthorityLifecycleOnly");
+  const account = config.account_id;
+  const key = (config.vars as Record<string, unknown>).AUTHORITY_OPERATOR_PUBLIC_KEY;
+  if (config.name !== LAB_EXECUTOR_NAME || config.main !== LAB_EXECUTOR_MAIN ||
+      typeof account !== "string" || !/^[a-f0-9]{32}$/u.test(account) || /^0{32}$/u.test(account) ||
+      (config.services as Array<Record<string, unknown>>)[0].service !== LAB_ADMISSION_SERVICE_NAME ||
+      (config.vars as Record<string, unknown>).OPERATOR_EXECUTOR_ENVIRONMENT !== "lab" ||
+      typeof key !== "string" || key.startsWith("__REQUIRED_")) throw new Error("incomplete-private-operator-executor");
+  try { decodeCanonicalBase64url(key, 32); }
+  catch { throw new Error("invalid-operator-public-key"); }
+}

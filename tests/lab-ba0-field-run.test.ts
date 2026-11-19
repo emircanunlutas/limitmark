@@ -1,15 +1,23 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { ba0FieldFingerprint, BA0_FIELD_V1, type Ba0FieldThresholds } from "../lab/defense/field-thresholds";
+import { gatherTallyInput } from "../lab/defense/ba0-m1-tally-check";
+import { evaluateReceipts } from "../lab/defense/m1-receipt-check";
+import { gatherReceiptInput } from "../lab/defense/ba0-m1-receipt-check";
+import { evaluateTallyAgainstLedger } from "../lab/defense/m1-tally-check";
 import { FIELD_LEVELS, canaryScheduleLagP99, parseFieldArguments, runFieldLevel, type AuthorizationLike, type FieldRunOutcome, type FieldRunSeams } from "../lab/defense/ba0-field-run";
 import { DISPOSABLE_MARKER_CONTENT, type FieldEnvironment } from "../lab/defense/field-preflight";
 import { REPOSITORY_ROOT } from "../lab/evidence/manifest";
 import { summarizeLatencies } from "../lab/policy/thresholds";
 import { FakeProc, SSHD } from "./support/fake-proc";
 import { workloadFingerprint } from "../lab/defense/generator-report";
+import { ProvenanceSession } from "../lab/m1/provenance-session";
+import { RetainedRecords, verifyProvenance } from "../lab/provenance/prototype";
+import { createHash } from "node:crypto";
 import { WORKLOADS } from "../lab/policy/workloads";
 
 /**
@@ -178,8 +186,81 @@ test("a full level runs PREFLIGHT -> ... -> DONE: ordered states, every finaliza
     assert.equal(level.paramsFingerprintSha256, ba0FieldFingerprint(r.thresholds).sha256);
     const manifest = readJson(outcome, "manifest.json") as { result: string };
     assert.equal(manifest.result, "SERVER-COMPLETE", "never a final verdict");
+    // criterion 9: the additive per-kind ledger is written from the real run, gapless, and anchored to the plane's own final channel stats
+    const kindLedger = readJson(outcome, "kind-ledger.json") as { schema: string; total: number; lastSeq: number; missingSeqs: number; duplicatesOrReordered: number; unsupported: number; malformed: number };
+    const processes = readJson(outcome, "processes.json") as { plane: { channel: { lastSeq: number; dropped: number } } };
+    assert.equal(kindLedger.schema, "ba0-kind-ledger-v1");
+    assert.ok(kindLedger.total > 0);
+    assert.deepEqual([kindLedger.missingSeqs, kindLedger.duplicatesOrReordered, kindLedger.unsupported, kindLedger.malformed], [0, 0, 0, 0]);
+    assert.equal(kindLedger.lastSeq, processes.plane.channel.lastSeq);
+    assert.equal(processes.plane.channel.dropped, 0);
+    // the criterion 9 evaluator over the REAL evidence of this run: every enforced channel/collector identity holds against a real plane and collector
+    const tallyCheck = evaluateTallyAgainstLedger(gatherTallyInput(outcome.evidenceDirectory!));
+    assert.deepEqual([tallyCheck.outcome, tallyCheck.reasons], ["REJECT", ["m1.tally.params_not_code_pinned", "m1.tally.external_lane_inactive"]], "every channel, collector, level-binding, inventory and receipt check passes on real evidence; the rig runs time-scaled test parameters (not the code-pinned BA0_FIELD_V1) and has no remote peer, so criterion 9 correctly refuses it as an M1 level");
+    // receipt reconciliation over the REAL evidence: every exact identity (processes' own counters = ledger attribution, channels = attributed events, pipeline chain, plane egress = boundary arrivals, canary client = ledger) holds
+    const receipts = evaluateReceipts(gatherReceiptInput(outcome.evidenceDirectory!));
+    assert.deepEqual([receipts.outcome, receipts.reasons], ["PASS", []], JSON.stringify(receipts.identities.filter((identity) => !identity.ok)));
+    assert.ok(receipts.identities.length >= 30 && receipts.identities.every((identity) => identity.ok));
+    assert.equal(receipts.campaignAttribution, "not_established");
     await assertTornDown(r);
   } finally { r.cleanup(); }
+});
+
+// ------------------------------------------------------------------------------------------------ provenance lifecycle over a real disposable run
+test("provenance lifecycle on a REAL run: commitment before the run, beacons from the run's own journal, finalization digest retained outside the package; substitution, replay, truncation and mismatched identity are detected; authenticity stays unverified", { timeout: 180_000 }, async () => {
+  const retained = fs.mkdtempSync(path.join(os.tmpdir(), "m1-lifecycle-retained-"));
+  const variants = fs.mkdtempSync(path.join(os.tmpdir(), "m1-lifecycle-variants-"));
+  const t = fast();
+  const session = new ProvenanceSession(retained, 100);
+  session.begin({ campaignId: "selftest-campaign", levelId: "ba0-l7-c1", paramsSha256: ba0FieldFingerprint(t).sha256, gitSha: "a".repeat(40) });
+  assert.ok(fs.existsSync(path.join(retained, "commitment.json")) && !fs.existsSync(path.join(retained, "final.json")), "the commitment exists BEFORE the run and nothing else does");
+  const r = await rig({ thresholds: t, seams: { provenance: session } });
+  try {
+    const outcome = await run(r);
+    assert.equal(outcome.status, "complete", JSON.stringify(outcome.serverSide?.reasons));
+    const directory = outcome.evidenceDirectory!;
+    assert.ok(!retained.startsWith(directory) && !directory.startsWith(retained), "the retained records live outside the SUT evidence directory");
+    const beaconLines = fs.readFileSync(path.join(retained, "beacons.ndjson"), "utf8").split("\n").filter(Boolean);
+    assert.ok(beaconLines.length >= 2, `rolling beacons were appended during the run: ${beaconLines.length}`);
+    const honest = session.verify(directory);
+    assert.deepEqual(honest.problems, []);
+    assert.deepEqual(honest.levels, { byteIntegrity: "VERIFIED", artifactCompleteness: "VERIFIED", runBinding: "VERIFIED", producerIdentity: "CLAIMED_UNVERIFIED", independentCorroboration: "CONSISTENT", authenticity: "UNVERIFIED" });
+    assert.deepEqual(honest.claims, { authenticated: false, independent: false });
+    assert.equal(honest.overall, "CONSISTENT_WITH_RECORDS");
+
+    // mismatched identity: a commitment for another campaign / parameter set
+    for (const [label, fields, problem] of [["campaign", { campaignId: "other-campaign" }, "runBinding:campaign_mismatch"], ["parameters", { paramsSha256: "d".repeat(64) }, "runBinding:parameters_mismatch"]] as const) {
+      const store = new RetainedRecords(path.join(variants, `mismatch-${label}`));
+      store.commit({ ...{ campaignId: "selftest-campaign", levelId: "ba0-l7-c1", paramsSha256: ba0FieldFingerprint(t).sha256 }, gitSha: "a".repeat(40), committedAt: new Date(Date.now() - 3_600_000).toISOString(), nonce: "m".repeat(16), ...(fields as Record<string, string>) });
+      fs.copyFileSync(path.join(retained, "beacons.ndjson"), path.join(store.directory, "beacons.ndjson")); fs.copyFileSync(path.join(retained, "final.json"), path.join(store.directory, "final.json"));
+      assert.ok(verifyProvenance(directory, store.directory).problems.includes(problem), label);
+    }
+    // replay: records written for a different run id
+    const replay = path.join(variants, "replay"); fs.cpSync(retained, replay, { recursive: true });
+    const other = fs.readFileSync(path.join(replay, "beacons.ndjson"), "utf8").replace(/"runId":"[^"]+"/gu, '"runId":"another-run"'); fs.writeFileSync(path.join(replay, "beacons.ndjson"), other);
+    assert.ok(verifyProvenance(directory, replay).problems.some((problem) => problem.includes("run_id") || problem.includes("chain_broken")));
+    // truncation: the last beacon removed from the retained chain
+    const truncated = path.join(variants, "truncated"); fs.cpSync(retained, truncated, { recursive: true });
+    fs.writeFileSync(path.join(truncated, "beacons.ndjson"), `${beaconLines.slice(0, -1).join("\n")}
+`);
+    assert.equal(verifyProvenance(directory, truncated).overall, "FAILED");
+    // substitution: an artifact replaced and consistently re-hashed (the package alone cannot tell) is contradicted by the retained finalization digest
+    const sha = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
+    const ledger = JSON.parse(fs.readFileSync(path.join(directory, "kind-ledger.json"), "utf8")) as Record<string, unknown>; ledger.total = (ledger.total as number) + 1;
+    const text = `${JSON.stringify(ledger, null, 2)}
+`; fs.writeFileSync(path.join(directory, "kind-ledger.json"), text);
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, "manifest.json"), "utf8")) as { artifacts: { name: string; sha256: string; bytes: number }[] };
+    const entry = manifest.artifacts.find((artifact) => artifact.name === "kind-ledger.json")!; entry.sha256 = sha(text); entry.bytes = Buffer.byteLength(text);
+    const manifestText = `${JSON.stringify(manifest, null, 2)}
+`; fs.writeFileSync(path.join(directory, "manifest.json"), manifestText);
+    fs.writeFileSync(path.join(directory, "SHA256SUMS"), `${fs.readFileSync(path.join(directory, "SHA256SUMS"), "utf8").trim().split("\n").map((line) => (line.endsWith("  kind-ledger.json") ? `${sha(text)}  kind-ledger.json` : line.endsWith("  manifest.json") ? `${sha(manifestText)}  manifest.json` : line)).join("\n")}
+`);
+    const substituted = session.verify(directory);
+    assert.equal(substituted.levels.byteIntegrity, "VERIFIED");
+    assert.ok(substituted.problems.includes("independentCorroboration:finalization_digest_mismatch"));
+    assert.equal(substituted.overall, "FAILED");
+    await assertTornDown(r);
+  } finally { r.cleanup(); fs.rmSync(retained, { recursive: true, force: true }); fs.rmSync(variants, { recursive: true, force: true }); }
 });
 
 // ------------------------------------------------------------------------------------------------ STOP: forensic freeze

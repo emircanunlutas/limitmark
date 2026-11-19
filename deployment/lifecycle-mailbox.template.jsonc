@@ -6,7 +6,7 @@
   "compatibility_date": "2026-09-13",
   "workers_dev": false,
   "preview_urls": false,
-  "triggers": { "crons": ["* * * * *"] },
+  "triggers": { "crons": [] },
   "r2_buckets": [
     { "binding": "REQUEST_BUCKET", "bucket_name": "limitmark-lifecycle-requests-production" },
     { "binding": "RESULT_BUCKET", "bucket_name": "limitmark-lifecycle-results-production" }
@@ -19,6 +19,7 @@
   ],
   "vars": {
     "AUTHORITY_OPERATOR_PUBLIC_KEY": "__REQUIRED_OPERATOR_ED25519_PUBLIC_KEY__",
+    "CLOUDFLARE_ACCOUNT_ID": "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__",
     "LIFECYCLE_ENVIRONMENT": "production"
   }
 }

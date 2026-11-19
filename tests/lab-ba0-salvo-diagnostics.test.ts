@@ -37,7 +37,8 @@ import { BA0_ORIGIN_LOCAL_V1 } from "../lab/defense/origin-thresholds";
 import { DEFAULT_EXTERNAL_LIMITS } from "../lab/defense/external-reducer";
 import * as salvoSpecModule from "../lab/defense/salvo-spec";
 import { N2ServerObserver } from "../lab/defense/n2-measurement";
-import { assertReviewedPatchBoundary, withoutReviewedPatches } from "./support/reviewed-patches";
+import { assertReviewedPatchBoundary } from "./support/reviewed-patches";
+import { assertMigrationBoundary, withoutReviewedChanges } from "./support/reviewed-migrations";
 import { refreshFixture, salvoFixture } from "./support/salvo-fixture";
 
 const root = path.join(__dirname, "..");
@@ -482,8 +483,9 @@ test("the server observer's existing pair records and counters are identical to 
 });
 
 test("files that decide admission, rejection, L1/L2, forwarding, canary behavior and every G1-G6 identity are byte-identical to the baseline commit", () => {
-  const diff = (paths: string[]) => execFileSync("git", ["diff", BASELINE, "--", ...withoutReviewedPatches(paths)], { cwd: root, encoding: "utf8" });
+  const diff = (paths: string[]) => execFileSync("git", ["diff", BASELINE, "--", ...withoutReviewedChanges(paths)], { cwd: root, encoding: "utf8" });
   assertReviewedPatchBoundary(root, BASELINE); // the reviewed-patch registry (P0-01, P0-02): each listed file is the unmodified historical blob at BASELINE and, in the working tree, exactly its pinned reviewed version
+  assertMigrationBoundary(root, BASELINE); // append-only migration registry: only APPROVED entries exempt anything (tests/support/reviewed-migrations.ts)
   assert.equal(diff(["defense", "src", "workers", "lab/policy", "lab/defense/salvo-spec.ts", "lab/defense/salvo-reconcile.ts", "lab/defense/reconcile.ts", "lab/defense/field-verdict.ts",
     "lab/defense/n2-measurement.ts", "lab/defense/external-reducer.ts", "lab/defense/external-accounting.ts", "lab/defense/canary.ts", "lab/defense/field-canary.ts", "lab/defense/collector.ts",
     "lab/defense/exposure-proof.ts", "lab/evidence"]), "");

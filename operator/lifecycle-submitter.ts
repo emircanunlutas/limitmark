@@ -1,5 +1,5 @@
 import { decodeCanonicalBase64url } from "../src/lib/ingress-protocol";
-import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, STAGING_ADMISSION_AUTHORITY_ID } from "../workers/admission-service/authority";
+import { ADMISSION_AUTHORITY_ID, ADMISSION_POLICY_EPOCH, LAB_ADMISSION_AUTHORITY_ID, STAGING_ADMISSION_AUTHORITY_ID } from "../workers/admission-service/authority";
 import {
   AUTHORITY_OPERATOR_COMMAND_VERSION,
   expectedCommandReceipt,
@@ -28,6 +28,8 @@ export type AdmissionLifecycleBinding = {
 };
 /** Staging binds initialization only: its rotation is permanently closed (Gate 9). */
 export type StagingAdmissionLifecycleBinding = Pick<AdmissionLifecycleBinding, "initializeAuthorityFromOperatorAttested">;
+/** The laboratory binds initialization only, like staging: lab rotation is not implemented and is refused. */
+export type LabAdmissionLifecycleBinding = Pick<AdmissionLifecycleBinding, "initializeAuthorityFromOperatorAttested">;
 
 // The sealed format is deliberately narrower than general JSON. Each object key is
 // checked before JSON.parse, so duplicate members cannot silently override data.
@@ -85,7 +87,7 @@ export function parseStrictJson(source: string): unknown {
  * Nothing here depends on the current time, so the same logic serves submission and historical authentication.
  * `operation` undefined accepts either lifecycle operation (the command itself then names it). */
 function parseSealedLifecycleArtifactInvariant(bytes: Uint8Array, operation: LifecycleOperation | undefined,
-  expectedEnvironment: "production" | "staging"): SealedLifecycleArtifact {
+  expectedEnvironment: "production" | "staging" | "lab"): SealedLifecycleArtifact {
   if (!bytes.length || bytes.byteLength > MAX_SEALED_ARTIFACT_BYTES) throw new Error("invalid-sealed-artifact");
   let value: unknown;
   try {
@@ -98,7 +100,8 @@ function parseSealedLifecycleArtifactInvariant(bytes: Uint8Array, operation: Lif
   if (Object.keys(record).length !== 2 || !Object.hasOwn(record, "command") || !Object.hasOwn(record, "signature") ||
       !Array.isArray(record.command) || typeof record.signature !== "string") throw new Error("invalid-sealed-artifact");
   const command = record.command as unknown as SealedLifecycleArtifact["command"];
-  const expectedAuthorityId = expectedEnvironment === "staging" ? STAGING_ADMISSION_AUTHORITY_ID : ADMISSION_AUTHORITY_ID;
+  const expectedAuthorityId = expectedEnvironment === "staging" ? STAGING_ADMISSION_AUTHORITY_ID :
+    expectedEnvironment === "lab" ? LAB_ADMISSION_AUTHORITY_ID : ADMISSION_AUTHORITY_ID;
   if (command[0] !== AUTHORITY_OPERATOR_COMMAND_VERSION || !(operation === undefined ? command[1] === "initialize" || command[1] === "rotate-release" : command[1] === operation) ||
       command[2] !== expectedEnvironment || command[3] !== expectedAuthorityId || command[4] !== ADMISSION_POLICY_EPOCH) throw new Error("invalid-sealed-artifact");
   try {
@@ -117,7 +120,7 @@ function assertSubmissionEligible(command: SealedLifecycleArtifact["command"], n
 }
 
 export function parseSealedLifecycleArtifact(bytes: Uint8Array, operation: LifecycleOperation, nowMs = Date.now(),
-  expectedEnvironment: "production" | "staging" = "production"): SealedLifecycleArtifact {
+  expectedEnvironment: "production" | "staging" | "lab" = "production"): SealedLifecycleArtifact {
   if (!Number.isSafeInteger(nowMs)) throw new Error("invalid-sealed-artifact");
   const artifact = parseSealedLifecycleArtifactInvariant(bytes, operation, expectedEnvironment);
   assertSubmissionEligible(artifact.command, nowMs);
@@ -142,7 +145,7 @@ export function isAuthenticatedLifecycleCommand(value: unknown): value is Authen
 /** Historical authentication for result verification: the same invariant parser and signature logic as submission, but
  * with no freshness. It authenticates that the operator signed exactly this command; it does not make it submittable. */
 export async function authenticateSealedLifecycleArtifact(bytes: Uint8Array, operatorPublicKey: string,
-  options: { expectedOperation?: LifecycleOperation; expectedEnvironment?: "production" | "staging" } = {}): Promise<AuthenticatedLifecycleCommand> {
+  options: { expectedOperation?: LifecycleOperation; expectedEnvironment?: "production" | "staging" | "lab" } = {}): Promise<AuthenticatedLifecycleCommand> {
   const artifact = parseSealedLifecycleArtifactInvariant(bytes, options.expectedOperation, options.expectedEnvironment ?? "production");
   await verifyOperatorCommand(artifact.command, artifact.signature, operatorPublicKey);
   const expected = await expectedCommandReceipt(artifact.command, operatorPublicKey);
@@ -157,7 +160,7 @@ export async function authenticateSealedLifecycleArtifact(bytes: Uint8Array, ope
  * rewritten: an ATTESTED envelope keeps its exact bytes. A transport exception or a malformed answer is UNCONFIRMED. */
 export async function submitSealedLifecycleArtifact(bytes: Uint8Array, operation: LifecycleOperation,
   admission: AdmissionLifecycleBinding | StagingAdmissionLifecycleBinding, operatorPublicKey: string, nowMs = Date.now(),
-  expectedEnvironment: "production" | "staging" = "production"): Promise<LifecycleResult> {
+  expectedEnvironment: "production" | "staging" | "lab" = "production"): Promise<LifecycleResult> {
   const artifact = parseSealedLifecycleArtifact(bytes, operation, nowMs, expectedEnvironment);
   await verifyOperatorCommand(artifact.command, artifact.signature, operatorPublicKey);
   try {

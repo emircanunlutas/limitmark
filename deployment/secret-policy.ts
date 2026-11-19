@@ -17,6 +17,14 @@ export function validateRuntimeSecrets(runtime: RuntimeName, environment: Enviro
   return new Set(values).size === values.length;
 }
 
+/** Variables that must never exist on the production Vercel application project (laboratory runtime selector, laboratory credentials, Google-lab identity). Pinned by
+ * the project contract (validated below) and enforced at runtime by the production factory. */
+export const PRODUCTION_FORBIDDEN_EXACT_NAMES = Object.freeze(["LIMITMARK_RUNTIME", "ADMISSION_IDENTITY_MODE"]);
+export const PRODUCTION_FORBIDDEN_NAME_PREFIXES = Object.freeze(["LAB_", "GOOGLE_"]);
+export function isForbiddenProductionApplicationVariable(name: string): boolean {
+  return PRODUCTION_FORBIDDEN_EXACT_NAMES.includes(name) || PRODUCTION_FORBIDDEN_NAME_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
 export function validateVercelProjectContract(value: unknown): boolean {
   const contract = object(value);
   const production = object(contract?.productionApplicationProject);
@@ -39,6 +47,9 @@ export function validateVercelProjectContract(value: unknown): boolean {
   if (production.systemEnvironmentVariableAccess !== "enabled" || production.deploymentProtectionScope !== "all-deployments" ||
       JSON.stringify(production.productionBoundary) !== JSON.stringify({ VERCEL: "1", VERCEL_ENV: "production" }) ||
       JSON.stringify(production.applicationRoutes) !== JSON.stringify(["public", "admin"])) return false;
+  const forbiddenEnvironment = object(production?.forbiddenEnvironmentConfiguration);
+  if (!forbiddenEnvironment || JSON.stringify(forbiddenEnvironment.exactNames) !== JSON.stringify(PRODUCTION_FORBIDDEN_EXACT_NAMES) ||
+      JSON.stringify(forbiddenEnvironment.namePrefixes) !== JSON.stringify(PRODUCTION_FORBIDDEN_NAME_PREFIXES)) return false;
   if (publicTarget.projectRef !== "P" || adminTarget.projectRef !== "P" || typeof adminTarget.target !== "string" || !adminTarget.target) return false;
   if (publicBypass.contractId !== "B-public" || adminBypass.contractId !== "B-admin" ||
       publicBypass.authorityScope !== "project-wide-deployment-protection-bypass" || adminBypass.authorityScope !== "project-wide-deployment-protection-bypass" ||

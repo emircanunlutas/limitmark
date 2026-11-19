@@ -33,6 +33,11 @@ export const ATTESTATION_SIGNER_BINDINGS = Object.freeze({
     publicKey: "AUTHORITY_STAGING_ATTESTATION_PUBLIC_KEY",
     writerKeyFingerprint: "AUTHORITY_STAGING_ATTESTATION_KEY_FINGERPRINT",
   }),
+  lab: Object.freeze({
+    privateKey: "AUTHORITY_LAB_ATTESTATION_PRIVATE_KEY",
+    publicKey: "AUTHORITY_LAB_ATTESTATION_PUBLIC_KEY",
+    writerKeyFingerprint: "AUTHORITY_LAB_ATTESTATION_KEY_FINGERPRINT",
+  }),
 } as const);
 
 function present(environment: Readonly<Record<string, unknown>>, name: string): string | undefined {
@@ -45,9 +50,10 @@ export function authorityAttestationRuntimeFromEnvironment(environment: Attestat
   if (typeof workerEnvironment !== "object" || workerEnvironment === null) return {};
   const source = workerEnvironment as Readonly<Record<string, unknown>>;
   const own = ATTESTATION_SIGNER_BINDINGS[environment];
-  const other = ATTESTATION_SIGNER_BINDINGS[environment === "production" ? "staging" : "production"];
+  // Any binding of ANY other environment makes this Authority misconfigured: it is left without a signer.
+  const others = (Object.keys(ATTESTATION_SIGNER_BINDINGS) as AttestationEnvironment[]).filter((name) => name !== environment).map((name) => ATTESTATION_SIGNER_BINDINGS[name]);
   try {
-    if (Object.values(other).some((name) => present(source, name) !== undefined)) return {};
+    if (others.some((names) => Object.values(names).some((name) => present(source, name) !== undefined))) return {};
     const privateKey = present(source, own.privateKey);
     const publicKey = present(source, own.publicKey);
     const writerKeyFingerprint = present(source, own.writerKeyFingerprint);

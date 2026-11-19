@@ -54,6 +54,21 @@ test("direct-origin spoofing, duplicate secrets and host manipulation cannot aut
   assert.equal(isPublicOriginAllowed(www, environment), true);
 });
 
+test("laboratory origin protection separates Cloud Run origin and public hostname", () => {
+  const labEnvironment = {
+    LIMITMARK_RUNTIME: "cloud-run-lab", PUBLIC_ORIGIN_PROTECTION: "required",
+    PUBLIC_ORIGIN_SECRET: secret, PUBLIC_ORIGIN_HOSTNAME: "origin-lab.run.app",
+    PUBLIC_ORIGIN_PUBLIC_HOSTNAME: "inquiry-lab.example",
+  };
+  const validLab = new Headers({ host: "origin-lab.run.app", "x-forwarded-host": "inquiry-lab.example", [publicOriginHeader]: secret });
+  assert.equal(isPublicOriginAllowed(validLab, labEnvironment), true);
+  for (const change of [{ host: "inquiry-lab.example" }, { "x-forwarded-host": "attacker.example" }, { host: "origin-lab.run.app:443" }]) {
+    const headers = new Headers(validLab);
+    for (const [name, value] of Object.entries(change)) headers.set(name, value);
+    assert.equal(isPublicOriginAllowed(headers, labEnvironment), false);
+  }
+});
+
 test("legacy direct-IP derivation stays disabled while signed ingress configuration is selected", () => {
   const headers = valid();
   headers.set("cf-connecting-ip", "203.0.113.9");

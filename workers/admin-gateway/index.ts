@@ -1,6 +1,7 @@
 import { createAdminGateway } from "./gateway";
 import { validateRuntimeSecrets } from "../../deployment/secret-policy";
-export { ADMIN_GATEWAY_HOST, createAdminGateway, type AdminGatewayConfiguration } from "./gateway";
+// Non-handler exports are deliberately absent: workerd rejects a module export that is not a handler/class ("Incorrect type for map entry"),
+// so the deployable entry exposes only the default handler. Tests import ./gateway directly.
 
 export type AdminGatewayEnvironment = {
   VERCEL_ADMIN_UPSTREAM_ORIGIN: string;

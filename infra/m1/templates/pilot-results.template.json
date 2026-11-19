@@ -1,0 +1,13 @@
+{
+  "_comment": "TEMPLATE for the record of an executed infrastructure pilot. Nothing in it has happened. `npm run lab:m1 -- pilot --results <real copy>` exits 0 (PILOT_PASS) only when all ten checks are PASS with timestamps and every required evidence kind, the teardown was last and nothing remains. Remove this _comment key from the real copy.",
+  "schema": "m1-pilot-results-v1",
+  "runId": "pilot-__OWNER_REQUIRED__",
+  "commit": "__OWNER_REQUIRED__",
+  "authorizationSha256": "__OWNER_REQUIRED__",
+  "trafficProfile": "smoke",
+  "observationProfile": "REMOTE_PRIVATE",
+  "attackTraffic": false,
+  "qualificationWorkload": false,
+  "checks": [],
+  "cleanup": { "verifiedAt": null, "remainingDisposableResources": null, "inventory": { "_comment": "one entry per category: { \"remaining\": N, \"retained\": \"reason (buckets and projects only)\" }; categories: instances, disks, addresses, firewall_rules, networks_and_peerings, routers, dns_zones, scheduler_jobs, functions, eventarc_triggers, pubsub_topics, service_accounts, buckets, billing_budgets, projects" } }
+}

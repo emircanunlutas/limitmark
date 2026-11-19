@@ -6,6 +6,7 @@ import { handlePublicInquiry } from "../src/lib/public-inquiry-handler.server";
 import { createIngressEnvelope, encodeBase64url, INGRESS_BODY_ENCODING, INGRESS_ENVIRONMENT, INGRESS_HEADER, INGRESS_IDENTITY_VERSION,
   INGRESS_MUTATION_CONTENT_TYPE, INGRESS_MUTATION_PATH, INGRESS_VERSION, sha256Base64url, type IngressPayload } from "../src/lib/ingress-protocol";
 import { importRequestBindingKey } from "../src/lib/ingress-verifier.server";
+import { beginPublicInquiryRequest, getPublicInquiryTelemetrySnapshot } from "../src/lib/public-inquiry-telemetry.server";
 
 const token = "s".repeat(43);
 function validBody(extra: Record<string, string> = {}) {
@@ -54,6 +55,36 @@ test("compressed, wrong content type, duplicate and unknown public bodies are re
   assert.equal((await handlePublicInquiry(demoRequest(validBody(), { contentType: "application/json" }), { environment: demoEnvironment })).status, 404);
   assert.equal((await handlePublicInquiry(demoRequest(`${validBody()}&name=again`), { environment: demoEnvironment })).status, 400);
   assert.equal((await handlePublicInquiry(demoRequest(`${validBody()}&unknown=x`), { environment: demoEnvironment })).status, 400);
+});
+
+test("public request telemetry counts outcomes and stays bounded", async () => {
+  const before = getPublicInquiryTelemetrySnapshot();
+  const success = await handlePublicInquiry(demoRequest(), { environment: demoEnvironment });
+  const rejected = await handlePublicInquiry(demoRequest(validBody(), { origin: "https://attacker.test" }), { environment: demoEnvironment });
+  assert.equal(success.status, 200);
+  assert.equal(rejected.status, 403);
+
+  await Promise.all(Array.from({ length: 1_100 }, () => handlePublicInquiry(demoRequest(), { environment: demoEnvironment })));
+  const after = getPublicInquiryTelemetrySnapshot();
+  assert.equal(after.incoming - before.incoming, 1_102);
+  assert.equal(after.accepted - before.accepted, 1_101);
+  assert.equal(after.rejected - before.rejected, 1);
+  assert.equal(after.active, before.active);
+  assert.ok(after.latencySampleCount <= after.latencySampleCapacity);
+  assert.equal(after.latencySampleCapacity, 1_024);
+  assert.ok(after.latencyMs.p50 !== null && after.latencyMs.p95 !== null && after.latencyMs.p99 !== null);
+  const serialized = JSON.stringify(after);
+  assert.doesNotMatch(serialized, /qa@example\.test|submissionToken|attacker\.test|127\.0\.0\.1/);
+});
+
+test("public request telemetry tracks in-flight work until completion", () => {
+  const before = getPublicInquiryTelemetrySnapshot();
+  const finish = beginPublicInquiryRequest();
+  assert.equal(getPublicInquiryTelemetrySnapshot().active, before.active + 1);
+  finish();
+  const after = getPublicInquiryTelemetrySnapshot();
+  assert.equal(after.active, before.active);
+  assert.equal(after.incoming, before.incoming + 1);
 });
 
 test("former public Server Action has no persistence-capable dependencies", async () => {

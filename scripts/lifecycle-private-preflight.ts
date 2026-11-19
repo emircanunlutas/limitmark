@@ -7,7 +7,7 @@ import {
 } from "../deployment/lifecycle-private-contract";
 
 const modes = ["mailbox", "observer", "transport", "staging-mailbox", "staging-observer", "staging-transport",
-  "staging-mailbox-arm", "staging-observer-arm"] as const;
+  "staging-mailbox-arm", "staging-observer-arm", "mailbox-arm", "observer-arm"] as const;
 // Gate 5A closed the two reviewed Gate 5 rendered filenames. Gate 6A closes
 // the third: staging-transport now also accepts only the exact reviewed
 // rendered filename. Gate 7A adds the two ARMED modes: a distinct exact
@@ -21,7 +21,12 @@ const modes = ["mailbox", "observer", "transport", "staging-mailbox", "staging-o
 // transport) are still unchanged -- this repository has no reviewed
 // deployment plan for them yet, so only directory placement is enforced for
 // those.
+// Production schedule safety: the production `mailbox`/`observer` modes now require PRODUCTION_DEPLOYMENT_INACTIVE (no Cron) and refuse an armed config.
+// The `-arm` modes are the explicit, separately authorized mirror image: an exact armed filename produced only by
+// scripts/authority-production-schedule-arm.ts, requiring PRODUCTION_SCHEDULE_ARMED. Neither mode deploys anything.
 const exactStagingRenderedConfigName: Partial<Record<(typeof modes)[number], string>> = {
+  "mailbox-arm": "lifecycle-mailbox.production.armed.jsonc",
+  "observer-arm": "lifecycle-observer.production.armed.jsonc",
   "staging-mailbox": "lifecycle-mailbox.staging.jsonc",
   "staging-observer": "lifecycle-observer.staging.jsonc",
   "staging-transport": "lifecycle-transport.staging.json",
@@ -44,9 +49,14 @@ async function main(): Promise<void> {
   const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(data);
   if (source.charCodeAt(0) === 0xfeff) throw new Error("config-bom");
   const config = parseStrictJson(source);
-  if (mode === "mailbox") validateLifecycleMailboxConfig(config, false);
-  else if (mode === "observer") validateLifecycleObserverConfig(config, false);
-  else if (mode === "transport") validateLifecycleTransportManifest(config, false);
+  if (mode === "mailbox" || mode === "mailbox-arm" || mode === "observer" || mode === "observer-arm") {
+    const requireScheduleState = mode.endsWith("-arm") ? "PRODUCTION_SCHEDULE_ARMED" : "PRODUCTION_DEPLOYMENT_INACTIVE";
+    if (mode.startsWith("mailbox")) validateLifecycleMailboxConfig(config, false, requireScheduleState);
+    else validateLifecycleObserverConfig(config, false, requireScheduleState);
+    process.stdout.write(`Private lifecycle contract preflight: PASS (local validation only). Schedule state: ${requireScheduleState}\n`);
+    return;
+  }
+  if (mode === "transport") validateLifecycleTransportManifest(config, false);
   else if (mode === "staging-transport") validateStagingLifecycleTransportManifest(config, false);
   else {
     // Gate 5A: Gate 5 deployment must only ever render/preflight the inactive

@@ -3,6 +3,7 @@
 export const INGRESS_HEADER = "x-limitmark-ingress";
 export const INGRESS_VERSION = "lm-ingress-v1";
 export const INGRESS_ENVIRONMENT = "production";
+export const LAB_INGRESS_ENVIRONMENT = "cloud-run-lab";
 export const INGRESS_IDENTITY_VERSION = "prod-ip-hmac-v1";
 export const INGRESS_NO_NONCE = "-";
 export const INGRESS_SIGNING_DOMAIN = "limitmark:ingress:ed25519:v1\0";
@@ -32,7 +33,7 @@ export const ingressFieldMaximums = {
 export type IngressPayload = readonly [
   version: typeof INGRESS_VERSION,
   keyId: string,
-  environment: typeof INGRESS_ENVIRONMENT,
+  environment: typeof INGRESS_ENVIRONMENT | typeof LAB_INGRESS_ENVIRONMENT,
   audience: string,
   deploymentId: string,
   issuedAtMs: number,
@@ -102,7 +103,7 @@ function validatePayload(value: unknown): asserts value is IngressPayload {
   if (!Array.isArray(value) || value.length !== 18) fail("field-count");
   if (value[0] !== INGRESS_VERSION) fail("version");
   boundedAscii(value[1], "key-id", ingressFieldMaximums.keyId, /^[A-Za-z0-9_-]+$/);
-  if (value[2] !== INGRESS_ENVIRONMENT) fail("environment");
+  if (value[2] !== INGRESS_ENVIRONMENT && value[2] !== LAB_INGRESS_ENVIRONMENT) fail("environment");
   boundedAscii(value[3], "audience", ingressFieldMaximums.audience, /^[A-Za-z0-9_.:-]+$/);
   boundedAscii(value[4], "deployment", ingressFieldMaximums.deploymentId, /^[A-Za-z0-9_.:-]+$/);
   if (!Number.isSafeInteger(value[5]) || value[5] < 0) fail("issued-at");
@@ -123,7 +124,7 @@ function validatePayload(value: unknown): asserts value is IngressPayload {
   if (value[17] !== INGRESS_NO_NONCE) decodeCanonicalBase64url(value[17], 16);
 
   if (value[6] === "POST") {
-    if (value[8] !== "limitmark.com" || value[9] !== INGRESS_MUTATION_PATH || value[10] !== "" ||
+    if ((value[2] === INGRESS_ENVIRONMENT && value[8] !== "limitmark.com") || value[9] !== INGRESS_MUTATION_PATH || value[10] !== "" ||
         value[11] !== INGRESS_MUTATION_CONTENT_TYPE || value[17] === INGRESS_NO_NONCE) fail("mutation-policy");
   } else if (value[11] !== "-" || value[13] !== 0 || value[14] !== EMPTY_SHA256_BASE64URL || value[17] !== INGRESS_NO_NONCE) {
     fail("safe-read-policy");

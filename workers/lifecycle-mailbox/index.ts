@@ -16,3 +16,4 @@ const lifecycleMailbox = {
 export default lifecycleMailbox;
 
 export { LifecycleDispatchGuard } from "./dispatch-guard";
+export { LifecycleGuardReadOnly } from "./guard-reader";

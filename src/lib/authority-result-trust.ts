@@ -26,6 +26,7 @@ import {
 export const TRUST_MANIFEST_VERSION = 1 as const;
 export const TRUST_MANIFEST_MAX_BYTES = 16_384;
 const ENVIRONMENT_ORDER: readonly AttestationEnvironment[] = ["production", "staging"];
+const LAB_ENVIRONMENT_ORDER: readonly AttestationEnvironment[] = ["lab"];
 
 export interface AttestationTrustKey {
   readonly keyFingerprint: string;
@@ -98,6 +99,17 @@ async function parseEnvironment(value: unknown, environment: AttestationEnvironm
 }
 
 export async function parseAuthorityResultTrustManifest(source: string | Uint8Array): Promise<AuthorityResultTrustManifest> {
+  return parseManifestFor(source, ENVIRONMENT_ORDER);
+}
+
+/** The laboratory trust manifest lists exactly one section, `lab`. It is a different document from the production/staging manifest:
+ * the two-section parser rejects it and this parser rejects a two-section manifest, so evidence can never be verified against the wrong
+ * environment's keys. */
+export async function parseLabAuthorityResultTrustManifest(source: string | Uint8Array): Promise<AuthorityResultTrustManifest> {
+  return parseManifestFor(source, LAB_ENVIRONMENT_ORDER);
+}
+
+async function parseManifestFor(source: string | Uint8Array, order: readonly AttestationEnvironment[]): Promise<AuthorityResultTrustManifest> {
   let text: string;
   try {
     if (typeof source === "string") text = source;
@@ -112,13 +124,13 @@ export async function parseAuthorityResultTrustManifest(source: string | Uint8Ar
   try { value = parseStrictJsonText(text, "attestation-manifest"); } catch { return bad(); }
   const top = exactRecord(value, ["manifestVersion", "attestationVersion", "trustEpoch", "environments"]);
   if (top.manifestVersion !== TRUST_MANIFEST_VERSION || top.attestationVersion !== ATTESTATION_VERSION ||
-      top.trustEpoch !== ATTESTATION_TRUST_EPOCH || !Array.isArray(top.environments) || top.environments.length !== ENVIRONMENT_ORDER.length) return bad();
-  const environments = await Promise.all(ENVIRONMENT_ORDER.map((environment, index) => parseEnvironment((top.environments as unknown[])[index], environment)));
+      top.trustEpoch !== ATTESTATION_TRUST_EPOCH || !Array.isArray(top.environments) || top.environments.length !== order.length) return bad();
+  const environments = await Promise.all(order.map((environment, index) => parseEnvironment((top.environments as unknown[])[index], environment)));
   const all = environments.flatMap((section) => section.keys);
   if (new Set(all.map((key) => key.keyFingerprint)).size !== all.length || new Set(all.map((key) => key.publicKey)).size !== all.length) bad();
   const manifest: AuthorityResultTrustManifest = Object.freeze({
     manifestVersion: TRUST_MANIFEST_VERSION, attestationVersion: ATTESTATION_VERSION, trustEpoch: ATTESTATION_TRUST_EPOCH,
-    environments: Object.freeze([environments[0], environments[1]]) as unknown as AuthorityResultTrustManifest["environments"] });
+    environments: Object.freeze([...environments]) as unknown as AuthorityResultTrustManifest["environments"] });
   parsedManifests.add(manifest);
   return manifest;
 }
@@ -179,7 +191,7 @@ function snapshotExpectations(value: unknown): ResultAttestationExpectations {
   const authorityId = data("authorityId");
   const policyEpoch = data("policyEpoch");
   const digest = data("digest");
-  if ((environment !== "production" && environment !== "staging") || authorityId !== ATTESTATION_AUTHORITY_IDS[environment] ||
+  if ((environment !== "production" && environment !== "staging" && environment !== "lab") || authorityId !== ATTESTATION_AUTHORITY_IDS[environment] ||
       policyEpoch !== ATTESTATION_POLICY_EPOCH || !isLowerHex64(digest)) throw new Error("attestation-expectation");
   if (kind === "lifecycle") return Object.freeze({ kind, environment, authorityId, policyEpoch, digest });
   const nonce = data("nonce");

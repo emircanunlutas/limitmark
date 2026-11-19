@@ -1,0 +1,15 @@
+{
+  "note": "Planning ledger for the INFRASTRUCTURE-ONLY pilot (no attack traffic, no qualification workload). Prices and exchange rate are ASSUMED and unverified. The pilot's first job is to turn the 'provider_limit' and 'automated_stop' rows from unverified into verified; until then none of this is a spending cap. The owner must approve a maximum pilot budget (proposal: 150 TRY, about 5x the structural estimate) before any apply.",
+  "assumptions": { "e2-standard-2 usd/h": 0.1, "e2-small usd/h": 0.04, "try per usd (high case)": 45, "pilot vm hours (run_max_seconds 7200 is the provider-enforced maximum)": 2, "smoke traffic gb": 0.01, "proposed owner maximum try": 150 },
+  "components": [
+    { "name": "vm-compute (2 x e2-standard-2, 2 x e2-small, at most 2 h)", "estimatedUsd": 0.56, "enforcement": "provider_limit", "verified": false, "residualAfterStop": "none after instance deletion; boot disks auto-delete with the instance" },
+    { "name": "expiry test repetition (second short-lived fleet)", "estimatedUsd": 0.28, "enforcement": "provider_limit", "verified": false, "residualAfterStop": "none after instance deletion" },
+    { "name": "vCPU quota override (8 per project)", "estimatedUsd": 0, "enforcement": "provider_limit", "verified": false, "residualAfterStop": "none" },
+    { "name": "smoke connectivity traffic (single connects, DNS lookups, marker objects)", "estimatedUsd": 0.01, "enforcement": "none", "verified": false, "residualAfterStop": "none once traffic stops" },
+    { "name": "persistent disks", "estimatedUsd": 0.1, "enforcement": "automated_stop", "verified": false, "residualAfterStop": "orphaned disks if an instance is deleted but disk auto-delete failed; not covered by the reaper" },
+    { "name": "VPC flow logs and Cloud Logging", "estimatedUsd": 0.2, "enforcement": "none", "verified": false, "residualAfterStop": "log storage continues at provider default retention" },
+    { "name": "evidence bucket (versioning, soft delete, 30 day retention, marker objects only)", "estimatedUsd": 0.01, "enforcement": "none", "verified": false, "residualAfterStop": "billed for the whole retention period; the pilot should use its own sandbox evidence project so that it can be deleted" },
+    { "name": "kill-switch function, Pub/Sub, Scheduler (while the stack exists)", "estimatedUsd": 0.05, "enforcement": "none", "verified": false, "residualAfterStop": "runs every 5 minutes for as long as the stack exists; destroy it at teardown" },
+    { "name": "provider budget alerts", "estimatedUsd": null, "enforcement": "alert", "verified": false, "residualAfterStop": "alerts lag billing data by hours and do not stop spend" }
+  ]
+}

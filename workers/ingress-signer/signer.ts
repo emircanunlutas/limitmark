@@ -3,6 +3,7 @@ import {
   INGRESS_ENVIRONMENT,
   INGRESS_HEADER,
   INGRESS_IDENTITY_VERSION,
+  LAB_INGRESS_ENVIRONMENT,
   INGRESS_MAX_BODY_BYTES,
   INGRESS_MAX_HEADER_BYTES,
   INGRESS_MUTATION_CONTENT_TYPE,
@@ -19,22 +20,25 @@ import {
 import { CLOUDFLARE_CLIENT_IP_HEADER, deriveClientPseudonym } from "./identity";
 
 export type IngressSignerConfiguration = {
-  environment: "production";
-  publicHosts: readonly ["limitmark.com", "www.limitmark.com"];
-  targetOrigin: "https://limitmark.com";
+  environment: "production" | "cloud-run-lab";
+  publicHosts: readonly string[];
+  targetOrigin: string;
+  originHostname: string;
   audience: string;
   deploymentId: string;
   keyId: string;
   signingPrivateKeyPkcs8: string;
   identityHmacKey: string;
   originSecret: string;
-  vercelBypassSecret: string;
+  vercelBypassSecret?: string;
+  cloudRunAuthorizationToken?: () => Promise<string>;
 };
 
 const strippedHeaders = new Set([
   INGRESS_HEADER, "x-limitmark-client", "x-limitmark-origin-secret", "authorization",
   "proxy-authorization", "x-internal-service-auth", "x-admission-oidc", "x-admission-rpc",
   "x-vercel-protection-bypass", "x-vercel-set-bypass-cookie", "x-vercel-deployment-url",
+  "x-serverless-authorization",
   "x-matched-path", "x-now-route-matches", "x-forwarded-for", "x-real-ip", "true-client-ip",
   "cf-connecting-ip", "cf-connecting-ipv6", "cf-pseudo-ipv4", "forwarded",
   "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "host",
@@ -76,6 +80,14 @@ async function importSigningKey(value: string, subtle: SubtleCrypto): Promise<Cr
   return subtle.importKey("pkcs8", toArrayBuffer(decodeCanonicalBase64url(value)), { name: "Ed25519" }, false, ["sign"]);
 }
 
+/** Secret-distinctness invariant (F-1). Production: signing key, identity HMAC key, origin secret AND the Vercel bypass secret must be pairwise distinct; the
+ * laboratory has no bypass secret, so its three must be. Enforced here as well as by the Worker-level runtime secret policy (defense in depth). */
+function distinctSecrets(configuration: IngressSignerConfiguration): boolean {
+  const secrets = [configuration.signingPrivateKeyPkcs8, configuration.identityHmacKey, configuration.originSecret,
+    ...(configuration.environment === "production" ? [configuration.vercelBypassSecret] : [])];
+  return secrets.every((secret) => typeof secret === "string" && secret.length > 0) && new Set(secrets).size === secrets.length;
+}
+
 export function createIngressSigner(configuration: IngressSignerConfiguration, dependencies: {
   fetch?: typeof fetch;
   now?: () => number;
@@ -89,19 +101,22 @@ export function createIngressSigner(configuration: IngressSignerConfiguration, d
 
   return async function handle(request: Request): Promise<Response> {
     try {
-      if (configuration.environment !== "production" || configuration.targetOrigin !== "https://limitmark.com") return new Response(null, { status: 503 });
-      if (new Set([configuration.signingPrivateKeyPkcs8, configuration.identityHmacKey, configuration.originSecret, configuration.vercelBypassSecret]).size !== 4) return new Response(null, { status: 503 });
+      if (configuration.environment === "cloud-run-lab" && !configuration.cloudRunAuthorizationToken ||
+          configuration.environment === "production" && !configuration.vercelBypassSecret) return new Response(null, { status: 503 });
+      if (!configuration.audience || !configuration.deploymentId || !configuration.keyId ||
+          distinctSecrets(configuration) === false) return new Response(null, { status: 503 });
       const approvedOrigin = new URL(configuration.targetOrigin);
       if (approvedOrigin.origin !== configuration.targetOrigin || approvedOrigin.pathname !== "/" || approvedOrigin.search || approvedOrigin.hash ||
-          approvedOrigin.username || approvedOrigin.password || approvedOrigin.port) return new Response(null, { status: 503 });
+          approvedOrigin.username || approvedOrigin.password || approvedOrigin.port || approvedOrigin.hostname !== configuration.originHostname) return new Response(null, { status: 503 });
       const url = new URL(request.url);
-      if (url.protocol !== "https:" || !configuration.publicHosts.includes(url.hostname as never) || url.port || url.username || url.password) return new Response(null, { status: 404 });
+      if (url.protocol !== "https:" || !configuration.publicHosts.includes(url.hostname) || url.port || url.username || url.password) return new Response(null, { status: 404 });
       for (const name of url.searchParams.keys()) if (reservedQuery.has(name.toLowerCase())) return new Response(null, { status: 404 });
-      if (url.hostname === "www.limitmark.com" && (request.method === "GET" || request.method === "HEAD")) {
+      if (configuration.environment === "production" && url.hostname === "www.limitmark.com" && (request.method === "GET" || request.method === "HEAD")) {
         return new Response(null, { status: 308, headers: { location: `https://limitmark.com${url.pathname}${url.search}` } });
       }
       if (request.headers.has("cf-worker") || request.headers.has("cf-ew-via")) return new Response(null, { status: 403 });
-      if (request.method === "POST" && (url.hostname !== "limitmark.com" || url.pathname !== INGRESS_MUTATION_PATH || url.search !== "")) return new Response(null, { status: 404 });
+      if (request.method === "POST" && (configuration.environment === "production" && url.hostname !== "limitmark.com" ||
+          url.pathname !== INGRESS_MUTATION_PATH || url.search !== "")) return new Response(null, { status: 404 });
       if (request.method !== "POST" && request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 405 });
       if (request.method === "POST" && request.headers.get("content-type") !== INGRESS_MUTATION_CONTENT_TYPE) return new Response(null, { status: 415 });
       const contentEncoding = request.headers.get("content-encoding");
@@ -114,7 +129,7 @@ export function createIngressSigner(configuration: IngressSignerConfiguration, d
       if (claimedLength !== null && (!/^(?:0|[1-9][0-9]*)$/.test(claimedLength) || Number(claimedLength) !== body.length)) return new Response(null, { status: 400 });
       const nonce = request.method === "POST" ? encodeBase64url(random(new Uint8Array(16))) : INGRESS_NO_NONCE;
       const payload: IngressPayload = [
-        INGRESS_VERSION, configuration.keyId, INGRESS_ENVIRONMENT, configuration.audience, configuration.deploymentId,
+        INGRESS_VERSION, configuration.keyId, configuration.environment === "cloud-run-lab" ? LAB_INGRESS_ENVIRONMENT : INGRESS_ENVIRONMENT, configuration.audience, configuration.deploymentId,
         now(), request.method, "https", url.hostname, url.pathname, url.search.slice(1),
         request.method === "POST" ? INGRESS_MUTATION_CONTENT_TYPE : "-", INGRESS_BODY_ENCODING,
         body.length, await sha256Base64url(body, subtle), INGRESS_IDENTITY_VERSION, pseudonym, nonce,
@@ -124,8 +139,13 @@ export function createIngressSigner(configuration: IngressSignerConfiguration, d
       const headers = sanitizeHeaders(request.headers);
       headers.set(INGRESS_HEADER, envelope);
       headers.set("x-limitmark-origin-secret", configuration.originSecret);
-      headers.set("x-vercel-protection-bypass", configuration.vercelBypassSecret);
-      headers.set("host", approvedOrigin.hostname);
+      if (configuration.environment === "cloud-run-lab") {
+        headers.set("x-serverless-authorization", await configuration.cloudRunAuthorizationToken!());
+        headers.set("x-forwarded-host", url.hostname);
+      } else {
+        headers.set("x-vercel-protection-bypass", configuration.vercelBypassSecret!);
+      }
+      headers.set("host", configuration.originHostname);
       if (request.method === "POST") {
         headers.set("content-type", INGRESS_MUTATION_CONTENT_TYPE);
         headers.set("content-encoding", INGRESS_BODY_ENCODING);
@@ -138,7 +158,7 @@ export function createIngressSigner(configuration: IngressSignerConfiguration, d
       const target = new URL(configuration.targetOrigin);
       target.pathname = url.pathname;
       target.search = url.search;
-      if (target.origin !== approvedOrigin.origin || target.username || target.password || target.port || target.hostname !== approvedOrigin.hostname) {
+      if (target.origin !== approvedOrigin.origin || target.username || target.password || target.port || target.hostname !== configuration.originHostname) {
         return new Response(null, { status: 503 });
       }
       const response = await requestFetch(target, { method: request.method, headers, body: request.method === "POST" ? toArrayBuffer(body) : undefined, redirect: "manual" });
@@ -148,7 +168,8 @@ export function createIngressSigner(configuration: IngressSignerConfiguration, d
       const setCookie = responseHeaders.get("set-cookie");
       if (setCookie && /(?:^|[,;]\s*)_vercel_jwt=/iu.test(setCookie)) responseHeaders.delete("set-cookie");
       for (const [name, value] of [...responseHeaders.entries()]) {
-        if (value.includes(configuration.vercelBypassSecret) || value.includes(configuration.originSecret) || value.includes(configuration.signingPrivateKeyPkcs8) || value.includes(configuration.identityHmacKey)) responseHeaders.delete(name);
+        if (value.includes(configuration.originSecret) || value.includes(configuration.signingPrivateKeyPkcs8) || value.includes(configuration.identityHmacKey) ||
+            configuration.vercelBypassSecret !== undefined && value.includes(configuration.vercelBypassSecret)) responseHeaders.delete(name);
       }
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders });
     } catch {

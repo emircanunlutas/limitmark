@@ -72,3 +72,17 @@ deployment/authority-result-trust.json
 .git/config
 .git/hooks
 .git/credentials
+
+# Phase 3P.4 rendered production lifecycle configs (real Cloudflare account identifiers): exact filenames, mirroring .gitignore. Not a glob.
+deployment/lifecycle-transport.production.json
+deployment/lifecycle-mailbox.production.jsonc
+deployment/operator-lifecycle-executor.production.jsonc
+
+# The owner-held C1 audit package: protected, untracked, never part of an image. Exact path only (not a glob), so no source file can be hidden by it.
+LimitMark-C1-Audit-Package
+
+# More owner-held, untracked C1 audit artifacts at the repository root: exact root-relative names only (no glob, no wildcard), so no source file can be hidden.
+LimitMark-C1-Audit-Package.zip
+audit-input
+audit-report.json
+ba0-c1-tag.bundle

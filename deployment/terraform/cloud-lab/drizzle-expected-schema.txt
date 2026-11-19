@@ -1,0 +1,104 @@
+column admin_notes.author_identifier character varying(254) NOT NULL
+column admin_notes.content text NOT NULL
+column admin_notes.created_at timestamp with time zone NOT NULL DEFAULT now()
+column admin_notes.id uuid NOT NULL DEFAULT gen_random_uuid()
+column admin_notes.inquiry_id uuid NOT NULL
+column inquiries.archived_at timestamp with time zone
+column inquiries.authority character varying(16) NOT NULL
+column inquiries.company character varying(160) NOT NULL DEFAULT ''::character varying
+column inquiries.created_at timestamp with time zone NOT NULL DEFAULT now()
+column inquiries.email character varying(254) NOT NULL
+column inquiries.environment character varying(16) NOT NULL
+column inquiries.id uuid NOT NULL DEFAULT gen_random_uuid()
+column inquiries.name character varying(100) NOT NULL
+column inquiries.notes text NOT NULL DEFAULT ''::text
+column inquiries.objective text NOT NULL
+column inquiries.payload_fingerprint character varying(64) NOT NULL
+column inquiries.pre_archive_status inquiry_status
+column inquiries.protection character varying(16) NOT NULL DEFAULT 'unknown'::character varying
+column inquiries.provider character varying(160) NOT NULL DEFAULT ''::character varying
+column inquiries.revision integer NOT NULL DEFAULT 0
+column inquiries.service character varying(16) NOT NULL
+column inquiries.status inquiry_status NOT NULL DEFAULT 'received'::inquiry_status
+column inquiries.submission_token character varying(43) NOT NULL
+column inquiries.system text NOT NULL
+column inquiries.updated_at timestamp with time zone NOT NULL DEFAULT now()
+column inquiry_events.actor_identifier character varying(254)
+column inquiry_events.actor_type inquiry_actor_type NOT NULL
+column inquiry_events.created_at timestamp with time zone NOT NULL DEFAULT now()
+column inquiry_events.event_type inquiry_event_type NOT NULL
+column inquiry_events.id uuid NOT NULL DEFAULT gen_random_uuid()
+column inquiry_events.inquiry_id uuid NOT NULL
+column inquiry_events.metadata jsonb
+column notification_outbox.attempts integer NOT NULL DEFAULT 0
+column notification_outbox.available_at timestamp with time zone NOT NULL DEFAULT now()
+column notification_outbox.created_at timestamp with time zone NOT NULL DEFAULT now()
+column notification_outbox.event_type inquiry_event_type NOT NULL
+column notification_outbox.id uuid NOT NULL DEFAULT gen_random_uuid()
+column notification_outbox.inquiry_id uuid NOT NULL
+column notification_outbox.last_error_code character varying(100)
+column notification_outbox.locked_until timestamp with time zone
+column notification_outbox.sent_at timestamp with time zone
+column notification_outbox.status notification_status NOT NULL DEFAULT 'pending'::notification_status
+constraint admin_notes admin_notes_content_length CHECK (((char_length(content) >= 1) AND (char_length(content) <= 10000)))
+constraint admin_notes admin_notes_inquiry_id_inquiries_id_fk FOREIGN KEY (inquiry_id) REFERENCES inquiries(id) ON DELETE RESTRICT
+constraint admin_notes admin_notes_pkey PRIMARY KEY (id)
+constraint inquiries inquiries_authority_valid CHECK (((authority)::text = ANY ((ARRAY['owner'::character varying, 'authorized'::character varying, 'uncertain'::character varying])::text[])))
+constraint inquiries inquiries_environment_valid CHECK (((environment)::text = ANY ((ARRAY['production'::character varying, 'staging'::character varying, 'multiple'::character varying, 'unknown'::character varying])::text[])))
+constraint inquiries inquiries_name_nonempty CHECK ((char_length((name)::text) > 0))
+constraint inquiries inquiries_notes_length CHECK ((char_length(notes) <= 2000))
+constraint inquiries inquiries_objective_length CHECK (((char_length(objective) >= 1) AND (char_length(objective) <= 2000)))
+constraint inquiries inquiries_payload_fingerprint_format CHECK (((payload_fingerprint)::text ~ '^[0-9a-f]{64}$'::text))
+constraint inquiries inquiries_pkey PRIMARY KEY (id)
+constraint inquiries inquiries_pre_archive_status_valid CHECK (((pre_archive_status IS NULL) OR (pre_archive_status <> 'archived'::inquiry_status)))
+constraint inquiries inquiries_protection_valid CHECK (((protection)::text = ANY ((ARRAY['unknown'::character varying, 'none'::character varying, 'using'::character varying])::text[])))
+constraint inquiries inquiries_revision_nonnegative CHECK ((revision >= 0))
+constraint inquiries inquiries_service_valid CHECK (((service)::text = ANY ((ARRAY['web'::character varying, 'network'::character varying, 'protection'::character varying, 'unsure'::character varying])::text[])))
+constraint inquiries inquiries_submission_token_format CHECK (((submission_token)::text ~ '^[A-Za-z0-9_-]{43}$'::text))
+constraint inquiries inquiries_submission_token_unique UNIQUE (submission_token)
+constraint inquiries inquiries_system_length CHECK (((char_length(system) >= 1) AND (char_length(system) <= 1000)))
+constraint inquiry_events inquiry_events_actor_identifier CHECK ((((actor_type = 'system'::inquiry_actor_type) AND (actor_identifier IS NULL)) OR ((actor_type = 'admin'::inquiry_actor_type) AND (char_length((actor_identifier)::text) > 0))))
+constraint inquiry_events inquiry_events_inquiry_id_inquiries_id_fk FOREIGN KEY (inquiry_id) REFERENCES inquiries(id) ON DELETE RESTRICT
+constraint inquiry_events inquiry_events_metadata_small_object CHECK (((metadata IS NULL) OR ((jsonb_typeof(metadata) = 'object'::text) AND (pg_column_size(metadata) <= 8192))))
+constraint inquiry_events inquiry_events_pkey PRIMARY KEY (id)
+constraint notification_outbox notification_outbox_attempts_nonnegative CHECK ((attempts >= 0))
+constraint notification_outbox notification_outbox_inquiry_id_inquiries_id_fk FOREIGN KEY (inquiry_id) REFERENCES inquiries(id) ON DELETE RESTRICT
+constraint notification_outbox notification_outbox_pkey PRIMARY KEY (id)
+index CREATE INDEX admin_notes_inquiry_created_idx ON public.admin_notes USING btree (inquiry_id, created_at)
+index CREATE UNIQUE INDEX admin_notes_pkey ON public.admin_notes USING btree (id)
+index CREATE INDEX inquiries_created_at_id_idx ON public.inquiries USING btree (created_at, id)
+index CREATE UNIQUE INDEX inquiries_pkey ON public.inquiries USING btree (id)
+index CREATE INDEX inquiries_status_created_at_id_idx ON public.inquiries USING btree (status, created_at, id)
+index CREATE UNIQUE INDEX inquiries_submission_token_unique ON public.inquiries USING btree (submission_token)
+index CREATE INDEX inquiry_events_inquiry_created_idx ON public.inquiry_events USING btree (inquiry_id, created_at)
+index CREATE UNIQUE INDEX inquiry_events_pkey ON public.inquiry_events USING btree (id)
+index CREATE INDEX notification_outbox_claim_idx ON public.notification_outbox USING btree (available_at, locked_until) WHERE (status = ANY (ARRAY['pending'::notification_status, 'retryable'::notification_status]))
+index CREATE INDEX notification_outbox_inquiry_idx ON public.notification_outbox USING btree (inquiry_id)
+index CREATE UNIQUE INDEX notification_outbox_pkey ON public.notification_outbox USING btree (id)
+index CREATE INDEX notification_outbox_processing_lease_idx ON public.notification_outbox USING btree (locked_until) WHERE (status = 'processing'::notification_status)
+enum inquiry_actor_type system
+enum inquiry_actor_type admin
+enum inquiry_event_type inquiry_received
+enum inquiry_event_type status_changed
+enum inquiry_event_type note_added
+enum inquiry_event_type archived
+enum inquiry_event_type restored
+enum inquiry_event_type notification_sent
+enum inquiry_event_type notification_failed
+enum inquiry_status received
+enum inquiry_status in_review
+enum inquiry_status awaiting_scope
+enum inquiry_status proposal_sent
+enum inquiry_status approved
+enum inquiry_status declined
+enum inquiry_status completed
+enum inquiry_status archived
+enum notification_status pending
+enum notification_status processing
+enum notification_status retryable
+enum notification_status sent
+enum notification_status failed
+relation r admin_notes
+relation r inquiries
+relation r inquiry_events
+relation r notification_outbox

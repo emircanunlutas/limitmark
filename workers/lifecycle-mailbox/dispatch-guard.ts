@@ -3,7 +3,8 @@ import type { DurableObjectState } from "@cloudflare/workers-types";
 import { commandDigest, verifyOperatorCommand } from "../admission-service/operator-command";
 import { parseSealedLifecycleArtifact, type LifecycleOperation, type LifecycleResult } from "../../operator/lifecycle-submitter";
 import { normalizeLifecycleRelayResult, type RelayDisposition } from "../../operator/attested-relay";
-import type { LifecycleReceipt } from "../admission-service/authority";
+import { ADMISSION_AUTHORITY_ID, type LifecycleReceipt } from "../admission-service/authority";
+import { GUARD_EXPORT_FRESHNESS_MS, GUARD_EXPORT_ROW_LIMIT, guardExportRequestDigest, parseGuardExportEnvelope, verifyGuardExportRequest, type GuardExportLedger, type GuardExportOutcome } from "./guard-export";
 
 export const GUARD_OBJECT_NAME = "production-lifecycle-dispatch-v1";
 export const GUARD_CAPACITY = 4_096;
@@ -29,6 +30,8 @@ export type GuardEnvironment = {
   LIFECYCLE_READER: LifecycleReaderBinding;
   AUTHORITY_OPERATOR_PUBLIC_KEY: string;
   LIFECYCLE_ENVIRONMENT: string;
+  /** Pins the Cloudflare account a read-only ledger export request must name. Absent/malformed => exportLedger answers REFUSED(configuration). */
+  CLOUDFLARE_ACCOUNT_ID?: string;
 };
 type Claim = { digest: string; operation: string; status: string };
 type Latch = { digest: string };
@@ -124,6 +127,51 @@ export class LifecycleDispatchGuard extends DurableObject<GuardEnvironment> {
     if (response.status === "AMBIGUOUS") return { version: 1, digest, status: "UNCONFIRMED", reason: "attestation-ambiguous" };
     if (response.status === "UNAVAILABLE") return { version: 1, digest, status: "UNCONFIRMED", reason: ("authority-" + response.reason).slice(0, 64) };
     return { version: 1, digest, status: "UNCONFIRMED", reason: "dispatch-ambiguous" };
+  }
+
+  /**
+   * READ-ONLY, operator-authenticated ledger export (Gate 11A recovery evidence). It issues only fixed SELECT statements: no claim, no latch change,
+   * no settlement, no sync, no table creation, no executor/reader call. The caller must present an operator-signed request bound to this
+   * environment, this Authority, this guard object, this account and a fresh nonce; anything else is REFUSED with a fixed reason and no row content.
+   * The returned rows are RELAY-LOCAL BOOKKEEPING (unsigned): they are evidence of what this guard recorded, never Authority evidence.
+   */
+  async exportLedger(envelopeJson: string): Promise<GuardExportOutcome> {
+    const account = this.env.CLOUDFLARE_ACCOUNT_ID;
+    if (this.env.LIFECYCLE_ENVIRONMENT !== "production" || typeof envelopeJson !== "string" || typeof account !== "string" || !/^[a-f0-9]{32}$/u.test(account))
+      return { version: 1, status: "REFUSED", reason: "configuration" };
+    let request: ReturnType<typeof parseGuardExportEnvelope>["request"];
+    let requestDigest: string;
+    try {
+      const envelope = parseGuardExportEnvelope(envelopeJson);
+      await verifyGuardExportRequest(envelope.request, envelope.signature, this.env.AUTHORITY_OPERATOR_PUBLIC_KEY);
+      request = envelope.request;
+      requestDigest = await guardExportRequestDigest(request);
+    } catch { return { version: 1, status: "REFUSED", reason: "unauthenticated" }; }
+    const nonce = request[6];
+    // Authenticated from here on: refusals may name the nonce so the operator sees WHY, still without any row content.
+    if (request[2] !== "production" || request[3] !== ADMISSION_AUTHORITY_ID || request[4] !== GUARD_OBJECT_NAME || request[5] !== account)
+      return { version: 1, status: "REFUSED", reason: "target-mismatch", nonce, requestDigest };
+    const observedAtMs = Date.now();
+    if (!Number.isSafeInteger(observedAtMs) || Math.abs(observedAtMs - request[7]) > GUARD_EXPORT_FRESHNESS_MS)
+      return { version: 1, status: "REFUSED", reason: "stale-request", nonce, requestDigest };
+    try {
+      // No await between these reads: the Durable Object serves them from one consistent state.
+      const claimCount = this.#one<{ count: number }>("SELECT COUNT(*) AS count FROM claims")?.count;
+      const settlementCount = this.#one<{ count: number }>("SELECT COUNT(*) AS count FROM settlements")?.count;
+      if (!Number.isSafeInteger(claimCount) || !Number.isSafeInteger(settlementCount)) return { version: 1, status: "REFUSED", reason: "read-failed", nonce, requestDigest };
+      if (claimCount! > GUARD_EXPORT_ROW_LIMIT || settlementCount! > GUARD_EXPORT_ROW_LIMIT)
+        return { version: 1, status: "TOO_LARGE", requestDigest, nonce, counts: { claims: claimCount!, settlements: settlementCount! }, observedAtMs };
+      const claims = Array.from(this.#ledger.sql.exec<{ digest: string; operation: string; status: string }>("SELECT digest,operation,status FROM claims ORDER BY rowid"));
+      const latch = this.#one<Latch>("SELECT digest FROM latch WHERE singleton=1");
+      const settlementRows = Array.from(this.#ledger.sql.exec<{ digest: string; sequence: number; settled_ms: number }>("SELECT digest,sequence,settled_ms FROM settlements ORDER BY sequence"));
+      const ledger: GuardExportLedger = {
+        claims: claims.map((row) => ({ digest: row.digest, operation: row.operation, status: row.status })),
+        latch: latch ? { digest: latch.digest } : null,
+        settlements: settlementRows.map((row) => ({ digest: row.digest, sequence: row.sequence, settledMs: row.settled_ms })),
+      };
+      return { version: 1, status: "EXPORTED", requestDigest, nonce, accountId: account, guardObject: GUARD_OBJECT_NAME, authorityId: ADMISSION_AUTHORITY_ID,
+        environment: "production", observedAtMs, ledger };
+    } catch { return { version: 1, status: "REFUSED", reason: "read-failed", nonce, requestDigest }; }
   }
 
   /** Positive exact receipt releases only the supervisor latch, never a claim. */

@@ -5,6 +5,7 @@ import {
   INGRESS_ENVIRONMENT,
   INGRESS_HEADER,
   INGRESS_IDENTITY_VERSION,
+  LAB_INGRESS_ENVIRONMENT,
   INGRESS_MUTATION_CONTENT_TYPE,
   INGRESS_MUTATION_PATH,
   assertIngressFresh,
@@ -19,6 +20,9 @@ import { importActiveIngressSigningKeys } from "./ingress-key-rollout";
 export type IngressVerificationPolicy = {
   audience: string;
   deploymentId: string;
+  environment?: "production" | "cloud-run-lab";
+  publicHostname?: string;
+  originHostname?: string;
   publicKeys: ReadonlyMap<string, CryptoKey>;
   requestBindingKey: CryptoKey;
   now?: () => number;
@@ -48,11 +52,18 @@ export async function verifyMutationIngress(request: Request, body: Uint8Array, 
   const url = new URL(request.url);
   const forwardedHost = request.headers.get("x-forwarded-host");
   const contentLength = request.headers.get("content-length");
-  if (payload[2] !== INGRESS_ENVIRONMENT || payload[3] !== policy.audience || payload[4] !== policy.deploymentId) throw new Error("ingress-audience");
+  if (payload[2] !== (policy.environment === "cloud-run-lab" ? LAB_INGRESS_ENVIRONMENT : INGRESS_ENVIRONMENT) ||
+      payload[3] !== policy.audience || payload[4] !== policy.deploymentId) throw new Error("ingress-audience");
   assertIngressFresh(payload[5], (policy.now ?? Date.now)());
   if (request.method !== "POST" || payload[6] !== request.method) throw new Error("ingress-method");
   if (url.protocol !== "https:" || payload[7] !== "https") throw new Error("ingress-scheme");
-  if (url.hostname !== "limitmark.com" || url.port || payload[8] !== url.hostname || request.headers.get("host") !== "limitmark.com" || forwardedHost !== "limitmark.com") throw new Error("ingress-host");
+  const publicHostname = policy.publicHostname ?? "limitmark.com";
+  const originHostname = policy.originHostname ?? publicHostname;
+  // Laboratory only: Next.js derives request.url from the server bind address (host 0.0.0.0, explicit port), so the URL authority carries no
+  // identity there; the origin hostname is enforced through the Host header below. Production keeps the URL comparison.
+  const urlAuthorityMismatch = policy.environment !== "cloud-run-lab" && (url.hostname !== originHostname || url.port !== "");
+  if (urlAuthorityMismatch || payload[8] !== publicHostname ||
+      request.headers.get("host") !== originHostname || forwardedHost !== publicHostname) throw new Error("ingress-host");
   if (url.pathname !== INGRESS_MUTATION_PATH || payload[9] !== url.pathname) throw new Error("ingress-path");
   if (url.search !== "" || payload[10] !== "") throw new Error("ingress-query");
   if (request.headers.get("content-type") !== INGRESS_MUTATION_CONTENT_TYPE || payload[11] !== INGRESS_MUTATION_CONTENT_TYPE) throw new Error("ingress-content-type");

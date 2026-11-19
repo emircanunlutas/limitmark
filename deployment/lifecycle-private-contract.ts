@@ -10,29 +10,45 @@ const buckets = [
   { binding: "RESULT_BUCKET", bucket_name: "limitmark-lifecycle-results-production" },
 ];
 const reader = { binding: "LIFECYCLE_READER", service: "limitmark-admission-service-production", entrypoint: "AuthorityLifecycleReadOnly" };
+/** The observer reaches the guard ledger ONLY through this read-only entrypoint (one method, `exportLedger`); it never binds the guard Durable Object itself. */
+const guardReader = { binding: "GUARD_READER", service: "limitmark-lifecycle-mailbox-production", entrypoint: "LifecycleGuardReadOnly" };
 const stagingBuckets = [
   { binding: "REQUEST_BUCKET", bucket_name: "limitmark-lifecycle-requests-staging" },
   { binding: "RESULT_BUCKET", bucket_name: "limitmark-lifecycle-results-staging" },
 ];
 const stagingReader = { binding: "LIFECYCLE_READER", service: "limitmark-admission-service-staging", entrypoint: "StagingAuthorityLifecycleReadOnly" };
-function base(value: unknown, kind: "mailbox" | "observer", template: boolean): Record<string, unknown> {
+/** Production schedule states. Production mailbox/observer rollouts start INACTIVE (no Cron trigger can process lifecycle objects before bindings,
+ * secrets and routes have been inspected); ARMED is a separate, explicitly authorized later step. Only these two exact `triggers` shapes exist; any
+ * other shape (extra crons, another expression, missing key) is refused. A validator never infers the state: the caller names the state it requires. */
+export type ProductionScheduleState = "PRODUCTION_DEPLOYMENT_INACTIVE" | "PRODUCTION_SCHEDULE_ARMED";
+const productionScheduleTriggers: Record<ProductionScheduleState, string> = {
+  PRODUCTION_DEPLOYMENT_INACTIVE: JSON.stringify({ crons: [] }),
+  PRODUCTION_SCHEDULE_ARMED: JSON.stringify({ crons: ["* * * * *"] }),
+};
+export function productionScheduleState(triggers: unknown): ProductionScheduleState {
+  const serialized = JSON.stringify(triggers);
+  if (serialized === productionScheduleTriggers.PRODUCTION_DEPLOYMENT_INACTIVE) return "PRODUCTION_DEPLOYMENT_INACTIVE";
+  if (serialized === productionScheduleTriggers.PRODUCTION_SCHEDULE_ARMED) return "PRODUCTION_SCHEDULE_ARMED";
+  throw new Error("unsafe-production-schedule-state");
+}
+function base(value: unknown, kind: "mailbox" | "observer", template: boolean, requireScheduleState: ProductionScheduleState): Record<string, unknown> {
   const extra = kind === "mailbox" ? ["durable_objects", "migrations", "vars"] : [];
   if (!exact(value, [...common, ...extra]) || value.$schema !== "../node_modules/wrangler/config-schema.json" ||
       value.name !== `limitmark-lifecycle-${kind}-production` || value.compatibility_date !== "2026-09-13" ||
       value.workers_dev !== false || value.preview_urls !== false ||
-      JSON.stringify(value.triggers) !== JSON.stringify({ crons: ["* * * * *"] }) ||
+      JSON.stringify(value.triggers) !== productionScheduleTriggers[requireScheduleState] ||
       JSON.stringify(value.r2_buckets) !== JSON.stringify(buckets) ||
       value.main !== (template ? `__REQUIRED_RENDERED_${kind.toUpperCase()}_MAIN__.ts` : `../workers/${kind === "mailbox" ? "lifecycle-mailbox/index" : "lifecycle-observer"}.ts`))
     throw new Error("unsafe-lifecycle-config");
   const expectedServices = kind === "mailbox" ? [
     { binding: "LIFECYCLE_EXECUTOR", service: "limitmark-authority-operator-executor-production", entrypoint: "OperatorLifecycleExecutor" }, reader,
-  ] : [reader];
+  ] : [reader, guardReader];
   if (JSON.stringify(value.services) !== JSON.stringify(expectedServices)) throw new Error("unsafe-lifecycle-services");
   if (kind === "mailbox") {
     if (JSON.stringify(value.durable_objects) !== JSON.stringify({ bindings: [{ name: "DISPATCH_GUARD", class_name: "LifecycleDispatchGuard" }] }) ||
         JSON.stringify(value.migrations) !== JSON.stringify([{ tag: "i3b-guard-v1", new_sqlite_classes: ["LifecycleDispatchGuard"] }]) ||
-        !exact(value.vars, ["AUTHORITY_OPERATOR_PUBLIC_KEY", "LIFECYCLE_ENVIRONMENT"]) ||
-        value.vars.LIFECYCLE_ENVIRONMENT !== "production") throw new Error("unsafe-lifecycle-guard");
+        !exact(value.vars, ["AUTHORITY_OPERATOR_PUBLIC_KEY", "CLOUDFLARE_ACCOUNT_ID", "LIFECYCLE_ENVIRONMENT"]) ||
+        value.vars.LIFECYCLE_ENVIRONMENT !== "production" || value.vars.CLOUDFLARE_ACCOUNT_ID !== value.account_id) throw new Error("unsafe-lifecycle-guard");
     const key = value.vars.AUTHORITY_OPERATOR_PUBLIC_KEY;
     if (template ? key !== "__REQUIRED_OPERATOR_ED25519_PUBLIC_KEY__" : typeof key !== "string" || key.startsWith("__REQUIRED_"))
       throw new Error("unsafe-lifecycle-key");
@@ -43,8 +59,13 @@ function base(value: unknown, kind: "mailbox" | "observer", template: boolean): 
     throw new Error("unsafe-lifecycle-account");
   return value;
 }
-export function validateLifecycleMailboxConfig(value: unknown, template = true): void { base(value, "mailbox", template); }
-export function validateLifecycleObserverConfig(value: unknown, template = true): void { base(value, "observer", template); }
+/** `requireScheduleState` defaults to INACTIVE: a production mailbox/observer config is accepted as armed only when the caller explicitly asks for it. */
+export function validateLifecycleMailboxConfig(value: unknown, template = true, requireScheduleState: ProductionScheduleState = "PRODUCTION_DEPLOYMENT_INACTIVE"): ProductionScheduleState {
+  base(value, "mailbox", template, requireScheduleState); return requireScheduleState;
+}
+export function validateLifecycleObserverConfig(value: unknown, template = true, requireScheduleState: ProductionScheduleState = "PRODUCTION_DEPLOYMENT_INACTIVE"): ProductionScheduleState {
+  base(value, "observer", template, requireScheduleState); return requireScheduleState;
+}
 
 export function validateLifecycleTransportManifest(value: unknown, template = true): void {
   if (!exact(value, ["version", "environment", "accountId", "requestBucket", "resultBucket", "authorityId", "policyEpoch", "operatorPublicKey"]) ||
@@ -133,7 +154,7 @@ export function validateStagingLifecycleTransportManifest(value: unknown, templa
 }
 
 export function validateLifecycleEnvironmentGates(value: unknown): void {
-  if (!exact(value, ["version", "production", "staging", "crossEnvironmentKeyReuseAllowed", "crossEnvironmentCredentialReuseAllowed",
+  if (!exact(value, ["version", "production", "staging", "lab", "crossEnvironmentKeyReuseAllowed", "crossEnvironmentCredentialReuseAllowed",
     "crossEnvironmentNamespaceReuseAllowed", "publicPersistenceEnabled"]) || value.version !== 1 ||
       value.crossEnvironmentKeyReuseAllowed !== false || value.crossEnvironmentCredentialReuseAllowed !== false ||
       value.crossEnvironmentNamespaceReuseAllowed !== false || value.publicPersistenceEnabled !== false) throw new Error("unsafe-lifecycle-environments");
@@ -160,6 +181,10 @@ export function validateLifecycleEnvironmentGates(value: unknown): void {
   if (production.requestObjectRetentionHours !== 24 || staging.requestObjectRetentionHours !== 24 ||
       production.resultObjectRetentionDays !== 30 || staging.resultObjectRetentionDays !== 30)
     throw new Error("unsafe-lifecycle-environments");
+  validateLabEnvironmentGate(value.lab);
+  // No resource identity may be shared between any two environments (checked on the pinned values, not by pattern).
+  const identities = [production, staging, value.lab as Record<string, unknown>].flatMap((section) => fields.map((field) => section[field]));
+  if (new Set(identities).size !== identities.length) throw new Error("unsafe-lifecycle-environments");
 }
 
 // ---------------------------------------------------------------------------
@@ -262,4 +287,142 @@ export function validateNeverInitializedStagingLifecycleSnapshot(value: unknown,
   if (typeof value.observedAtMs !== "number" || !Number.isSafeInteger(value.observedAtMs) || value.observedAtMs < 0 ||
       Math.abs(nowMs - value.observedAtMs) > LIVE_READONLY_OBSERVATION_FRESHNESS_MS)
     throw new Error("unsafe-live-readonly-observation-freshness");
+}
+
+// ---------------------------------------------------------------------------
+// Laboratory environment (third environment, additive). Structurally independent of the Production and staging validators above:
+// every literal is the lab-only identity, there is NO wildcard or pattern acceptance of environment names, and a Production or
+// staging config can never satisfy a lab validator (nor the reverse). Lab rotation is not implemented.
+// ---------------------------------------------------------------------------
+
+export const LAB_RESOURCES = Object.freeze({
+  requestBucket: "limitmark-lifecycle-requests-lab",
+  resultBucket: "limitmark-lifecycle-results-lab",
+  mailboxWorker: "limitmark-lifecycle-mailbox-lab",
+  observerWorker: "limitmark-lifecycle-observer-lab",
+  guardObject: "lab-lifecycle-dispatch-v1",
+  executorWorker: "limitmark-authority-operator-executor-lab",
+  admissionWorker: "limitmark-admission-service-lab",
+  authorityObject: "lab-public-inquiries-v1",
+  publicHostname: "lab.limitmark.com",
+  admissionHostname: "lab-admission.limitmark.com",
+});
+const labBuckets = [
+  { binding: "REQUEST_BUCKET", bucket_name: LAB_RESOURCES.requestBucket },
+  { binding: "RESULT_BUCKET", bucket_name: LAB_RESOURCES.resultBucket },
+];
+const labReader = { binding: "LIFECYCLE_READER", service: LAB_RESOURCES.admissionWorker, entrypoint: "LabAuthorityLifecycleReadOnly" };
+
+function labBase(value: unknown, kind: "mailbox" | "observer", template: boolean): StagingScheduleState {
+  const extra = kind === "mailbox" ? ["durable_objects", "migrations", "vars"] : ["vars"];
+  if (!exact(value, [...common, ...extra])) throw new Error("unsafe-lifecycle-config");
+  const scheduleState = stagingScheduleState(value.triggers);
+  if (value.$schema !== "../node_modules/wrangler/config-schema.json" ||
+      value.name !== (kind === "mailbox" ? LAB_RESOURCES.mailboxWorker : LAB_RESOURCES.observerWorker) || value.compatibility_date !== "2026-09-13" ||
+      value.workers_dev !== false || value.preview_urls !== false ||
+      JSON.stringify(value.r2_buckets) !== JSON.stringify(labBuckets) ||
+      value.main !== (template ? `__REQUIRED_RENDERED_LAB_${kind.toUpperCase()}_MAIN__.ts` :
+        `../workers/${kind === "mailbox" ? "lifecycle-mailbox/lab-index" : "lab-lifecycle-observer"}.ts`))
+    throw new Error("unsafe-lifecycle-config");
+  const expectedServices = kind === "mailbox" ? [
+    { binding: "LIFECYCLE_EXECUTOR", service: LAB_RESOURCES.executorWorker, entrypoint: "LabOperatorLifecycleExecutor" }, labReader,
+  ] : [labReader];
+  if (JSON.stringify(value.services) !== JSON.stringify(expectedServices)) throw new Error("unsafe-lifecycle-services");
+  if (kind === "observer" && (!exact(value.vars, ["LIFECYCLE_OBSERVER_ENVIRONMENT"]) || value.vars.LIFECYCLE_OBSERVER_ENVIRONMENT !== "lab")) throw new Error("unsafe-lifecycle-observer-environment");
+  if (kind === "mailbox") {
+    if (JSON.stringify(value.durable_objects) !== JSON.stringify({ bindings: [{ name: "DISPATCH_GUARD", class_name: "LabLifecycleDispatchGuard" }] }) ||
+        JSON.stringify(value.migrations) !== JSON.stringify([{ tag: "lab-guard-v1", new_sqlite_classes: ["LabLifecycleDispatchGuard"] }]) ||
+        !exact(value.vars, ["AUTHORITY_OPERATOR_PUBLIC_KEY", "LIFECYCLE_ENVIRONMENT"]) ||
+        value.vars.LIFECYCLE_ENVIRONMENT !== "lab") throw new Error("unsafe-lifecycle-guard");
+    const key = value.vars.AUTHORITY_OPERATOR_PUBLIC_KEY;
+    if (template ? key !== "__REQUIRED_LAB_OPERATOR_ED25519_PUBLIC_KEY__" : typeof key !== "string" || key.startsWith("__REQUIRED_"))
+      throw new Error("unsafe-lifecycle-key");
+    if (!template) decodeCanonicalBase64url(key as string, 32);
+  }
+  if (template ? value.account_id !== "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__" :
+      typeof value.account_id !== "string" || !/^[a-f0-9]{32}$/u.test(value.account_id) || /^0{32}$/u.test(value.account_id))
+    throw new Error("unsafe-lifecycle-account");
+  return scheduleState;
+}
+/** Lab mailbox/observer validators. Same two reviewed schedule states as staging (initially no active Cron). */
+export function validateLabLifecycleMailboxConfig(value: unknown, template = true, requireScheduleState?: StagingScheduleState): StagingScheduleState {
+  const state = labBase(value, "mailbox", template);
+  if (requireScheduleState && state !== requireScheduleState) throw new Error("unsafe-staging-schedule-state");
+  return state;
+}
+export function validateLabLifecycleObserverConfig(value: unknown, template = true, requireScheduleState?: StagingScheduleState): StagingScheduleState {
+  const state = labBase(value, "observer", template);
+  if (requireScheduleState && state !== requireScheduleState) throw new Error("unsafe-staging-schedule-state");
+  return state;
+}
+
+export function validateLabLifecycleTransportManifest(value: unknown, template = true): void {
+  if (!exact(value, ["version", "environment", "accountId", "requestBucket", "resultBucket", "authorityId", "policyEpoch", "operatorPublicKey"]) ||
+      value.version !== 1 || value.environment !== "lab" || value.requestBucket !== LAB_RESOURCES.requestBucket ||
+      value.resultBucket !== LAB_RESOURCES.resultBucket || value.authorityId !== LAB_RESOURCES.authorityObject ||
+      value.policyEpoch !== "phase5c-i1-epoch-1" ||
+      (template ? value.accountId !== "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__" || value.operatorPublicKey !== "__REQUIRED_LAB_OPERATOR_ED25519_PUBLIC_KEY__" :
+        typeof value.accountId !== "string" || !/^[a-f0-9]{32}$/u.test(value.accountId) || /^0{32}$/u.test(value.accountId) ||
+        typeof value.operatorPublicKey !== "string" || value.operatorPublicKey.startsWith("__REQUIRED_"))) throw new Error("unsafe-lifecycle-manifest");
+  if (!template) decodeCanonicalBase64url(value.operatorPublicKey as string, 32);
+}
+
+const labAdmissionServiceKeys = ["$schema", "name", "main", "compatibility_date", "workers_dev", "preview_urls", "routes", "durable_objects", "migrations", "vars"];
+const labAdmissionVars = ["ADMISSION_IDENTITY_MODE", "GOOGLE_OIDC_ISSUER", "GOOGLE_OIDC_AUDIENCE", "GOOGLE_SERVICE_ACCOUNT_EMAIL",
+  "GOOGLE_SERVICE_ACCOUNT_SUBJECT", "AUTHORITY_OPERATOR_PUBLIC_KEY", "ADMISSION_CURRENT_RELEASE_ID", "ADMISSION_CURRENT_KEY_ID", "ADMISSION_CURRENT_ACTIVATED_AT_MS"];
+/** The lab admission Worker: public admission fetch (Google-OIDC lab identity mode) on the single pinned lab admission hostname, plus the
+ * lab-only lifecycle entrypoints. Hosts ONLY LabAdmissionAuthority; any Production/staging DO class, route, or hostname is rejected. */
+export function validateLabAdmissionServiceConfig(value: unknown, template = true): void {
+  if (!exact(value, labAdmissionServiceKeys)) throw new Error("unsafe-lab-admission-config");
+  if (value.$schema !== "../node_modules/wrangler/config-schema.json" || value.name !== LAB_RESOURCES.admissionWorker ||
+      value.main !== "../workers/admission-service/lab-index.ts" || value.compatibility_date !== "2026-09-13" ||
+      value.workers_dev !== false || value.preview_urls !== false)
+    throw new Error("unsafe-lab-admission-config");
+  if (JSON.stringify(value.routes) !== JSON.stringify([{ pattern: LAB_RESOURCES.admissionHostname, custom_domain: true }]))
+    throw new Error("unsafe-lab-admission-route");
+  if (JSON.stringify(value.durable_objects) !== JSON.stringify({ bindings: [{ name: "AUTHORITY", class_name: "LabAdmissionAuthority" }] }))
+    throw new Error("unsafe-lab-admission-binding");
+  if (JSON.stringify(value.migrations) !== JSON.stringify([{ tag: "lab-admission-v1", new_sqlite_classes: ["LabAdmissionAuthority"] }]))
+    throw new Error("unsafe-lab-admission-migration");
+  if (!exact(value.vars, labAdmissionVars)) throw new Error("unsafe-lab-admission-vars");
+  const vars = value.vars as Record<string, unknown>;
+  if (vars.ADMISSION_IDENTITY_MODE !== "google-lab" || vars.GOOGLE_OIDC_ISSUER !== "https://accounts.google.com" ||
+      vars.GOOGLE_OIDC_AUDIENCE !== `https://${LAB_RESOURCES.admissionHostname}`) throw new Error("unsafe-lab-admission-vars");
+  const key = vars.AUTHORITY_OPERATOR_PUBLIC_KEY;
+  if (template ? key !== "__REQUIRED_LAB_OPERATOR_ED25519_PUBLIC_KEY__" : typeof key !== "string" || key.startsWith("__REQUIRED_"))
+    throw new Error("unsafe-lab-admission-key");
+  if (!template) decodeCanonicalBase64url(key as string, 32);
+  if (!template) for (const name of ["GOOGLE_SERVICE_ACCOUNT_EMAIL", "GOOGLE_SERVICE_ACCOUNT_SUBJECT", "ADMISSION_CURRENT_RELEASE_ID",
+    "ADMISSION_CURRENT_KEY_ID", "ADMISSION_CURRENT_ACTIVATED_AT_MS"])
+    if (typeof vars[name] !== "string" || (vars[name] as string).startsWith("__REQUIRED_") || vars[name] === "") throw new Error("unsafe-lab-admission-vars");
+}
+
+/** Lab section of deployment/lifecycle-environment-gates.json. Pinned allowlist; provisioning stays closed until the project owner opens the lab gates. */
+export function validateLabEnvironmentGate(value: unknown): void {
+  const labFields = ["requestBucket", "resultBucket", "mailboxWorker", "observerWorker", "guardObject", "executorWorker", "admissionWorker", "authorityObject",
+    "publicHostname", "admissionHostname", "requestObjectRetentionHours", "resultObjectRetentionDays", "retentionLiveVerified", "rotationImplemented",
+    "requestCredentialScopeLiveVerified", "resultCredentialScopeLiveVerified", "provisioningOpen", "isolatedFromProduction", "productionProvisioningImplied"];
+  if (!exact(value, labFields)) throw new Error("unsafe-lifecycle-environments");
+  const lab = value as Record<string, unknown>;
+  for (const field of ["requestBucket", "resultBucket", "mailboxWorker", "observerWorker", "guardObject", "executorWorker", "admissionWorker", "authorityObject",
+    "publicHostname", "admissionHostname"] as const)
+    if (lab[field] !== LAB_RESOURCES[field]) throw new Error("unsafe-lifecycle-environments");
+  if (lab.requestObjectRetentionHours !== 24 || lab.resultObjectRetentionDays !== 30 || lab.retentionLiveVerified !== false ||
+      lab.rotationImplemented !== false || lab.requestCredentialScopeLiveVerified !== false || lab.resultCredentialScopeLiveVerified !== false ||
+      lab.provisioningOpen !== false || lab.isolatedFromProduction !== true || lab.productionProvisioningImplied !== false)
+    throw new Error("unsafe-lifecycle-environments");
+}
+
+/**
+ * Recovery-evidence posture (Gate 11A preparation; local validation only, deploys nothing): the OBSERVER is armed so it can relay signed
+ * reconciliations, while the MAILBOX stays INACTIVE (no cron) and therefore can never dispatch an initialization or rotation. Both configs are
+ * validated by the exact same production validators (exact key set, bindings, services, R2 buckets, rendered main) -- so the observer provably has
+ * NO executor service binding, NO Durable Object binding and NO vars -- and must belong to the same Cloudflare account. The caller passes the two
+ * configs explicitly; nothing is inferred from file names or ambient state.
+ */
+export function validateRecoveryEvidencePosture(observer: unknown, mailbox: unknown, template = false): { observer: ProductionScheduleState; mailbox: ProductionScheduleState } {
+  const observerState = validateLifecycleObserverConfig(observer, template, "PRODUCTION_SCHEDULE_ARMED");
+  const mailboxState = validateLifecycleMailboxConfig(mailbox, template, "PRODUCTION_DEPLOYMENT_INACTIVE");
+  if (!template && (observer as { account_id: unknown }).account_id !== (mailbox as { account_id: unknown }).account_id) throw new Error("recovery-posture-account-mismatch");
+  return { observer: observerState, mailbox: mailboxState };
 }

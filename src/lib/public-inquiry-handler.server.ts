@@ -9,11 +9,12 @@ import { verifyMutationIngress, type IngressVerificationPolicy } from "./ingress
 import { isPublicOriginAllowed, type PublicOriginEnvironment } from "./public-origin";
 import { executeVerifiedPublicInquiry, type PublicInquiryFlowResult, type PublicInquiryRepository } from "./public-inquiry-flow.server";
 import { parseStrictUrlEncodedForm, readBoundedPublicInquiryBody } from "./public-inquiry-body";
+import { beginPublicInquiryRequest, recordPublicInquiryOutcome } from "./public-inquiry-telemetry.server";
 import type { AdmissionClient } from "./admission-client.server";
 import type { TurnstileVerifier } from "./turnstile";
 
 export type PublicInquiryHandlerDependencies = {
-  environment: PublicOriginEnvironment & { NODE_ENV?: string; REQUEST_SUBMISSION_MODE?: string; ALLOW_DEMO_SUBMISSIONS?: string; PUBLIC_DEMO_ORIGIN?: string };
+  environment: PublicOriginEnvironment & { NODE_ENV?: string; REQUEST_SUBMISSION_MODE?: string; ALLOW_DEMO_SUBMISSIONS?: string; PUBLIC_DEMO_ORIGIN?: string; PUBLIC_INQUIRY_OTEL_METRICS?: string; PUBLIC_INQUIRY_OTEL_METRICS_ENDPOINT?: string; PUBLIC_INQUIRY_OTEL_METRICS_SERVICE?: string; LIMITMARK_RUNTIME?: string; PUBLIC_ORIGIN_HOSTNAME?: string };
   ingressPolicy?: IngressVerificationPolicy; admission?: AdmissionClient; turnstile?: TurnstileVerifier; repository?: PublicInquiryRepository;
 };
 const noStoreHeaders = {
@@ -28,7 +29,30 @@ function responseFor(result: PublicInquiryFlowResult): Response {
   return result.kind === "redirect" ? Response.json(result, { headers: noStoreHeaders }) : jsonState(result.state);
 }
 
-export async function handlePublicInquiry(request: Request, dependencies: PublicInquiryHandlerDependencies): Promise<Response> {
+function beginTelemetrySafely(): () => void {
+  try {
+    const finish = beginPublicInquiryRequest();
+    return () => {
+      try {
+        finish();
+      } catch {
+        // Telemetry must never affect the defensive response path.
+      }
+    };
+  } catch {
+    return () => {};
+  }
+}
+
+function recordOutcomeSafely(status: number): void {
+  try {
+    recordPublicInquiryOutcome(status);
+  } catch {
+    // Telemetry must never affect the defensive response path.
+  }
+}
+
+async function handlePublicInquiryInternal(request: Request, dependencies: PublicInquiryHandlerDependencies): Promise<Response> {
   try {
     const url = new URL(request.url);
     if (request.method !== "POST" || url.pathname !== INGRESS_MUTATION_PATH || url.search || request.headers.get("content-type") !== INGRESS_MUTATION_CONTENT_TYPE ||
@@ -54,9 +78,17 @@ export async function handlePublicInquiry(request: Request, dependencies: Public
       const result = await submitToAdapter(parsed.data, token, undefined, dependencies.environment);
       return result.status === "demo-accepted" ? responseFor({ kind: "redirect", location: "/test-talep-et/tesekkurler" }) : jsonState({ errors: {}, values, submissionToken: token, message: "Talep gönderimi şu anda kullanılamıyor." });
     }
-    if (mode !== "persistent" || dependencies.environment.VERCEL !== "1" || dependencies.environment.VERCEL_ENV !== "production" ||
-        dependencies.environment.PUBLIC_ORIGIN_PROTECTION !== "required" || request.headers.get("origin") !== "https://limitmark.com" ||
-        url.protocol !== "https:" || url.hostname !== "limitmark.com" ||
+    const laboratory = dependencies.environment.LIMITMARK_RUNTIME === "cloud-run-lab";
+    const expectedHostname = laboratory ? dependencies.environment.PUBLIC_ORIGIN_HOSTNAME : "limitmark.com";
+    // Laboratory only: Next.js derives request.url from the server bind address (0.0.0.0 under `next start --hostname 0.0.0.0`), never from Host or
+    // x-forwarded-host, so url.hostname cannot be compared with the Cloud Run hostname there. The Cloud Run hostname is instead enforced through the
+    // Host header inside isPublicOriginAllowed (behind the origin secret). Production keeps the url.hostname comparison unchanged.
+    // The browser-facing Origin is the configured public hostname. In the laboratory the request URL host is the internal Cloud Run hostname
+    // (expectedHostname) while browsers send the public origin; both come from server configuration, never from request headers.
+    const expectedBrowserHostname = laboratory ? dependencies.environment.PUBLIC_ORIGIN_PUBLIC_HOSTNAME : "limitmark.com";
+    if (mode !== "persistent" || (!laboratory && (dependencies.environment.VERCEL !== "1" || dependencies.environment.VERCEL_ENV !== "production")) ||
+        dependencies.environment.PUBLIC_ORIGIN_PROTECTION !== "required" || !expectedBrowserHostname || request.headers.get("origin") !== `https://${expectedBrowserHostname}` ||
+        url.protocol !== "https:" || !laboratory && (!expectedHostname || url.hostname !== expectedHostname) ||
         !isPublicOriginAllowed(request.headers, dependencies.environment) || !dependencies.ingressPolicy || !dependencies.admission || !dependencies.turnstile || !dependencies.repository) {
       return jsonState({ errors: {}, message: "Talep gönderimi şu anda kullanılamıyor." }, 503);
     }
@@ -68,5 +100,16 @@ export async function handlePublicInquiry(request: Request, dependencies: Public
       return jsonState({ errors: {}, message: "Talep gönderimi şu anda kullanılamıyor." }, 413);
     }
     return jsonState({ errors: {}, message: "Talep gönderimi şu anda kullanılamıyor." }, 400);
+  }
+}
+
+export async function handlePublicInquiry(request: Request, dependencies: PublicInquiryHandlerDependencies): Promise<Response> {
+  const finishTelemetry = beginTelemetrySafely();
+  try {
+    const response = await handlePublicInquiryInternal(request, dependencies);
+    recordOutcomeSafely(response.status);
+    return response;
+  } finally {
+    finishTelemetry();
   }
 }

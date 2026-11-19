@@ -21,6 +21,7 @@
  *
  * Exit codes: 0 complete, 1 invalid, 2 refused at preflight, 3 aborted, 4 error.
  */
+import { isCampaignId } from "./campaign-id";
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { validateIngressBind, type IngressBind } from "../../defense/core/ingress-class";
@@ -43,6 +44,7 @@ import { Collector, type AppFin, type BoundaryFin, type PlaneFin } from "./colle
 import { ExternalReducer } from "./external-reducer";
 import { canaryCounts, deriveExternalAccounting, unverifiedMutationBound, type ExternalAccountingReport } from "./external-accounting";
 import { proveExposure, type ExposureResult, type TopologyPids } from "./exposure-proof";
+import { EventKindLedger } from "./event-kind-ledger";
 import { writeFieldEvidence, type CanarySummary, type FieldEvidenceBundle, type WriteResult } from "./field-evidence";
 import { runFieldJourney } from "./field-canary";
 import { FieldAppProcess, FieldBoundaryProcess } from "./field-processes";
@@ -90,6 +92,8 @@ export type FieldRunSeams = {
   onTopology?: (info: { pids: TopologyPids; ports: { plane: number; boundary: number; app: number; control: number }; ingress: IngressBind }) => void;
   /** Called when the plane acknowledges that its public ingress is closed (a test updates its fake /proc here). */
   onIngressClosed?: () => void;
+  /** Optional provenance lifecycle hooks (disposable local runs): announced when the run and its journal exist, and when the evidence package is finalized. Failures never affect the run. */
+  provenance?: { started(info: { runId: string; directory: string; journalPath: string }): void; finalized(directory: string): void };
   /** Called when the level is ARMED (a test may inject stray traffic here). */
   onArmed?: (info: { ingress: IngressBind }) => void;
   /** Replaces waiting for a remote generator: opens and closes the window on a timer, so a loopback run can drive the whole machine. */
@@ -212,12 +216,16 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
   // ====================================================================================== runtime state
   const baselineAmbient = preflight.ambientNonLoopbackPorts;
   const collector = new Collector(path.join(evidence.directory, "ledger-journal-field.ndjson"), { ...t.collector });
+  try { seams.provenance?.started({ runId: evidence.id, directory: evidence.directory, journalPath: path.join(evidence.directory, "ledger-journal-field.ndjson") }); } catch { /* provenance is optional and never changes the run */ }
   const salvo = args.levelId === "ba0-l7-c2-salvo" ? new SalvoServerObserver(n2ExerciseSpec(t)) : undefined;
   const n2 = args.levelId === "ba0-l7-c2" ? new N2ServerObserver(n2ExerciseSpec(t)) : salvo;
   collector.enableOriginStreams();
   collector.enableLaneStreams();
   const reducer = new ExternalReducer({ limits: t.external, allowedShed: t.allowedShed, now: clock, report: (code, rid, detail) => collector.externalAnomaly(code, rid, detail) });
   collector.enableExternalLane(reducer);
+  // Additive observation (criterion 9): a per-event-kind count taken where every plane event passes, upstream of the journal and the external reducer. It decides nothing.
+  const kindLedger = new EventKindLedger();
+  collector.observePlaneEvents((event) => kindLedger.observe(event));
   const monitor = new TickMonitor(t, clock);
   const root = new HopTrustRoot();
   const control = createSyntheticOrigin({ instance: "control", onObservation: (event) => collector.ingestOrigin(event) });
@@ -517,6 +525,8 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       ...(canaryContinuity ? { canaryContinuity } : {}),
     };
     const write = writeFieldEvidence(evidence, bundle);
+    // Written in isolation, after every historical artifact: a refusal here costs nothing else, and an absent ledger makes criterion 9 unevaluable (never accepted).
+    try { evidence.addJsonArtifact("kind-ledger.json", kindLedger.artifact(collector.channel)); } catch { /* absent */ }
     const status = serverSide.status;
     evidence.finalize({
       git, environment: collectEnvironment(),
@@ -530,6 +540,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
         externalAccepted: counters.accepted, anomalyTotal,
       },
     });
+    try { seams.provenance?.finalized(evidence.directory); } catch { /* the verifier reports an incomplete retained record */ }
     return { exit: status === "complete" ? FIELD_EXIT.complete : status === "invalid" ? FIELD_EXIT.invalid : FIELD_EXIT.aborted, status, serverSide, refusals: [], evidenceId: evidence.id, evidenceDirectory: evidence.directory, bundle, write };
   };
 
@@ -683,7 +694,7 @@ export function parseFieldArguments(argv: readonly string[]): FieldCli {
   if (flags.has("--selftest")) return { targetId: "", levelId: "", campaignId: "", dryRun: false, selftest: true };
   for (const name of ["--target", "--level", "--campaign"]) if (values[name] === undefined) throw new Error(`${name} is required`);
   if (!/^[a-z][a-z0-9-]{2,40}$/.test(values["--target"])) throw new Error("--target must be a reviewed target id");
-  if (!/^[a-z0-9][a-z0-9-]{5,40}$/.test(values["--campaign"])) throw new Error("--campaign must be a plain label");
+  if (!isCampaignId(values["--campaign"])) throw new Error("--campaign must be a plain label (6 to 31 characters)");
   if (!/^[a-z0-9][a-z0-9-]{2,30}$/.test(values["--level"])) throw new Error("--level must be a reviewed level id");
   return { targetId: values["--target"], levelId: values["--level"], campaignId: values["--campaign"], dryRun: flags.has("--dry-run"), selftest: false };
 }

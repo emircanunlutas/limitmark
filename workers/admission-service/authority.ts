@@ -12,6 +12,9 @@ export const ADMISSION_AUTHORITY_ID = "production-public-inquiries-v1";
  * PHASE5C_I3_PROVISIONING_RUNBOOK.md Gate 2. Same policy epoch is intentional:
  * the epoch names the reviewed policy generation, not the environment. */
 export const STAGING_ADMISSION_AUTHORITY_ID = "staging-public-inquiries-v1";
+/** Distinct laboratory authority identity (third environment). Never shared with Production or staging: a lab command, receipt or
+ * statement names this id, and no other environment's validator accepts it. */
+export const LAB_ADMISSION_AUTHORITY_ID = "lab-public-inquiries-v1";
 export const PRE_PERMIT_LIFETIME_MS = 60_000;
 export const NONCE_RETENTION_MS = 120_000;
 export const AUTHORITY_RELEASE_RETENTION_AFTER_RETIRE_MS = 12 * 60_000;
@@ -80,7 +83,7 @@ export function createAuthoritySchema(storage: DurableStorageLike): void {
 }
 
 export type LifecycleReceipt = {
-  digest: string; version: 1; operation: "initialize" | "rotate-release"; environment: "production" | "staging";
+  digest: string; version: 1; operation: "initialize" | "rotate-release"; environment: "production" | "staging" | "lab";
   authorityId: string; policyEpoch: string; keyFingerprint: string; sequence: number; appliedMs: number;
   currentReleaseId: string; nextReleaseId: string; nextKeyId: string; activatesMs: number; retiresMs: number | null;
 };
@@ -118,7 +121,8 @@ function insertReceipt(storage: DurableStorageLike, receipt: Omit<LifecycleRecei
 export function inspectLifecycleAuthority(storage: DurableStorageLike, digest: string, nowMs = Date.now(),
   expectedAuthorityId: string = ADMISSION_AUTHORITY_ID, expectedPolicyEpoch: string = ADMISSION_POLICY_EPOCH) {
   if (!/^[a-f0-9]{64}$/u.test(digest) || !Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error("invalid-reconciliation");
-  const environment = expectedAuthorityId === STAGING_ADMISSION_AUTHORITY_ID ? "staging" as const : "production" as const;
+  const environment = expectedAuthorityId === STAGING_ADMISSION_AUTHORITY_ID ? "staging" as const :
+    expectedAuthorityId === LAB_ADMISSION_AUTHORITY_ID ? "lab" as const : "production" as const;
   const table = (name: string) => exactlyOne<{ name: string }>(storage,
     "SELECT name FROM sqlite_master WHERE type='table' AND name=?", name) !== null;
   if (!table("authority_meta")) return { version: 1, environment, authorityId: expectedAuthorityId,
@@ -144,7 +148,7 @@ export function inspectLifecycleAuthority(storage: DurableStorageLike, digest: s
 }
 
 export type AuthorityInitialization = {
-  environment: "production" | "staging";
+  environment: "production" | "staging" | "lab";
   authorityId: string;
   policyEpoch: string;
   releaseId: string;
@@ -159,7 +163,11 @@ export function initializeAuthority(storage: DurableStorageLike, specification: 
   const expectedAuthorityId = options.expectedAuthorityId ?? ADMISSION_AUTHORITY_ID;
   const expectedPolicyEpoch = options.expectedPolicyEpoch ?? ADMISSION_POLICY_EPOCH;
   createAuthoritySchema(storage);
-  if ((specification.environment !== "production" && specification.environment !== "staging") ||
+  if ((specification.environment !== "production" && specification.environment !== "staging" && specification.environment !== "lab") ||
+      // The lab identity is bound both ways: a lab specification must name the lab authority and flag no production confirmation, and
+      // no other environment may name the lab authority.
+      (specification.environment === "lab") !== (specification.authorityId === LAB_ADMISSION_AUTHORITY_ID) ||
+      specification.environment === "lab" && specification.confirmProduction !== false ||
       specification.authorityId !== expectedAuthorityId || specification.policyEpoch !== expectedPolicyEpoch ||
       !validRelease(specification.releaseId) || !validKeyId(specification.releaseKeyId) || !Number.isSafeInteger(specification.nowMs) || specification.nowMs < 0 ||
       specification.environment === "production" && specification.confirmProduction !== true) throw new Error("initialization-policy");

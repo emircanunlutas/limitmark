@@ -6,12 +6,13 @@
   "compatibility_date": "2026-09-13",
   "workers_dev": false,
   "preview_urls": false,
-  "triggers": { "crons": ["* * * * *"] },
+  "triggers": { "crons": [] },
   "r2_buckets": [
     { "binding": "REQUEST_BUCKET", "bucket_name": "limitmark-lifecycle-requests-production" },
     { "binding": "RESULT_BUCKET", "bucket_name": "limitmark-lifecycle-results-production" }
   ],
   "services": [
-    { "binding": "LIFECYCLE_READER", "service": "limitmark-admission-service-production", "entrypoint": "AuthorityLifecycleReadOnly" }
+    { "binding": "LIFECYCLE_READER", "service": "limitmark-admission-service-production", "entrypoint": "AuthorityLifecycleReadOnly" },
+    { "binding": "GUARD_READER", "service": "limitmark-lifecycle-mailbox-production", "entrypoint": "LifecycleGuardReadOnly" }
   ]
 }

@@ -1,0 +1,16 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "limitmark-authority-operator-executor-lab",
+  "main": "__REQUIRED_RENDERED_LAB_EXECUTOR_MAIN__.ts",
+  "account_id": "__REQUIRED_CLOUDFLARE_ACCOUNT_ID__",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "services": [
+    { "binding": "ADMISSION_SERVICE", "service": "limitmark-admission-service-lab", "entrypoint": "LabAuthorityLifecycleOnly" }
+  ],
+  "vars": {
+    "AUTHORITY_OPERATOR_PUBLIC_KEY": "__REQUIRED_LAB_OPERATOR_ED25519_PUBLIC_KEY__",
+    "OPERATOR_EXECUTOR_ENVIRONMENT": "__REQUIRED_LAB_ENVIRONMENT__"
+  }
+}

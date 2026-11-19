@@ -45,6 +45,10 @@ test("the frozen R06 protocol and trust modules are imported ONLY by the reviewe
     "operator/authority-result-reader.ts",
     "operator/authority-result-verifier.ts",
     "operator/authority-trust-loader.ts",
+    // LAB environment verifier side (reviewed, structurally independent of the Production/staging composers): the lab reader/composer and
+    // the lab public trust-manifest loader. Lab relays (guard, processor, mailbox, observer, executor, CLI) are excluded below.
+    "operator/lab-authority-result.ts",
+    "operator/lab-operator-io.ts",
     // R06 ACTIVATION TOOLING (offline, local-only; tests/r06-activation-capability-guard.test.ts pins the exact symbols structurally): public-key fingerprinting and the
     // safe-time predicate (custody), and the frozen trust-manifest parser (renderer and preflight). None of them signs, builds or verifies a statement.
     "operator/staging-attestation-key.ts",
@@ -56,7 +60,9 @@ test("the frozen R06 protocol and trust modules are imported ONLY by the reviewe
     "workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/staging-dispatch-guard.ts", "workers/lifecycle-mailbox/processor.ts",
     "workers/lifecycle-mailbox/staging-processor.ts", "workers/lifecycle-mailbox/wire.ts", "workers/lifecycle-mailbox/index.ts", "workers/lifecycle-mailbox/staging-index.ts",
     "workers/lifecycle-observer.ts", "workers/staging-lifecycle-observer.ts", "workers/operator-lifecycle-executor.ts", "workers/staging-operator-lifecycle-executor.ts",
-    "scripts/authority-submit.ts", "scripts/authority-staging-submit.ts"])
+    "scripts/authority-submit.ts", "scripts/authority-staging-submit.ts",
+    "workers/lifecycle-mailbox/lab-dispatch-guard.ts", "workers/lifecycle-mailbox/lab-processor.ts", "workers/lifecycle-mailbox/lab-index.ts",
+    "workers/lab-lifecycle-observer.ts", "workers/lab-operator-lifecycle-executor.ts", "scripts/authority-lab-submit.ts", "scripts/authority-lab-initialize.ts"])
     assert.equal(imports(await read(relay)).some((specifier) => /authority-result-(?:attestation|trust)$/u.test(specifier)), false, `${relay} must not import the frozen protocol`);
 });
 
@@ -71,8 +77,10 @@ test("the attested Authority RPCs are invoked ONLY by the reviewed active caller
     "workers/admission-service/index.ts", // the Authority DO classes and the lifecycle-only / read-only entrypoints
     "workers/lifecycle-mailbox/dispatch-guard.ts", // pre-dispatch signed read: attestAppliedLifecycle
     "workers/lifecycle-mailbox/staging-dispatch-guard.ts",
+    "workers/lifecycle-mailbox/lab-dispatch-guard.ts", // lab: same single reviewed method
     "workers/lifecycle-observer.ts", // signed reconciliation: attestReconciliation
     "workers/staging-lifecycle-observer.ts",
+    "workers/lab-lifecycle-observer.ts",
     // R06 ACTIVATION TOOLING (offline, local-only): custody uses the Authority signer ONLY for its readiness self-test; the closed-set secret
     // engine reads ONLY the binding NAMES (ATTESTATION_SIGNER_BINDINGS.staging). Neither calls an attested RPC, a coordinator or a signing method;
     // tests/r06-activation-capability-guard.test.ts proves both structurally (syntax tree), not by pattern.
@@ -80,12 +88,12 @@ test("the attested Authority RPCs are invoked ONLY by the reviewed active caller
     "operator/staging-attestation-secret-engine.ts",
   ].sort());
   // The Production and staging dispatch/observer relays call exactly their reviewed method and nothing else of the attested surface.
-  for (const guard of ["workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/staging-dispatch-guard.ts"]) {
+  for (const guard of ["workers/lifecycle-mailbox/dispatch-guard.ts", "workers/lifecycle-mailbox/staging-dispatch-guard.ts", "workers/lifecycle-mailbox/lab-dispatch-guard.ts"]) {
     const text = code(await read(guard));
     assert.equal(text.match(/LIFECYCLE_READER\.attestAppliedLifecycle\(/gu)?.length, 1, guard);
     assert.equal(/attestReconciliation|FromOperatorAttested/u.test(text), false, guard);
   }
-  for (const observer of ["workers/lifecycle-observer.ts", "workers/staging-lifecycle-observer.ts"]) {
+  for (const observer of ["workers/lifecycle-observer.ts", "workers/staging-lifecycle-observer.ts", "workers/lab-lifecycle-observer.ts"]) {
     const text = code(await read(observer));
     assert.equal(text.match(/LIFECYCLE_READER\.attestReconciliation\(control\.digest, control\.nonce\)/gu)?.length, 1, `${observer}: exact digest and nonce are forwarded`);
     assert.equal(/attestAppliedLifecycle|inspectLifecycle|FromOperatorAttested/u.test(text), false, observer);
@@ -100,8 +108,18 @@ test("the 2B composers are used ONLY by the single reviewed reader; the active C
     if (specifiers.some((specifier) => /authority-result-verifier$/u.test(specifier))) composerImporters.push(file);
     if (specifiers.some((specifier) => /authority-result-reader$/u.test(specifier))) readerImporters.push(file);
   }
-  assert.deepEqual(composerImporters, ["operator/authority-result-reader.ts"]);
+  // The lab reader (operator/lab-authority-result.ts) is the one reviewed lab composer; it is reached only by the lab CLI below.
+  assert.deepEqual(composerImporters, ["operator/authority-result-reader.ts", "operator/lab-authority-result.ts"]);
   assert.deepEqual(readerImporters, ["scripts/authority-staging-submit.ts", "scripts/authority-submit.ts"]);
+  const labImporters: string[] = [];
+  for (const file of await activeSources()) if (imports(await read(file)).some((specifier) => /lab-authority-result$/u.test(specifier))) labImporters.push(file);
+  assert.deepEqual(labImporters, ["scripts/authority-lab-submit.ts"]);
+  const labScript = code(await read("scripts/authority-lab-submit.ts"));
+  assert.match(labScript, /import \{ readLabAuthorityResult \} from "\.\.\/operator\/lab-authority-result";/u);
+  assert.equal(/readStagingAuthorityResult|readProductionAuthorityResult|authority-result-reader/u.test(labScript), false, "the lab CLI cannot reach the Production or staging composer");
+  const labReaderText = code(await read("operator/lab-authority-result.ts"));
+  assert.equal(/composeProductionAuthorityResult|composeStagingAuthorityResult|authority-result-reader/u.test(labReaderText), false, "the lab composer reaches no other environment composer");
+  assert.equal(labReaderText.match(/verifyAuthoritySignedStatement\(/gu)?.length, 1, "one frozen verification for lab, no other signature path");
   const production = code(await read("scripts/authority-submit.ts"));
   const staging = code(await read("scripts/authority-staging-submit.ts"));
   assert.match(production, /import \{ readProductionAuthorityResult \} from "\.\.\/operator\/authority-result-reader";/u);
@@ -151,7 +169,7 @@ test("downgrade closure: no unsigned lifecycle/reconciliation positive verifier,
   // The Authority classes expose no unsigned lifecycle mutation (the staging rotation stub is the permanently closed Gate 9 refusal).
   const index = code(await read("workers/admission-service/index.ts"));
   assert.equal(/async initializeFromOperator\(|async rotateReleaseFromOperator\([^)]/u.test(index), false);
-  assert.equal(index.match(/async rotateReleaseFromOperator\(\)/gu)?.length, 1, "only the staging Gate 9 closed refusal remains");
+  assert.equal(index.match(/async rotateReleaseFromOperator\(\)/gu)?.length, 2, "only the staging Gate 9 and the lab not-implemented closed refusals remain");
   // Legacy-shaped result parsing survives only as the non-positive diagnostic classifier and settlement verification.
   const result = await read("operator/lifecycle-result.ts");
   assert.equal(/EXACT_RECEIPT|"SUCCESS"|"ALREADY_APPLIED"/u.test(code(result)), false, "operator/lifecycle-result.ts has no positive lifecycle vocabulary");

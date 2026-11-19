@@ -58,6 +58,7 @@ export const ATTESTATION_MAX_SEQUENCE = 4_096;
 export const ATTESTATION_AUTHORITY_IDS = {
   production: "production-public-inquiries-v1",
   staging: "staging-public-inquiries-v1",
+  lab: "lab-public-inquiries-v1",
 } as const;
 
 export type AttestationEnvironment = keyof typeof ATTESTATION_AUTHORITY_IDS;
@@ -304,7 +305,7 @@ function compareReleaseRows(a: AttestationReleaseRow, b: AttestationReleaseRow):
 function validateReleaseRows(value: unknown, initialized: boolean, environment: AttestationEnvironment): asserts value is readonly AttestationReleaseRow[] {
   if (!isPlainArray(value)) fail("attestation-releases");
   const rows = value;
-  if (initialized ? rows.length < 1 || rows.length > (environment === "staging" ? 1 : 2) : rows.length !== 0) fail("attestation-releases");
+  if (initialized ? rows.length < 1 || rows.length > (environment === "production" ? 2 : 1) : rows.length !== 0) fail("attestation-releases");
   for (const row of rows) validateReleaseRow(row);
   const typed = rows as readonly AttestationReleaseRow[];
   for (let index = 1; index < typed.length; index += 1) if (compareReleaseRows(typed[index - 1], typed[index]) >= 0) fail("attestation-releases");
@@ -356,7 +357,7 @@ type StatementBase = { environment: AttestationEnvironment; authorityId: string;
 
 function validateCommon(value: Record<string, unknown>): StatementBase {
   if (value.version !== ATTESTATION_VERSION || value.trustEpoch !== ATTESTATION_TRUST_EPOCH ||
-      (value.environment !== "production" && value.environment !== "staging") ||
+      (value.environment !== "production" && value.environment !== "staging" && value.environment !== "lab") ||
       value.authorityId !== ATTESTATION_AUTHORITY_IDS[value.environment] || value.policyEpoch !== ATTESTATION_POLICY_EPOCH ||
       !isLowerHex64(value.digest) || !isSafeTime(value.observedAtMs) || !isLowerHex64(value.writerKeyFingerprint)) fail("attestation-statement");
   return { environment: value.environment, authorityId: ATTESTATION_AUTHORITY_IDS[value.environment], digest: value.digest };

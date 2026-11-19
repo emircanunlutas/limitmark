@@ -1,0 +1,17 @@
+{
+  "_comment": "TEMPLATE. Fill from the provider's CURRENT public price list and a CURRENT exchange rate, both re-checked within 24 hours of the preflight. `verified` is true only when a human checked the figures against the source named. The shipped infra/m1/cost-ledger.json ASSUMPTIONS are not substitutes. Remove this _comment key from the real copy.",
+  "schema": "m1-cost-inputs-v1",
+  "priceSource": { "name": "__OWNER_REQUIRED__", "checkedAt": "__OWNER_REQUIRED__" },
+  "fx": { "tryPerUsdHigh": null, "checkedAt": "__OWNER_REQUIRED__", "source": "__OWNER_REQUIRED__", "verified": false },
+  "vms": [
+    { "role": "target+generator (e2-standard-2)", "count": 2, "usdPerHour": null },
+    { "role": "canary+collector (e2-small)", "count": 2, "usdPerHour": null }
+  ],
+  "hours": 2,
+  "egressGb": null,
+  "usdPerGb": null,
+  "storageUsd": null,
+  "loggingUsd": null,
+  "cleanupUsd": null,
+  "worstCaseHours": null
+}

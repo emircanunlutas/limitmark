@@ -39,7 +39,7 @@ export const commandDerivedReceiptFields: readonly (keyof CommandDerivedReceipt)
 /** Settlement verification. Settlement results are written by the dispatch guard's own ledger and carry no Authority receipt, so
  * they are verified against the caller-known digest/nonce/target and the local clock, exactly as before; R06 does not apply. */
 export function verifySettlementResult(bytes: Uint8Array, expected: { digest: string; nonce: string }, nowMs = Date.now(),
-  expectedEnvironment: "production" | "staging" = "production",
+  expectedEnvironment: "production" | "staging" | "lab" = "production",
   expectedAuthorityId: string = "production-public-inquiries-v1") {
   if (!bytes.length || bytes.byteLength > 8_192) throw new Error("result-size");
   const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);

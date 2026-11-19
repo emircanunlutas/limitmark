@@ -1,0 +1,13 @@
+{
+  "schema": "m1-canary-thresholds-v1",
+  "approval": { "approvedBy": null, "approvedAt": null, "reference": null },
+  "baselineMeasurementIds": [],
+  "maxLatencyMs": {
+    "baseline": { "p50": null, "p95": null, "p99": null },
+    "window": { "p50": null, "p95": null, "p99": null },
+    "recovery": { "p50": null, "p95": null, "p99": null }
+  },
+  "maxRecoveryTimeToBaselineMs": null,
+  "maxHeartbeatGapMs": null,
+  "operationalActions": []
+}

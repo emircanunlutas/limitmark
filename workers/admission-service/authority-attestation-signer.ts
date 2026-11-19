@@ -64,7 +64,7 @@ export function createAuthorityAttestationSigner(config: AuthorityAttestationSig
   const pinnedFingerprint: unknown = config.writerKeyFingerprint;
   const privateKeyText: unknown = config.privateKey;
   const publicKey: unknown = config.publicKey;
-  if ((environment !== "production" && environment !== "staging") || !isLowerHex64(pinnedFingerprint) ||
+  if ((environment !== "production" && environment !== "staging" && environment !== "lab") || !isLowerHex64(pinnedFingerprint) ||
       typeof privateKeyText !== "string" || typeof publicKey !== "string") fail("attestation-signer-config");
   // The raw private-key text lives only in this closure and is dropped as soon as it has been imported non-extractably.
   let rawPrivateKey: string | null = privateKeyText;
