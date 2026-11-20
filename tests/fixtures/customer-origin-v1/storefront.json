@@ -1,0 +1,49 @@
+{
+  "version": "customer-origin-policy-v1",
+  "revision": 1,
+  "tenantId": "north-shop",
+  "deploymentId": "storefront-fixture",
+  "requestProfile": "bounded-http-v1",
+  "unsupported": "deny",
+  "domain": { "id": "shop-origin", "backendRef": "storefront-backend", "instances": 1 },
+  "channels": [
+    { "id": "shopper", "access": "public", "principal": "store-edge", "audience": "shop-public", "scheme": "https", "authority": "shop.example.test" },
+    { "id": "warehouse", "access": "operational", "principal": "stock-service", "audience": "shop-operations", "scheme": "https", "authority": "shop.example.test" }
+  ],
+  "capacity": {
+    "activeUnits": 16, "maxQueued": 10, "maxQueuedBytes": 49152,
+    "maxBodyBytes": 8192, "metadataBytesPerRequest": 1024,
+    "proofWindowMs": 4000, "dispatchMarginMs": 150, "executionTimeoutMs": 2000, "callerBudgetMs": 3500
+  },
+  "classes": [
+    { "id": "browse", "access": "public", "reservedUnits": 0, "maxActiveUnits": 5, "maxQueued": 2, "maxWaitMs": 50 },
+    { "id": "asset", "access": "public", "reservedUnits": 0, "maxActiveUnits": 3, "maxQueued": 0, "maxWaitMs": 0 },
+    { "id": "checkout", "access": "public", "reservedUnits": 3, "maxActiveUnits": 6, "maxQueued": 5, "maxWaitMs": 200 },
+    { "id": "orders", "access": "public", "reservedUnits": 4, "maxActiveUnits": 6, "maxQueued": 3, "maxWaitMs": 150 },
+    { "id": "inventory", "access": "operational", "reservedUnits": 2, "maxActiveUnits": 4, "maxQueued": 1, "maxWaitMs": 100 }
+  ],
+  "operations": [
+    { "id": "product", "channel": "shopper", "method": "GET", "path": "/products/:sku", "queries": [""], "body": null, "classId": "browse", "costUnits": 1, "effect": "read" },
+    { "id": "product-image", "channel": "shopper", "method": "GET", "path": "/assets/:file", "queries": [""], "body": null, "classId": "asset", "costUnits": 1, "effect": "read" },
+    { "id": "checkout-summary", "channel": "shopper", "method": "GET", "path": "/checkout/:cart", "queries": [""], "body": null, "classId": "checkout", "costUnits": 1, "effect": "read" },
+    { "id": "place-order", "channel": "shopper", "method": "POST", "path": "/orders", "queries": [""], "body": { "mediaType": "application/json", "maxBytes": 8192, "requireSameOrigin": true }, "classId": "orders", "costUnits": 2, "effect": "write" },
+    { "id": "adjust-stock", "channel": "warehouse", "method": "PATCH", "path": "/inventory/:sku", "queries": [""], "body": { "mediaType": "application/json", "maxBytes": 2048, "requireSameOrigin": false }, "classId": "inventory", "costUnits": 2, "effect": "write" }
+  ],
+  "journeys": [
+    {
+      "id": "purchase", "minCompletionBps": 10000, "p95LimitMs": 3000, "recoveryLimitMs": 10000,
+      "steps": [
+        { "operationId": "product", "target": "/products/lamp-7", "status": 200, "result": "The product page identifies lamp-7 and its price.", "receipt": null },
+        { "operationId": "product-image", "target": "/assets/lamp-7.webp", "status": 200, "result": "The immutable image has the expected media type and fixture digest.", "receipt": null },
+        { "operationId": "checkout-summary", "target": "/checkout/cart-7", "status": 200, "result": "The authorized shopper sees cart-7 with the selected item and total.", "receipt": null },
+        { "operationId": "place-order", "target": "/orders", "status": 201, "result": "The order confirmation identifies the committed order for cart-7.", "receipt": "order-committed" }
+      ]
+    },
+    {
+      "id": "stock-correction", "minCompletionBps": 10000, "p95LimitMs": 2000, "recoveryLimitMs": 10000,
+      "steps": [
+        { "operationId": "adjust-stock", "target": "/inventory/lamp-7", "status": 204, "result": "The authorized warehouse adjustment changes the stock of lamp-7 by the requested delta once.", "receipt": "stock-adjustment-committed" }
+      ]
+    }
+  ]
+}

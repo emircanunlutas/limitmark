@@ -78,6 +78,7 @@ deployment/lifecycle-transport.production.json
 deployment/lifecycle-mailbox.production.jsonc
 deployment/operator-lifecycle-executor.production.jsonc
 
+# These exact root-relative entries mirror the owner-held evidence rules in .gitignore.
 # The owner-held C1 audit package: protected, untracked, never part of an image. Exact path only (not a glob), so no source file can be hidden by it.
 LimitMark-C1-Audit-Package
 

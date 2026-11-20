@@ -23,6 +23,7 @@ import { RESULT_PROVENANCE_CONTRACT } from "../lab/m1/result-provenance";
 import { SEAL_SCHEMA } from "../lab/m1/seal";
 import { WORKLOADS } from "../lab/policy/workloads";
 import { MIGRATION_REGISTRY_VERSION, REVIEWED_MIGRATIONS, isEffective } from "./support/reviewed-migrations";
+import { normalizedSha256, verifyBa0Inventory, type AdmissionReview, type ReviewedAddition } from "./support/ba0-inventory";
 import { REVIEWED_PATCHES } from "./support/reviewed-patches";
 import { campaign, observe, stream } from "./support/salvo-diagnostic-fixtures";
 import { refreshFixture, salvoFixture } from "./support/salvo-fixture";
@@ -139,18 +140,43 @@ const REVIEWED_DRIFT: ReadonlyMap<string, { historicalBlob: string | null; revie
 ]);
 
 // ------------------------------------------------------------------------------------------------------------------ 1: verdict-path files
+// Candidate identities are review inputs. BA0 inventory admission and migration approval are separate.
+const M2_ADDITIONS: readonly ReviewedAddition[] = [
+  ["defense/core/capacity-boundary.ts", "8d2961b898b672921faba397d3dae575448d979d", "22bacbfee431f8985d723fe64f58e69562b3ccfce08e3bf0ddb316958591974d"],
+  ["defense/core/capacity-heap.ts", "8ce80a715e472e851fcd4c62fab5b3d0204e7402", "efb550e14e4b164b838733f9c1e8fc4943aaa7091ddc3348ef1ee4be06a29d53"],
+  ["defense/core/capacity-policy.ts", "ffefd8f5db874e2b588dbec76ecad1cd2f60181d", "31414845fda7fedb186894b83cad809a1c18569ea4ff4483a8ec60c2e7a81dd0"],
+  ["defense/core/capacity-port.ts", "42b9a7650ba5860a5c8be8a523163a85e36939c2", "cd15e22e3ca3339d4b87d7fde1c0b0a68deeb0b550365bdd29afe021de04da1d"],
+  ["defense/core/origin-capacity.ts", "359e23b7962f64604c75d8604699ff50f593fb77", "cc17afa33d2e8d0698ffa4dec1dc62b7e05ac983819c6e3623c82ac6370e260b"],
+];
+const M2_ADMISSION_REVIEW: AdmissionReview = {
+  ownerDecision: (() => {
+    const tupleDigest = "33ed9dde399977d74536cf695eebd1d9c99f56891d04012b33f57b85026aa2ca";
+    assert.equal(normalizedSha256(Buffer.from(JSON.stringify(M2_ADDITIONS))), tupleDigest,
+      "M2 admission tuples differ from the owner-authorized set");
+    return `Owner decisions "LimitMark — Owner-Authorized M2 Inventory Admission", "LimitMark — Corrected M2 Authorization Tuple", and "LimitMark — Confirmed 19-Path Admission Inventory": BA0 current-inventory admission only for the five ordered path/blob/LF-normalized SHA-256 tuples with JSON SHA-256 ${tupleDigest}. Reviewed parent 467001bab0819e670173ac84991c6a5f4e0a2299.`;
+  })(),
+  isolationEvidence: (() => {
+    const reviewedEvidence = [
+      ["tests/defense-origin-capacity-static.test.ts", "60027da6e15f1c2c34657f7453c33acd28ce5789"],
+      ["tests/ba0-inventory-verification.test.ts", "5410ea8b45059b241c164a864823b630145b7288"],
+      ["tests/support/ba0-inventory.ts", "75cb7209ea2a9d61ba3c81b941b6c0a6158ed4d0"],
+    ] as const;
+    for (const [file, blob] of reviewedEvidence) {
+      assert.equal(git(["hash-object", "--", file]).trim(), blob, `wrong worktree isolation evidence: ${file}`);
+      assert.equal(git(["rev-parse", "--verify", `:0:${file}`]).trim(), blob, `wrong indexed isolation evidence: ${file}`);
+    }
+    return "Astra 6.2 final verdict: PASS — READY FOR OWNER AUTHORIZATION. Reviewed M2 governance verification covers transitive runtime isolation, child-process destination binding, npm lifecycle-hook rejection, and BA0 inventory verification.";
+  })(),
+};
+
 test("BA0 verdict-path files are a closed set and each working file is exactly its pinned blob", () => {
   assert.equal(PINNED_BLOBS.size, 63);
   assert.ok([...PINNED_BLOBS.keys()].every(inScope), "every pinned path is inside the BA0 scope");
-  // Closed set: tracked files plus untracked, non-ignored ones. A file added to, removed from or renamed inside the scope fails here.
-  const present = git(["ls-files", "--cached", "--others", "--exclude-standard", "--", ...BA0_SCOPE]).split("\n").filter(Boolean).sort();
-  assert.deepEqual(present, [...PINNED_BLOBS.keys()].sort());
-  // Content: one git hash-object over the working files (the same clean filter a commit would apply), compared file by file.
-  const files = [...PINNED_BLOBS.keys()];
-  const working = git(["hash-object", "--", ...files]).split("\n").filter(Boolean);
-  assert.equal(working.length, files.length);
-  const moved = files.filter((file, index) => working[index] !== PINNED_BLOBS.get(file));
-  assert.deepEqual(moved, [], "these BA0 verdict-path files are not their pinned blob");
+  assert.equal(M2_ADDITIONS.length, 5);
+  const mode = process.env.LIMITMARK_BA0_VERIFICATION_MODE ?? "pre-commit";
+  assert.ok(mode === "pre-commit" || mode === "committed", "invalid BA0 verification mode");
+  verifyBa0Inventory({ root, scopes: BA0_SCOPE, historical: PINNED_BLOBS, additions: M2_ADDITIONS,
+    review: M2_ADMISSION_REVIEW, mode, candidateCommit: process.env.LIMITMARK_BA0_CANDIDATE_COMMIT });
 });
 
 test("the only BA0 drift from the historical merge commit is the six reviewed patches and the APPROVED D1 instrumentation migration", () => {
@@ -174,8 +200,15 @@ test("the only BA0 drift from the historical merge commit is the six reviewed pa
     }
   }
   assert.deepEqual(REVIEWED_PATCHES.map((patch) => patch.path).filter((file) => !REVIEWED_DRIFT.has(file)), [], "no reviewed patch outside the pinned drift");
-  assert.deepEqual(REVIEWED_MIGRATIONS.filter((entry) => inScope(entry.path)).map((entry) => `${entry.path}:${entry.status}`),
-    ["defense/core/outcome-counters.ts:APPROVED", "defense/plane/runtime.ts:APPROVED"], "the registry holds exactly two BA0 entries, both APPROVED; no PENDING entry is a BA0 file");
+  const ba0Migrations = REVIEWED_MIGRATIONS.filter((entry) => inScope(entry.path));
+  assert.deepEqual(ba0Migrations.map((entry) => entry.path).sort(),
+    ["defense/core/outcome-counters.ts", "defense/plane/runtime.ts", ...M2_ADDITIONS.map(([file]) => file)].sort());
+  for (const [file, blob, digest] of M2_ADDITIONS) {
+    const entry = ba0Migrations.find((candidate) => candidate.path === file);
+    assert.ok(entry && isEffective(entry), `${file}: an effective M2 migration approval`);
+    assert.deepEqual([entry.change, entry.historicalBlob, entry.reviewedBlob, entry.reviewedSha256, entry.hold, entry.reviewId],
+      ["added", null, blob, digest, "none", "BASELINE-V2/M2_INVENTORY_ADDITIONS"], file);
+  }
   assert.equal(MIGRATION_REGISTRY_VERSION, 1);
 });
 

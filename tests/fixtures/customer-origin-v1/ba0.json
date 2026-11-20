@@ -1,0 +1,41 @@
+{
+  "version": "customer-origin-policy-v1",
+  "revision": 1,
+  "tenantId": "ba0-demo",
+  "deploymentId": "synthetic-local",
+  "requestProfile": "bounded-http-v1",
+  "unsupported": "deny",
+  "domain": { "id": "ba0-origin", "backendRef": "guarded-synthetic-app", "instances": 1 },
+  "channels": [
+    { "id": "visitor", "access": "public", "principal": "demo-plane", "audience": "demo-boundary", "scheme": "http", "authority": "127.0.0.1:18080" }
+  ],
+  "capacity": {
+    "activeUnits": 12, "maxQueued": 8, "maxQueuedBytes": 65536,
+    "maxBodyBytes": 32768, "metadataBytesPerRequest": 2048,
+    "proofWindowMs": 5000, "dispatchMarginMs": 100, "executionTimeoutMs": 2500, "callerBudgetMs": 5000
+  },
+  "classes": [
+    { "id": "information", "access": "public", "reservedUnits": 0, "maxActiveUnits": 4, "maxQueued": 2, "maxWaitMs": 50 },
+    { "id": "form-read", "access": "public", "reservedUnits": 2, "maxActiveUnits": 5, "maxQueued": 4, "maxWaitMs": 100 },
+    { "id": "submission", "access": "public", "reservedUnits": 2, "maxActiveUnits": 6, "maxQueued": 2, "maxWaitMs": 100 }
+  ],
+  "operations": [
+    { "id": "home", "channel": "visitor", "method": "GET", "path": "/", "queries": [""], "body": null, "classId": "information", "costUnits": 1, "effect": "read" },
+    { "id": "privacy", "channel": "visitor", "method": "GET", "path": "/gizlilik", "queries": [""], "body": null, "classId": "information", "costUnits": 1, "effect": "read" },
+    { "id": "inquiry-form", "channel": "visitor", "method": "GET", "path": "/test-talep-et", "queries": ["", "hizmet=web", "hizmet=network", "hizmet=protection", "hizmet=unsure"], "body": null, "classId": "form-read", "costUnits": 1, "effect": "read" },
+    { "id": "submit-inquiry", "channel": "visitor", "method": "POST", "path": "/api/public-inquiries", "queries": [""], "body": { "mediaType": "application/x-www-form-urlencoded", "maxBytes": 32768, "requireSameOrigin": true }, "classId": "submission", "costUnits": 2, "effect": "write" },
+    { "id": "confirmation", "channel": "visitor", "method": "GET", "path": "/test-talep-et/tesekkurler", "queries": [""], "body": null, "classId": "form-read", "costUnits": 1, "effect": "read" }
+  ],
+  "journeys": [
+    {
+      "id": "demo-inquiry", "minCompletionBps": 10000, "p95LimitMs": 5000, "recoveryLimitMs": 15000,
+      "steps": [
+        { "operationId": "home", "target": "/", "status": 200, "result": "Home includes navigation to the privacy page and inquiry form.", "receipt": null },
+        { "operationId": "privacy", "target": "/gizlilik", "status": 200, "result": "The privacy heading is displayed.", "receipt": null },
+        { "operationId": "inquiry-form", "target": "/test-talep-et", "status": 200, "result": "The form supplies a submission token for the next step.", "receipt": null },
+        { "operationId": "submit-inquiry", "target": "/api/public-inquiries", "status": 200, "result": "A valid submission using that token returns JSON pointing to /test-talep-et/tesekkurler.", "receipt": "synthetic-app-mutation" },
+        { "operationId": "confirmation", "target": "/test-talep-et/tesekkurler", "status": 200, "result": "The page displays the demo completion message.", "receipt": null }
+      ]
+    }
+  ]
+}

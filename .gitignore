@@ -66,3 +66,10 @@ deployment/lifecycle-transport.production.json
 deployment/authority-result-trust.json
 deployment/lifecycle-mailbox.production.jsonc
 deployment/operator-lifecycle-executor.production.jsonc
+
+# Owner-held BA0 audit evidence at the repository root.
+/audit-input/
+/LimitMark-C1-Audit-Package/
+/LimitMark-C1-Audit-Package.zip
+/audit-report.json
+/ba0-c1-tag.bundle

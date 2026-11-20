@@ -66,14 +66,16 @@ export const STILL_PENDING_PINS: Array<[string, string | null, string]> = [
 ];
 export const STILL_PENDING = STILL_PENDING_PINS.map(([file]) => file);
 const INSTRUMENTATION = ["defense/core/outcome-counters.ts", "defense/plane/runtime.ts"];
+const M2_APPROVALS = [
+  "defense/core/capacity-boundary.ts", "defense/core/capacity-heap.ts", "defense/core/capacity-policy.ts",
+  "defense/core/capacity-port.ts", "defense/core/origin-capacity.ts",
+];
+const APPROVED_PATHS = [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL, ...BATCH_APPROVALS, ...SIX_APPROVALS, ...M2_APPROVALS].sort();
 
-const approve = (registry: readonly ReviewedMigration[], which: (entry: ReviewedMigration) => boolean): ReviewedMigration[] =>
-  registry.map((entry) => (which(entry) ? { ...entry, status: "APPROVED" as const, authorization: "TEST-ONLY decision reference", scope: "TEST-ONLY scope" } : { ...entry }));
-
-test("registry shape: a closed, versioned list of exact files, only the two instrumentation entries and the two owner-approved lab/entry entries (2026-11-09) approved, every entry current against the working tree", () => {
+test("registry shape: 49 exact files, 44 owner-approved and five Gate 11A holds, all current against the working tree", () => {
   assert.equal(MIGRATION_REGISTRY_VERSION, 1);
-  assert.equal(REVIEWED_MIGRATIONS.length, 44);
-  assert.equal(new Set(REVIEWED_MIGRATIONS.map((entry) => entry.path)).size, 44);
+  assert.equal(REVIEWED_MIGRATIONS.length, 49);
+  assert.equal(new Set(REVIEWED_MIGRATIONS.map((entry) => entry.path)).size, 49);
   for (const entry of REVIEWED_MIGRATIONS) {
     assert.match(entry.path, /^(?:src|workers|defense)\/[A-Za-z0-9_./-]+\.tsx?$/u, entry.path);
     assert.match(entry.reviewedSha256, /^[0-9a-f]{64}$/u, entry.path);
@@ -100,9 +102,16 @@ test("registry shape: a closed, versioned list of exact files, only the two inst
     ["defense/core/outcome-counters.ts", "INSTRUMENTATION/D1", "Owner decision D1 (instrumentation wiring, conditional approval) + INSTRUMENTATION-MIGRATION-APPROVAL.md, 040292b", "observational outcome tally only: new module + runtime.ts wiring that tallies emitted events; no defense policy, threshold, status or event-order change"],
     ["defense/plane/runtime.ts", "INSTRUMENTATION/D1", "Owner decision D1 (instrumentation wiring, conditional approval) + INSTRUMENTATION-MIGRATION-APPROVAL.md, 040292b", "observational outcome tally only: new module + runtime.ts wiring that tallies emitted events; no defense policy, threshold, status or event-order change"],
   ]);
-  // Owner decision of 2026-11-09: exactly these two further entries are approved, each at its reviewed blob, with this authorization; the lab observer and every other entry stay PENDING.
   const approvedNow = REVIEWED_MIGRATIONS.filter((entry) => entry.status === "APPROVED").map((entry) => entry.path).sort();
-  assert.deepEqual(approvedNow, [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL, ...BATCH_APPROVALS, ...SIX_APPROVALS].sort());
+  assert.equal(approvedNow.length, 44);
+  assert.deepEqual(approvedNow, APPROVED_PATHS);
+  const m2Entries = REVIEWED_MIGRATIONS.filter((entry) => entry.reviewId === "BASELINE-V2/M2_INVENTORY_ADDITIONS");
+  assert.deepEqual(m2Entries.map((entry) => entry.path).sort(), [...M2_APPROVALS].sort());
+  for (const entry of m2Entries) {
+    assert.deepEqual([entry.change, entry.historicalBlob, entry.hold, entry.status], ["added", null, "none", "APPROVED"], entry.path);
+    assert.equal(entry.authorization, `Owner decision 'LimitMark — Owner-Authorized M2 Migration Registry Approval' for ${entry.path} at blob ${entry.reviewedBlob} and LF-normalized SHA-256 ${entry.reviewedSha256}; independently reviewed tree fafd3e7324936a8174576c734a8be4a41b22cbad.`);
+    assert.equal(entry.scope, `Only the exact added ${entry.path} in the historical byte-identity diffs against 64ccc9d, dcf10af8, and aff793e. File-specific and non-transitive. Grants no runtime, deployment, or production enablement authority.`);
+  }
   assert.equal(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "PENDING").length, 5);
   assert.deepEqual(REVIEWED_MIGRATIONS.filter((entry) => entry.status === "PENDING").map((entry) => entry.path).sort(), [...STILL_PENDING].sort());
   // The five Gate 11A entries: still PENDING, same historical and reviewed blobs, same hold, no authorization, no scope.
@@ -152,16 +161,16 @@ test("registry shape: a closed, versioned list of exact files, only the two inst
   assert.equal(REVIEWED_MIGRATIONS.find((entry) => entry.path === "workers/admin-gateway/index.ts")?.reviewedBlob, "9c159eaf416dffe751e2fa66cb262ab3acc4c8a4");
   assert.equal(REVIEWED_MIGRATIONS.find((entry) => entry.path === "workers/lab-operator-lifecycle-executor.ts")?.reviewedBlob, "dadcb9769e11e67eaf8c01711a9150a159aa51fc");
   const holds = (hold: string) => REVIEWED_MIGRATIONS.filter((entry) => entry.hold === hold).length;
-  assert.deepEqual([holds("none"), holds("shared-production-module"), holds("guard-export")], [28, 11, 5]);
+  assert.deepEqual([holds("none"), holds("shared-production-module"), holds("guard-export")], [33, 11, 5]);
 });
 
-test("real repository: every file that differs from each baseline is registered and unmodified since review (no unreviewed drift), and everything except the thirty-nine approved entries is still PENDING", () => {
+test("real repository: each baseline has only exact approved drift and its applicable Gate 11A holds", () => {
   for (const [name, baseline, paths, expected] of GUARDS) {
     const result = classifyDrift(root, baseline, paths);
     assert.deepEqual(result.unreviewed, [], `${name}: unreviewed drift`);
     assert.deepEqual(result.modifiedAfterReview, [], `${name}: modified after review`);
-    assert.deepEqual([...result.authorized].sort(), name === "aff793e" ? INSTRUMENTATION : [...INSTRUMENTATION, ...NEW_APPROVALS, JWKS_APPROVAL, INGRESS_APPROVAL, ...BATCH_APPROVALS, ...SIX_APPROVALS].sort(), `${name}: exactly the approved entries inside this guard's paths are authorized`);
-    assert.equal(result.pending.length, expected, `${name}: pending drift`);
+    assert.deepEqual([...result.authorized].sort(), name === "aff793e" ? [...INSTRUMENTATION, ...M2_APPROVALS].sort() : APPROVED_PATHS, `${name}: exactly the approved entries inside this guard's paths are authorized`);
+    assert.deepEqual([...result.pending].sort(), expected === 0 ? [] : [...STILL_PENDING].sort(), `${name}: pending drift`);
   }
 });
 
@@ -218,15 +227,13 @@ test("the mechanism distinguishes authorized, pending, modified-after-review and
 
 test("closure evidence on the real repository: which approvals empty which historical byte-identity diff", () => {
   const diff = (baseline: string, paths: string[], registry: readonly ReviewedMigration[]) => git(root, ["diff", "--name-only", baseline, "--", ...withoutReviewedChanges(paths, registry)]).split("\n").filter(Boolean);
-  const instrumentation = approve(REVIEWED_MIGRATIONS, (entry) => entry.reviewId.startsWith("INSTRUMENTATION/"));
-  assert.deepEqual(diff(MIGRATION_BASELINES[2], PATHS_AFF793E, instrumentation), [], "approving ONLY the two instrumentation files closes the aff793e guard");
-  const withoutHolds = approve(REVIEWED_MIGRATIONS, (entry) => entry.hold === "none");
-  const heldPaths = REVIEWED_MIGRATIONS.filter((entry) => entry.hold !== "none" && entry.status !== "APPROVED").map((entry) => entry.path).sort();
-  for (const [name, baseline, paths] of GUARDS.slice(0, 2)) assert.deepEqual(diff(baseline, paths, withoutHolds), heldPaths, `${name}: with the 28 non-held entries approved, exactly the held files that are not individually approved remain`);
-  const everything = approve(REVIEWED_MIGRATIONS, () => true);
-  for (const [name, baseline, paths] of GUARDS) {
-    assert.deepEqual(diff(baseline, paths, everything), [], `${name}: with all 44 approved the guard's diff is empty`);
-    assertMigrationBoundary(root, baseline, everything);
+  const pendingM2 = REVIEWED_MIGRATIONS.map((entry): ReviewedMigration =>
+    M2_APPROVALS.includes(entry.path) ? { ...entry, status: "PENDING", authorization: null, scope: "" } : entry);
+  for (const [name, baseline, paths, expected] of GUARDS) {
+    const held = expected === 0 ? [] : STILL_PENDING;
+    assert.deepEqual(diff(baseline, paths, pendingM2).sort(), [...M2_APPROVALS, ...held].sort(), `${name}: pending M2 remains visible`);
+    assert.deepEqual(diff(baseline, paths, REVIEWED_MIGRATIONS).sort(), [...held].sort(), `${name}: only applicable Gate 11A holds remain`);
+    assertMigrationBoundary(root, baseline);
   }
 });
 
