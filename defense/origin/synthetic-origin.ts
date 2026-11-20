@@ -18,6 +18,7 @@ import type { AppEvent, OriginEvent } from "../core/ledger";
 import type { Lane, ObReason } from "../core/types";
 import { HOP_HEADER, NONCE_HEADER, NONCE_PATTERN, OB_REASONS, isSpoofableHeader } from "../core/types";
 import { HOP_BA_HEADER, HOP_PB_HEADER, MEASUREMENT_HEADER } from "../core/semantic-request";
+import { TERMINAL_HEADER, type ExecutionFence } from "./execution-fence";
 
 const GUARDED_PARSER_CODES: ReadonlySet<string> = new Set([
   "HPE_HEADER_OVERFLOW", "HPE_INVALID_METHOD", "HPE_INVALID_HEADER_TOKEN", "HPE_UNEXPECTED_CONTENT_LENGTH", "HPE_INVALID_CONTENT_LENGTH",
@@ -52,6 +53,9 @@ export type AppGuardDecision = { ok: true; facts: RequestFacts; identity: AppIde
 export type AppGuard = (req: http.IncomingMessage) => Promise<AppGuardDecision>;
 
 export type SyntheticOriginOptions = {
+  executionFence?: ExecutionFence;
+  /** Local process tests can model awaited origin work after the execution fence opens. */
+  beforeExecution?: () => Promise<void> | undefined;
   instance: Lane;
   onObservation: (event: OriginEvent) => void;
   /** Finite capacity: concurrent requests beyond this get an explicit 503. */
@@ -151,9 +155,12 @@ export function createSyntheticOrigin(options: SyntheticOriginOptions): Syntheti
   /** The synthetic application's whole state: a count and a bounded ring of submission digests. It never changes a response. */
   const committed: string[] = [];
   const guard = options.guard;
+  const fence = options.executionFence;
+  if (fence && !guard) throw new Error("execution fencing requires guarded origin admission");
   const onApp = options.onApp ?? (() => undefined);
 
   const server = http.createServer({ maxHeaderSize: 16_384, keepAliveTimeout: 5_000, requestTimeout: 10_000, headersTimeout: 10_000, ...(guard ? { requireHostHeader: false } : {}) }, (req, res) => {
+    if (fence?.control(req, res)) return;
     if (guard) { void handleGuarded(req, res, guard); return; }
     const nonceRaw = req.headers[NONCE_HEADER];
     const nonce = typeof nonceRaw === "string" && NONCE_PATTERN.test(nonceRaw) ? nonceRaw : null;
@@ -179,7 +186,7 @@ export function createSyntheticOrigin(options: SyntheticOriginOptions): Syntheti
     if (armed) armed.remaining--;
     if (armed?.kind === "reset") { req.socket.destroy(); return; }
     if (armed?.kind === "hang") { hung.add(res); return; }
-    const respond = () => { void handle(req, res, factsOf(req), null); };
+    const respond = () => { void handle(req, res, factsOf(req), null).then((result) => send(res, result)); };
     if (armed?.kind === "delay") setTimeout(respond, armed.delayMs); else respond();
   });
   server.maxConnections = 256;
@@ -222,8 +229,17 @@ export function createSyntheticOrigin(options: SyntheticOriginOptions): Syntheti
   }
 
   async function handleGuarded(req: http.IncomingMessage, res: http.ServerResponse, admit: AppGuard): Promise<void> {
+    const envelope = fence?.extract(req);
+    const ba = req.headers[HOP_BA_HEADER];
     const decision = await admit(req);
     if (!decision.ok) { refuse(res, decision.reason, decision.nonce); return; }
+    if (res.destroyed) return;
+    const execution = fence && envelope && typeof ba === "string" ? fence.accept(envelope, ba) : undefined;
+    if (fence && !execution) {
+      const proof = envelope && typeof ba === "string" && fence.refusedAfterGuard(envelope, ba);
+      res.writeHead(503, { "content-length": 0, connection: "close", ...(proof && { [TERMINAL_HEADER]: proof }) }).end();
+      return;
+    }
     const { facts, identity } = decision;
     let spoofed = 0;
     for (const name of Object.keys(req.headers)) if (name !== HOP_PB_HEADER && name !== HOP_BA_HEADER && name !== MEASUREMENT_HEADER && name !== NONCE_HEADER && name !== HOP_HEADER && isSpoofableHeader(name)) spoofed++;
@@ -244,38 +260,56 @@ export function createSyntheticOrigin(options: SyntheticOriginOptions): Syntheti
     };
     res.on("finish", () => { finished = true; stats.completed++; onApp({ nonce: identity.nonce, kind: "APP_COMPLETED", hop: identity.hop, pbTag: identity.pbTag, baTag: identity.baTag, status: res.statusCode }); });
     res.on("close", closeOnce);
-    if (res.destroyed) { closeOnce(); return; }
+    if (res.destroyed) { execution?.finish(); closeOnce(); return; }
 
     const armed = fault && fault.remaining > 0 ? fault : null;
     if (armed) armed.remaining--;
-    if (armed?.kind === "reset") { req.socket.destroy(); return; }
-    if (armed?.kind === "hang") { hung.add(res); return; }
-    const respond = () => { void handle(req, res, facts, identity); };
+    if (armed?.kind === "reset") { execution?.finish(); req.socket.destroy(); return; }
+    if (armed?.kind === "hang") { execution?.finish(); hung.add(res); return; }
+    const respond = async () => {
+      if (execution && (res.destroyed || !execution.start())) {
+        send(res, reply(503, "text/plain", "Origin unavailable"), execution.finish());
+        return;
+      }
+      // The fenced synthetic handler awaits all charged work and returns data. Only this adapter emits a terminal proof.
+      let result: Reply;
+      try {
+        const pending = execution && options.beforeExecution?.();
+        if (pending) await pending;
+        result = await handle(req, res, facts, identity);
+      }
+      catch { result = reply(500, "text/plain", "Origin failure"); }
+      const proof = execution?.finish();
+      send(res, result, proof);
+    };
     if (armed?.kind === "delay") setTimeout(respond, armed.delayMs); else respond();
   }
 
-  async function handle(req: http.IncomingMessage, res: http.ServerResponse, facts: RequestFacts, identity: AppIdentity | null): Promise<void> {
+  type Reply = { status: number; contentType: string; body: string };
+  const reply = (status: number, contentType: string, body: string): Reply => ({ status, contentType, body });
+
+  async function handle(req: http.IncomingMessage, res: http.ServerResponse, facts: RequestFacts, identity: AppIdentity | null): Promise<Reply> {
     if (active > maxConcurrent) {
       stats.overloaded++;
-      return send(res, 503, "application/json", JSON.stringify({ kind: "state", state: { errors: {}, message: UNAVAILABLE } }));
+      return reply(503, "application/json", JSON.stringify({ kind: "state", state: { errors: {}, message: UNAVAILABLE } }));
     }
     counters.executed++;
     if (identity) onApp({ nonce: identity.nonce, kind: "APP_EXECUTED", hop: identity.hop, pbTag: identity.pbTag, baTag: identity.baTag });
     const url = facts.url;
     const method = facts.method;
     if (method === "GET") {
-      if (url === "/") return send(res, 200, "text/html; charset=utf-8", HOME);
-      if (url === "/gizlilik") return send(res, 200, "text/html; charset=utf-8", PRIVACY);
-      if (url === "/test-talep-et" || /^\/test-talep-et\?hizmet=(?:web|network|protection|unsure)$/.test(url)) return send(res, 200, "text/html; charset=utf-8", formPage(randomBytes(32).toString("base64url")));
-      if (url === SYNTHETIC_REDIRECT_LOCATION) return send(res, 200, "text/html; charset=utf-8", THANKS);
-      return send(res, 404, "text/plain; charset=utf-8", "Not found");
+      if (url === "/") return reply(200, "text/html; charset=utf-8", HOME);
+      if (url === "/gizlilik") return reply(200, "text/html; charset=utf-8", PRIVACY);
+      if (url === "/test-talep-et" || /^\/test-talep-et\?hizmet=(?:web|network|protection|unsure)$/.test(url)) return reply(200, "text/html; charset=utf-8", formPage(randomBytes(32).toString("base64url")));
+      if (url === SYNTHETIC_REDIRECT_LOCATION) return reply(200, "text/html; charset=utf-8", THANKS);
+      return reply(404, "text/plain; charset=utf-8", "Not found");
     }
     if (method === "POST" && url === "/api/public-inquiries") return handleSubmission(req, res, facts, identity);
-    return send(res, 404, "text/plain; charset=utf-8", "Not found");
+    return reply(404, "text/plain; charset=utf-8", "Not found");
   }
 
-  async function handleSubmission(req: http.IncomingMessage, res: http.ServerResponse, facts: RequestFacts, identity: AppIdentity | null): Promise<void> {
-    if (facts.contentType !== "application/x-www-form-urlencoded") return send(res, 404, "text/plain; charset=utf-8", "Not found");
+  async function handleSubmission(req: http.IncomingMessage, res: http.ServerResponse, facts: RequestFacts, identity: AppIdentity | null): Promise<Reply> {
+    if (facts.contentType !== "application/x-www-form-urlencoded") return reply(404, "text/plain; charset=utf-8", "Not found");
     const chunks: Buffer[] = [];
     let length = 0;
     if (facts.body !== null) { chunks.push(facts.body); length = facts.body.length; }
@@ -284,12 +318,12 @@ export function createSyntheticOrigin(options: SyntheticOriginOptions): Syntheti
         length += chunk.length;
         if (length > SYNTHETIC_MAX_BODY_BYTES) {
           res.setHeader("connection", "close");
-          return send(res, 413, "application/json", JSON.stringify({ kind: "state", state: { errors: {}, message: UNAVAILABLE } }));
+          return reply(413, "application/json", JSON.stringify({ kind: "state", state: { errors: {}, message: UNAVAILABLE } }));
         }
         chunks.push(chunk);
       }
     }
-    const state = (status: number, value: unknown) => send(res, status, "application/json", JSON.stringify(value));
+    const state = (status: number, value: unknown) => reply(status, "application/json", JSON.stringify(value));
     if (facts.origin !== `http://${facts.host}`) return state(403, { kind: "state", state: { errors: {}, message: UNAVAILABLE } });
     const parsed = parseStrictForm(Buffer.concat(chunks));
     if (!parsed.ok) return state(400, { kind: "state", state: { errors: {}, message: UNAVAILABLE } });
@@ -305,10 +339,11 @@ export function createSyntheticOrigin(options: SyntheticOriginOptions): Syntheti
     return state(200, { kind: "redirect", location: SYNTHETIC_REDIRECT_LOCATION });
   }
 
-  function send(res: http.ServerResponse, status: number, contentType: string, body: string): void {
+  function send(res: http.ServerResponse, { status, contentType, body }: Reply, proof?: string): void {
     if (res.writableEnded || res.destroyed) return;
     const bytes = Buffer.from(body, "utf8");
-    res.writeHead(status, { "content-type": contentType, "content-length": bytes.length, "cache-control": "private, no-store, max-age=0, must-revalidate", "x-content-type-options": "nosniff" });
+    res.writeHead(status, { "content-type": contentType, "content-length": bytes.length, "cache-control": "private, no-store, max-age=0, must-revalidate", "x-content-type-options": "nosniff",
+      ...(proof && { [TERMINAL_HEADER]: proof }) });
     res.end(bytes);
   }
 

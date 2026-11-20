@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "status": "PENDING OWNER APPROVAL",
+  "baseCommit": "58bfe18aa8d5b34d08cb819cdc572a92349a819d",
+  "hashFormat": "sha256:utf8-lf",
+  "manifest": {
+    "path": "docs/architecture/m3-checkpoint.json",
+    "change": "A",
+    "digest": "out-of-band"
+  },
+  "files": [
+    {
+      "path": "defense/boundary/boundary.ts",
+      "change": "M",
+      "sha256": "01be46f3b4c8b2a2edd19612b5c428994d7446d940380c2c6783f6bd9ca71016"
+    },
+    {
+      "path": "defense/core/capacity-boundary.ts",
+      "change": "M",
+      "sha256": "b8ab92f52a95d8f797925d02265c3e4e32bd5eb4c7e1f3091a383a8c4c6c4a67"
+    },
+    {
+      "path": "defense/core/origin-capacity.ts",
+      "change": "M",
+      "sha256": "0bac8792314c4e0704836e22b95e2088b70baa4ab64a7963d8781de67d2ae7d4"
+    },
+    {
+      "path": "defense/origin/execution-fence.ts",
+      "change": "A",
+      "sha256": "1da9b800bf6a179d0f2d6dbf44f5a5a964acd2ba17a2b2ff6af2b68f9fabe958"
+    },
+    {
+      "path": "defense/origin/synthetic-origin.ts",
+      "change": "M",
+      "sha256": "9dad9657edf1010bbfb5b2e2ca36dd50c560f09d9be0580a0b824cb02eaa980a"
+    },
+    {
+      "path": "docs/architecture/m3-governance-admission.md",
+      "change": "A",
+      "sha256": "dc6e50a0bcaf7d20e65a493298335086c1b0fbec7c2ea91f26e61ee69d60cf9a"
+    },
+    {
+      "path": "docs/architecture/origin-execution-fence.md",
+      "change": "A",
+      "sha256": "f151e3ba71e59b256722f2de9b7de412f111bf97bfcc2e0353904ff5ff0015f9"
+    },
+    {
+      "path": "lab/defense/fenced-lifetime.ts",
+      "change": "A",
+      "sha256": "524289a863eb305f7d19d615a53c3f2d5bf8311803aa79f903f5e6e3c0063ecd"
+    },
+    {
+      "path": "lab/defense/fenced-process-main.ts",
+      "change": "A",
+      "sha256": "470b35f5fba16e9f1469c90ca801611c2b76be61750fe96bc96fa26cb027e5c7"
+    },
+    {
+      "path": "lab/defense/fenced-supervisor.ts",
+      "change": "A",
+      "sha256": "7c28a383930bdbe71eb33cc7cf2bfb04cc78b2fa1de87efe46082e20c97188b8"
+    },
+    {
+      "path": "lab/defense/fenced-witness-main.ts",
+      "change": "A",
+      "sha256": "65aa5365f1eea4bb79a26c195bd49e375d4a62c6e990659ae63765547b433271"
+    },
+    {
+      "path": "lab/defense/fenced-witness.ts",
+      "change": "A",
+      "sha256": "92c100526c5ed2c7199248477aada91c7911c25d5ccce9d9cc90315aacac695c"
+    },
+    {
+      "path": "scripts/verify-m3-checkpoint.mjs",
+      "change": "A",
+      "sha256": "4c2c61227f1d797d2f2f693aa2a47c40d31ea41c49a8600ada238cbe38747422"
+    },
+    {
+      "path": "tests/defense-boundary-capacity.test.ts",
+      "change": "A",
+      "sha256": "34562fd4ba8dfa15baa1327d6b23cfc5858a719b3b4db270f5a30c11fff01982"
+    },
+    {
+      "path": "tests/defense-fenced-supervisor.test.ts",
+      "change": "A",
+      "sha256": "02bc21c21855eded747a1ad9ae0882e4daf9eef3f6b22e6638a232ddf64e305a"
+    },
+    {
+      "path": "tests/support/fenced-owner-process.ts",
+      "change": "A",
+      "sha256": "8c56611f442a4a9925f7ad86bb37b71a3822e8fe339f623602a9661ee98db059"
+    },
+    {
+      "path": "tests/support/fenced-reply-failure.cjs",
+      "change": "A",
+      "sha256": "7c30f368f61021d1d2ef118c436d284204f54d53822274c4e3611ccab52fb057"
+    }
+  ]
+}
