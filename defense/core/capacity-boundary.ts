@@ -246,6 +246,7 @@ export function createOriginCapacityBoundary<T, TProof>(
       }),
     }),
     execution: Object.freeze({
+      canDispatch: (lease: CapacityLease, execution: CapacityExecution) => !!takeSample() && owner.canDispatch(lease, execution),
       identity: executionIdentity, verify: verifyEvidence, settle, takeBody: owner.takeBody,
     }),
   });

@@ -45,6 +45,9 @@ type Request = {
   body?: Uint8Array;
 };
 type Lease = {
+  proofExpiry: number;
+  proofCutoff: number;
+  callerCutoff: number;
   cls: ClassState;
   pool: CapacityPool;
   cost: number;
@@ -129,6 +132,11 @@ class CapacityState {
     admit: (attempt: CapacityAttempt) => this.#admit(attempt),
     observeTime: (lower: number, upper: number, wall: number) => this.#observeTime(lower, upper, wall),
     effectiveWall: () => this.#wall,
+    canDispatch: (handle: CapacityLease, execution: CapacityExecution) => {
+      const lease = this.#leases.get(handle);
+      return !this.#closed && this.#clockValid && lease?.execution === execution && lease.state === "active" &&
+        !this.#dispatchExpiry(lease);
+    },
     isClosed: () => this.#closed,
     executionFor: (lease: CapacityLease) => this.#leases.get(lease)?.execution,
     settle: (lease: CapacityLease, execution: CapacityExecution, kind: Settlement, hardStop?: number) =>
@@ -255,9 +263,14 @@ class CapacityState {
     return true;
   }
 
-  #expiry(request: Request): WaitExpiryReason | undefined {
+  #dispatchExpiry(request: Pick<Request, "proofCutoff" | "proofExpiry" | "callerCutoff">): WaitExpiryReason | undefined {
     if (this.#upper >= request.proofCutoff || this.#wall + this.#limits.dispatchMarginMs >= request.proofExpiry) return "proof-expired";
     if (this.#upper > request.callerCutoff) return "caller-deadline-exceeded";
+  }
+
+  #expiry(request: Request): WaitExpiryReason | undefined {
+    const expired = this.#dispatchExpiry(request);
+    if (expired) return expired;
     if (this.#upper >= request.waitCutoff) return "wait-timeout";
   }
 
@@ -279,6 +292,7 @@ class CapacityState {
     if (queued) this.#unlink(request);
     const lease = identity<CapacityLease>();
     const charge: Lease = {
+      proofCutoff: request.proofCutoff, proofExpiry: request.proofExpiry, callerCutoff: request.callerCutoff,
       cls: request.cls, pool, cost: request.cost, execution: identity<CapacityExecution>(),
       state: "active", hardStop: Number.POSITIVE_INFINITY, boundIndex: -1,
       body: request.body,
