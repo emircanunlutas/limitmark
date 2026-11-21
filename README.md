@@ -4,7 +4,7 @@
 
 LimitMark includes a Next.js/TypeScript website application and ongoing work on isolated application-layer defense, fail-closed behavior, reproducible resilience testing, and evidence-oriented verification.
 
-**For the latest engineering work, technical documentation, and verification instructions, see the [active development branch: `ba0-n2-progression`](https://github.com/emircanunlutas/limitmark/tree/ba0-n2-progression).** The default `master` branch is not the current integration branch. Passing CI does not establish production readiness or field validation.
+**For BA0 development and verification documentation, see [`ba0-n2-progression`](https://github.com/emircanunlutas/limitmark/tree/ba0-n2-progression).** The default `master` branch is not the current integration branch. See [open pull requests](https://github.com/emircanunlutas/limitmark/pulls) for work in review. Passing CI does not establish production readiness or field validation.
 
 ## Website application notes on this branch
 
@@ -14,7 +14,7 @@ The material below describes the website track as documented on `master`; it doe
 
 # Resilience testing website
 
-Turkish B2B website for **manually scoped, manually executed** resilience testing. The neutral `Resilience Testing` label is not a finalized brand. No accounts, dashboard, automated tests, pricing, invented claims or external service integrations are included.
+Turkish B2B website for **manually scoped, manually executed** resilience testing. The neutral `Resilience Testing` label is not a finalized brand. The site includes a public inquiry form and an independently authorized admin area. Local development starts in demo mode. The submission and admin sections below describe the configuration required for persistent intake and provider integrations.
 
 ## Local development
 
