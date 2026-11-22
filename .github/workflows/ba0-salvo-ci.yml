@@ -1,6 +1,9 @@
 name: BA0 Salvo CI
 
 on:
+  push:
+    branches:
+      - master
   pull_request:
     branches:
       - ba0-n2-salvo
