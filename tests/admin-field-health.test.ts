@@ -1,76 +1,16 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import path from "node:path";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { canaryCounts, deriveExternalAccounting } from "../lab/defense/external-accounting";
-import { buildSelftestBundle } from "../lab/defense/field-selftest";
-import { writeFieldEvidence } from "../lab/defense/field-evidence";
-import { EvidenceRun, EVIDENCE_ROOT } from "../lab/evidence/manifest";
+import { REASON_CODES } from "../lab/defense/field-verdict";
 import { REVIEW_AGE_MS } from "../src/lib/field-health";
-import { fieldReviewFiles, readFieldHealth } from "../src/lib/read-field-health";
-
-const now = Date.parse("2026-01-01T12:00:00.000Z");
-const bundle = buildSelftestBundle();
-const c = bundle.external;
-// Supply final counters like those published by each process; the producer decides which comparisons exist.
-bundle.accounting = deriveExternalAccounting({
-  external: c, externalDecisions: [], canary: canaryCounts([], 0),
-  planeFin: { advisory: { l2: { lanes: { decisions: c.l2.byKey } } } } as never,
-  boundaryFin: { stats: { ...c.boundary, parserRejected: 0, protocolRefused: 0 } } as never,
-  appFin: { stats: { counters: { ...c.app, stateMutations: c.app.mutated } } } as never,
-  connections: null, l2: bundle.thresholds.l2, windowElapsedMs: 10_000, workers: 1, externalInFlightMax: 1,
-  streams: { planeDropped: 0, boundaryDropped: 0, appDropped: 0, drained: true, finalTicks: bundle.telemetry.finalTicks, tickGaps: 0 },
-});
-
-function publishedFiles() {
-  mkdirSync(EVIDENCE_ROOT, { recursive: true });
-  const root = mkdtempSync(path.join(EVIDENCE_ROOT, "review-"));
-  try {
-    const run = new EvidenceRun("field-level", "offline", new Date(now - 1000), root);
-    const write = writeFieldEvidence(run, bundle);
-    assert.deepEqual(write.failed, []);
-    run.finalize({
-      endedAt: new Date(now), git: bundle.git, engine: "node-http-field-level", result: "SERVER-COMPLETE", resultReasons: [],
-      environment: { os: "fixture", kernelRelease: "", arch: "", nodeVersion: "", dockerVersion: null, postgresVersion: null, cpuCount: 1, memoryMegabytes: 512 },
-      workload: null, target: null, thresholds: bundle.parameters, ceilings: null,
-      metrics: { serverSide: "complete", externalAccepted: c.accepted, anomalyTotal: 0, artifactsRefused: 0 },
-    });
-    return fieldReviewFiles.map(name => new File([readFileSync(path.join(run.directory, name), "utf8")], name));
-  } finally { rmSync(root, { recursive: true, force: true }); }
-}
-const originals = publishedFiles();
+import { readFieldReasons } from "../src/lib/field-reasons";
+import { readFieldHealth } from "../src/lib/read-field-health";
+import { c, changed, now, originals, type EditableFixture } from "./support/field-health-fixture";
 
 async function review(files = originals, time = now) {
   const result = await readFieldHealth(files, time);
   assert.equal(result.state, "Reviewed");
   return result.review;
-}
-
-type EditableFixture = {
-  manifest: { result: string; resultReasons: string[]; metrics: { serverSide: string; externalAccepted: number; networkActivity?: boolean }; artifacts: { name: string; bytes: number; sha256: string }[] };
-  external: { counters: typeof c; accounting: NonNullable<typeof bundle.accounting> };
-  canary: typeof bundle.canary;
-};
-
-// Re-seal modified fixtures so semantic contradictions reach the interpreter independently of digest errors.
-async function changed(edit: (data: EditableFixture) => void) {
-  const [, manifestFile, externalFile, canaryFile] = originals;
-  const manifest: EditableFixture["manifest"] = JSON.parse(await manifestFile.text());
-  const external = JSON.parse(await externalFile.text());
-  const canary = JSON.parse(await canaryFile.text());
-  edit({ manifest, external, canary });
-  const digest = (s: string) => createHash("sha256").update(s).digest("hex");
-  const evidence = [new File([JSON.stringify(external)], "external.json"), new File([JSON.stringify(canary)], "canary.json")]
-    .filter(file => manifest.artifacts.some(row => row.name === file.name));
-  for (const file of evidence) {
-    const entry = manifest.artifacts.find(row => row.name === file.name)!;
-    entry.bytes = file.size;
-    entry.sha256 = digest(await file.text());
-  }
-  const text = JSON.stringify(manifest);
-  const sums = [...manifest.artifacts.map(row => `${row.sha256}  ${row.name}`), `${digest(text)}  manifest.json`].join("\n");
-  return [new File([sums], "SHA256SUMS"), new File([text], "manifest.json"), ...evidence];
 }
 
 test("published evidence combines four exercised components, preserving expected L2 shedding", async () => {
@@ -163,6 +103,127 @@ test("preflight refusal, an unexercised component, and a component failure remai
     manifest.result = "INVALID"; manifest.metrics.serverSide = "invalid"; external.counters.boundary.forwardFailed = 1;
   }));
   assert.equal(fault.components[2].state, "Degraded");
+});
+
+function invalid({ manifest }: EditableFixture) {
+  manifest.result = "INVALID";
+  manifest.metrics.serverSide = "invalid";
+}
+
+test("correlates canary observations across admission stages without linking a decision to a particular journey", async () => {
+  const view = await review(await changed(data => {
+    invalid(data);
+    data.manifest.resultReasons = ["field.l1_false_reject.detail", "field.l2_legitimate_non_admit"];
+    data.canary.l1FalseRejects = 2;
+    data.canary.l2NonAdmits = 1;
+  }));
+  const finding = view.findings.find(f => f.title === "Protected request admission")!;
+  assert.match(finding.facts.join(" "), /2 protected requests rejected at L1/);
+  assert.match(finding.facts.join(" "), /1 protected requests without L2 admission/);
+  assert.match(finding.facts.join(" "), /window journeys completed/);
+  assert.match(finding.conclusion, /both stages during this run/);
+  assert.match(finding.uncertainty, /cannot identify which window journey/);
+  assert.match(finding.guidance, /archived ledger/);
+  assert.deepEqual((await review()).findings, []);
+});
+
+test("separates observed downstream interruptions from client terminal outcomes", async () => {
+  const clientAbort = (data: EditableFixture) => {
+    invalid(data);
+    data.external.counters.clientAborted = 1;
+    data.external.counters.terminal.proxied--;
+    data.external.counters.terminal.client_aborted = 1;
+  };
+  const clientOnly = await review(await changed(clientAbort));
+  assert.ok(clientOnly.components.every(stage => stage.state !== "Degraded"));
+  assert.deepEqual(clientOnly.findings.map(f => f.title), ["Client-side aborts", "Limits of the run outcome"]);
+
+  const downstream = await review(await changed(data => {
+    clientAbort(data);
+    data.external.counters.boundary.aborted++;
+    data.external.counters.app.completed--;
+    data.external.counters.app.aborted++;
+  }));
+  const finding = downstream.findings.find(f => f.title === "Boundary and app interruptions")!;
+  assert.equal(finding.facts.length, 2);
+  assert.match(finding.facts[0], /boundary aborts 1/);
+  assert.match(finding.facts[1], /completions \d+, aborts 1/);
+  assert.match(finding.uncertainty, /do not link individual requests/);
+  assert.doesNotMatch(finding.conclusion, /caused|client|root cause/i);
+  assert.match(downstream.findings.find(f => f.title === "Client-side aborts")!.uncertainty, /unresolved/);
+});
+
+test("retains distinct omissions and withholds correlation where the required observations are missing", async () => {
+  const [sums, manifest] = originals;
+  const absent = await review([sums, manifest]);
+  assert.match(absent.findings[0].facts.join(" "), /external\.json.*canary\.json/);
+  const files = await changed(data => {
+    invalid(data);
+    data.manifest.resultReasons = ["field.telemetry_incomplete"];
+    data.canary.l1FalseRejects = data.canary.l2NonAdmits = 1;
+    data.external.accounting.identities = data.external.accounting.identities.filter(row =>
+      row.id !== "e10.final_ticks_present" && row.id !== "e10.streams_drained");
+  });
+  const gaps = await review(files);
+  const coverage = gaps.findings.find(f => f.title === "Telemetry coverage across stages")!;
+  assert.equal(coverage.facts.length, 3);
+  assert.ok(gaps.components.every(stage => stage.state === "Unknown"));
+  assert.ok(!gaps.findings.some(f => f.title === "Protected request admission"));
+});
+
+test("distinguishes an unequal handoff from a comparison that contradicts its source counters", async () => {
+  const handoff = (data: EditableFixture) => {
+    invalid(data);
+    data.manifest.resultReasons = ["field.identity_failed"];
+    const row = data.external.accounting.identities.find(row => row.id === "e2.l2_in_equals_l1_pass")!;
+    row.right++;
+    row.ok = data.external.accounting.identitiesOk = false;
+    return row;
+  };
+  const mismatch = await review(await changed(data => {
+    const row = handoff(data);
+    data.external.counters.l1.passed = row.right;
+  }));
+  assert.match(mismatch.findings.find(f => f.title === "L2 admission accounting")!.facts.join(" "), /e2.l2_in_equals_l1_pass/);
+  const contradiction = await review(await changed(handoff));
+  assert.deepEqual(contradiction.findings.map(f => f.title), ["Conflicting run records"]);
+  assert.match(contradiction.findings[0].facts[0], /L2 entries \/ L1 passes/);
+  assert.ok(contradiction.components.every(stage => stage.state === "Unknown"));
+});
+
+test("incomplete journeys alone cannot identify a failing stage", async () => {
+  const view = await review(await changed(data => {
+    invalid(data);
+    data.manifest.resultReasons = ["field.jcr_below_minimum"];
+    const window = data.canary.jcr.find(row => row.phase === "window" && row.lane === "protected")!;
+    window.attempted = 2; window.completed = 1; window.rate = 0.5;
+  }));
+  const finding = view.findings.find(f => f.title === "Protected window coverage")!;
+  assert.match(finding.facts[0], /1 of 2/);
+  assert.match(finding.uncertainty, /measurement/);
+  assert.ok(view.components.every(c => c.state === "Unknown"));
+});
+
+test("a canary reason with a zero count is conflicting evidence, not an attributed fault", async () => {
+  const view = await review(await changed(data => {
+    invalid(data);
+    data.manifest.resultReasons = ["field.l2_legitimate_non_admit.private"];
+  }));
+  assert.deepEqual(view.findings.map(f => f.title), ["Conflicting run records"]);
+  assert.ok(view.components.every(stage => stage.state === "Unknown"));
+});
+
+test("displays known writer codes and a bounded count for unknown entries, even alongside a known code", async () => {
+  for (const code of REASON_CODES) {
+    assert.ok(readFieldReasons([`field.${code}.private`]).known.has(code));
+  }
+  const result = await review(await changed(data => {
+    invalid(data);
+    data.manifest.resultReasons = ["field.tick_gap.private", "field.private_code.secret", "private.reason", "field.__proto__.secret"];
+  }));
+  assert.match(result.diagnostics.join(" "), /tick_gap/);
+  assert.match(result.diagnostics.join(" "), /Unrecognized reason entries · 3/);
+  assert.doesNotMatch(JSON.stringify(result), /private|secret|__proto__/);
 });
 
 test("review page requires the established admin boundary, with no server upload or public navigation", () => {
