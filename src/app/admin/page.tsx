@@ -3,9 +3,17 @@ import Link from "next/link";
 import { Container } from "@/components/container";
 import { requireAdmin } from "@/lib/admin-auth";
 import type { AuthorizedAdminIdentity } from "@/lib/admin-auth-core";
-import { getAdminInquiryReadRepository } from "@/lib/admin-inquiry-data";
+import { getAdminInquiryReadRepository, getAdminNotificationDeliveryRepository } from "@/lib/admin-inquiry-data";
 import { adminInquiryStatuses, buildAdminInquiryHref, normalizeAdminInquiryQuery, type AdminInquiryQuery } from "@/lib/admin-inquiry-query";
 import type { AdminInquiryReadRepository } from "@/lib/admin-inquiry-repository";
+import { NotificationDeliveryHealthPanel } from "@/components/admin-notification-delivery";
+import {
+  loadNotificationDeliveryHealth,
+  type AdminNotificationDeliveryRepositoryFactory,
+  type NotificationDeliveryConfigurationEvidence,
+  type NotificationDeliveryHealthView,
+} from "@/lib/admin-notification-delivery";
+import { getNotificationDeliveryConfigurationEvidence } from "@/lib/admin-notification-delivery-config";
 
 export const metadata: Metadata = {
   title: "Admin inquiries",
@@ -54,6 +62,9 @@ export async function renderAdminInquiryList(
   searchParams: AdminSearchParams,
   authorize: () => Promise<AuthorizedAdminIdentity> = requireAdmin,
   getRepository: () => Promise<AdminInquiryReadRepository | null> = getAdminInquiryReadRepository,
+  getDeliveryRepository: AdminNotificationDeliveryRepositoryFactory = getAdminNotificationDeliveryRepository,
+  now: () => Date = () => new Date(),
+  getDeliveryConfiguration: () => NotificationDeliveryConfigurationEvidence = () => getNotificationDeliveryConfigurationEvidence(process.env),
 ) {
   await authorize();
   const rawSearchParams = await searchParams;
@@ -62,17 +73,26 @@ export async function renderAdminInquiryList(
   const invalidMutation = mutationValue === "invalid";
   const repository = await getRepository();
   let content: React.ReactNode;
+  // Delivery health is loaded only after authorization and only when the inquiry store is configured.
+  // The loader never rejects and is bounded by its deadline, so a
+  // failing or stalled delivery query renders "unavailable" without affecting or blocking the list.
+  let deliveryHealth: NotificationDeliveryHealthView | null = null;
+  let deliveryConfiguration: NotificationDeliveryConfigurationEvidence = { state: "unknown" };
   if (!repository) {
     content = <div className="admin-outage" role="status"><h2>Inquiry data unavailable</h2><p>The inquiry store is not configured or cannot be reached. Try again later.</p></div>;
   } else {
+    const deliveryHealthPromise = loadNotificationDeliveryHealth(getDeliveryRepository, now());
+    deliveryConfiguration = getDeliveryConfiguration();
     try { content = await InquiryList({ query, repository }); }
     catch { content = <div className="admin-outage" role="status"><h2>Inquiry data unavailable</h2><p>The inquiry store is not configured or cannot be reached. Try again later.</p></div>; }
+    deliveryHealth = await deliveryHealthPromise;
   }
 
   return (
     <div className="page-shell admin-shell"><Container>
       <header className="admin-heading"><p className="admin-eyebrow">Limitmark Admin</p><h1>Inquiries</h1><p>Controlled inquiry administration.</p></header>
       {invalidMutation && <p className="admin-notice admin-notice-warning" role="status">Nothing changed because that operation is not valid.</p>}
+      {deliveryHealth && <NotificationDeliveryHealthPanel view={deliveryHealth} configuration={deliveryConfiguration} />}
       <form className="admin-filters" action="/admin" method="get" role="search">
         <label><span>Search</span><input type="search" name="q" defaultValue={query.search} maxLength={254} placeholder="ID, name, email, or company" /></label>
         <label><span>Status</span><select name="status" defaultValue={query.status ?? ""}><option value="">All statuses</option>{adminInquiryStatuses.map((status) => <option value={status} key={status}>{displayLabel(status)}</option>)}</select></label>

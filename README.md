@@ -203,7 +203,7 @@ There is deliberately no environment-controlled development bypass. A local brow
 
 ### Phase 4A read-only inquiry administration
 
-Phase 4A replaces the authenticated skeleton with a small Server Component dashboard. `/admin` reads a projection containing only the received timestamp, status, name, e-mail, company, requested service and environment. `/admin/inquiries/<uuid>` reads the bounded submitted fields plus chronological append-only events and existing admin notes. It does not read or expose submission tokens, payload fingerprints, event metadata, notification-outbox state or provider errors. Submitted and note content is rendered only as React text; it is not interpreted as HTML, Markdown or a URL.
+Phase 4A replaces the authenticated skeleton with a small Server Component dashboard. `/admin` reads a projection containing only the received timestamp, status, name, e-mail, company, requested service and environment. `/admin/inquiries/<uuid>` reads the bounded submitted fields plus chronological append-only events and existing admin notes. It does not read or expose submission tokens, payload fingerprints, event metadata, notification-outbox state or provider errors. (Notification delivery health, below, later adds a bounded read-only outbox projection; it still exposes no provider text.) Submitted and note content is rendered only as React text; it is not interpreted as HTML, Markdown or a URL.
 
 Both routes call `requireAdmin()` independently before resolving repository access. No JSON admin API, mutation endpoint, Server Action, status control, note editor, retry control, assignment, bulk action or export is present. Both routes are force-dynamic and publish static customer-free metadata with `noindex,nofollow`. Inquiry detail links disable Next.js prefetch so the list does not speculatively fetch customer records.
 
@@ -238,6 +238,25 @@ Cloudflare control-plane work remains manual and must be completed before launch
 5. Verify proxy/Tunnel and origin routing before launch. Ensure the origin cannot expose another hostname, direct route, or unprotected `/admin` path that bypasses Access.
 
 Even when the origin is reachable only through Cloudflare, application-side JWT verification remains required. Conversely, JWT verification does not replace protecting and restricting the origin. No Cloudflare API keys or Access service-token credentials are needed or should be added for normal verification.
+
+### Notification delivery health
+
+`/admin` shows a "Notification delivery" panel and each inquiry detail page shows that inquiry's queued notifications, so an administrator can see whether new-inquiry alerts are waiting, failed permanently or are stuck. Both views are read only after `requireAdmin()` succeeds and only when the inquiry store is configured. Every statement runs in a PostgreSQL `READ ONLY` transaction and selects only outbox state, attempt count, timestamps and the already-sanitized error code (`timeout`, `rate_limited`, `provider_unavailable`, `rejected`, `unknown`). No recipient, payload or provider text is read, and nothing is claimed, leased, retried or reset; the delivery worker is unchanged.
+
+States mirror the processor's claim rule (`pending`/`retryable` with `available_at <= now`, or `processing` with a non-null `locked_until <= now`):
+
+- *waiting for delivery*: `pending`/`retryable` and due; the next processor run claims it.
+- *retry scheduled*: due in the future (back-off).
+- *in progress*: `processing` with a lease that has not ended.
+- *interrupted*: `processing` whose lease has ended; the next processor run reclaims it.
+- *stuck without a lease*: `processing` with no `locked_until`. The processor never reclaims such a row, so it needs manual investigation.
+- *delivered*, and *failed permanently* (terminal; never retried automatically).
+
+**Overdue threshold, product default: 30 minutes** (`NOTIFICATION_DELIVERY_OVERDUE_MS` in `src/lib/notification-delivery-health.ts`). A notification that has been eligible for a delivery attempt for 30 minutes or more (since `available_at`, or since its lease ended) is *overdue*; the comparison is inclusive in the SQL, the model and the UI. Any overdue notification marks the queue **stalled**. Permanently failed or lease-less notifications mark it **needs attention**. Otherwise the panel reports only that no backlog was detected (or that the queue is empty): this describes the queue, not delivery. An empty queue does not show that notifications reach their recipients.
+
+Delivery is reported as **disabled** when this runtime's own configuration proves it, using the same parsers as `/api/cron/process-notifications`: real notifications not enabled or incomplete, or no valid `CRON_SECRET`. Only that conclusion is shown, never a secret or address. Present settings do not prove that a scheduler actually invokes the processor, and the panel says so.
+
+Delivery reads use a disposable connection outside the inquiry pool, with at most two active delivery reads per application process. A read that reaches the limit reports unavailable without waiting for a connection. The read-only transaction applies transaction-local `statement_timeout`, `lock_timeout` and `idle_in_transaction_session_timeout` settings of 2.5 s. Closing the connection ends the transaction. The page also applies a 3 s deadline that closes the connection if startup or any query stalls. Eligibility and overdue calculations retain PostgreSQL microseconds. Timestamps are converted for display after classification. If the status cannot be read in time, or the result is contradictory, the panel says "Delivery status unavailable" and states that this is not a clear result. The inquiry list and detail still render, and error details are never shown.
 
 ### Migrations and database roles
 
