@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import ts from "typescript";
 import { BOUND_HEADER_NAMES, REFUSED_HEADERS, SEMANTIC_POLICY_VERSION, classifyHeader } from "../defense/core/semantic-request";
 import { OB_REASONS } from "../defense/core/types";
 import { DIRECT_CORPUS_FIXED_COUNT, DIRECT_ENTRIES, DIRECT_POSITIVE_CONTROLS, DIRECT_SCENARIOS } from "../lab/defense/direct-corpus";
 import { SEMANTIC_CORPUS, SEMANTIC_CORPUS_FIXED_COUNT, SEMANTIC_EXPECTED_DROPPED } from "../lab/defense/semantic-corpus";
+import { postResendEmail } from "../src/lib/resend-transport";
 
 const root = path.join(__dirname, "..");
 const read = (relative: string) => readFileSync(path.join(root, relative), "utf8");
@@ -17,100 +18,45 @@ function sourceFiles(directory: string): string[] {
   });
 }
 
-/**
- * Header literals read by the given source files, plus the reads PROVEN to be outbound.
- *
- * The scan stays lexical and unchanged for every read EXCEPT one class: a `<x>.headers.get("literal")` whose receiver the TYPE
- * CHECKER proves is a fetch `Response` (the library type, not a project type) held in a `const` that is initialised by
- * `await <call>` with no assertion in between. That is "interpretation of a provider response", not of an inbound request. The
- * proof is semantic, so it cannot be transferred by choosing a variable name, a file, a header name or a position: an inbound
- * `Request`, a cast, a parameter, an annotated or `any` value, optional chaining, `has()` and bracket access all fail it and
- * are reported exactly as before.
- */
-type HeaderScan = { found: Map<string, string[]>; outbound: Array<{ file: string; header: string }> };
+// The transport calls the platform fetch at the fixed Resend endpoint and reads
+// the header on the returned object. Changes to that boundary require reviewing the pin.
+const resendTransport = "src/lib/resend-transport.ts";
+const resendTransportSha256 = "e8ec70ab80b98e894f68b218f50c4979c903efaaebdef311dc0024d359f1b92b";
 
-const blankComments = (text: string) => text
-  .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "))
-  .replace(/(^|[^:"'`])\/\/.*$/gm, (line, lead: string) => lead + " ".repeat(line.length - lead.length));
-
-function isLibraryResponse(checker: ts.TypeChecker, program: ts.Program, node: ts.Expression): boolean {
-  const type = checker.getTypeAtLocation(node);
-  const symbol = type.getSymbol();
-  if (!symbol || symbol.getName() !== "Response" || (type.flags & ts.TypeFlags.Any) !== 0) return false;
-  const declarations = symbol.getDeclarations() ?? [];
-  return declarations.length > 0 && declarations.every((declaration) => {
-    const source = declaration.getSourceFile();
-    return program.isSourceFileDefaultLibrary(source) || /[\\/]node_modules[\\/]/.test(source.fileName);
-  });
+function headerNames(source: string): string[] {
+  const names: string[] = [];
+  const text = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  for (const match of text.matchAll(/headers\.(?:get|has)\(\s*["']([A-Za-z0-9-]+)["']/g)) names.push(match[1].toLowerCase());
+  for (const match of text.matchAll(/headers\[\s*["']([A-Za-z0-9-]+)["']\s*\]/g)) names.push(match[1].toLowerCase());
+  for (const match of text.matchAll(/\[((?:\s*"[A-Za-z0-9-]+",?)+)\s*\]\s*\.some\(\(name\) => headers\.get\(name\)/g)) for (const name of match[1].matchAll(/"([A-Za-z0-9-]+)"/g)) names.push(name[1].toLowerCase());
+  // public-origin.ts exports the name of its secret header as a constant that is then read through headers.get(constant)
+  for (const match of text.matchAll(/export const \w*[Hh]eader = "([a-z0-9-]+)"/g)) names.push(match[1].toLowerCase());
+  return names;
 }
 
-/** True only for `const x = await <call>` (no annotation, no assertion, not optional) whose `x.headers.get(literal)` this is. */
-function isProvenOutboundRead(checker: ts.TypeChecker, program: ts.Program, call: ts.CallExpression): boolean {
-  const access = call.expression;
-  if (!ts.isPropertyAccessExpression(access) || access.name.text !== "get" || access.questionDotToken) return false;
-  const headers = access.expression;
-  if (!ts.isPropertyAccessExpression(headers) || headers.name.text !== "headers" || headers.questionDotToken) return false;
-  const receiver = headers.expression;
-  if (!ts.isIdentifier(receiver)) return false;
-  const declaration = checker.getSymbolAtLocation(receiver)?.valueDeclaration;
-  if (!declaration || !ts.isVariableDeclaration(declaration) || declaration.type || declaration.exclamationToken) return false;
-  if (!ts.isVariableDeclarationList(declaration.parent) || !(declaration.parent.flags & ts.NodeFlags.Const)) return false;
-  const initializer = declaration.initializer;
-  if (!initializer || !ts.isAwaitExpression(initializer)) return false;
-  const operand = initializer.expression;
-  if (!ts.isCallExpression(operand)) return false;
-  if ((checker.getTypeAtLocation(operand).flags & ts.TypeFlags.Any) !== 0) return false;
-  return isLibraryResponse(checker, program, receiver);
-}
+function inboundHeaderReads(files: ReadonlyMap<string, string>): Map<string, string[]> {
+  const transport = files.get(resendTransport);
+  assert.ok(transport, "reviewed Resend transport is missing");
+  const digest = createHash("sha256").update(transport.replaceAll("\r\n", "\n")).digest("hex");
+  assert.equal(digest, resendTransportSha256, "review the Resend fetch and header read before updating the pin");
 
-export function scanHeaderReads(files: ReadonlyArray<{ name: string; text: string }>, program: ts.Program): HeaderScan {
   const found = new Map<string, string[]>();
-  const outbound: HeaderScan["outbound"] = [];
-  const checker = program.getTypeChecker();
-  const note = (name: string, file: string) => found.set(name, [...(found.get(name) ?? []), file]);
-  for (const { name: file, text: original } of files) {
-    const text = original.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
-    const source = program.getSourceFile(file);
-    const proven = new Set<number>();
-    if (source) {
-      const visit = (node: ts.Node): void => {
-        if (ts.isCallExpression(node) && isProvenOutboundRead(checker, program, node)) proven.add((node.expression as ts.PropertyAccessExpression).name.getStart(source));
-        ts.forEachChild(node, visit);
-      };
-      visit(source);
+  for (const [file, source] of files) {
+    const names = headerNames(source);
+    if (file === resendTransport) {
+      assert.deepEqual(names, ["retry-after"], "expected exactly the reviewed outbound header read");
+      continue;
     }
-    for (const match of blankComments(original).matchAll(/headers\.(?:get|has)\(\s*["']([A-Za-z0-9-]+)["']/g)) {
-      const header = match[1].toLowerCase();
-      if (proven.has(match.index + "headers.".length)) outbound.push({ file, header });
-      else note(header, file);
-    }
-    for (const match of text.matchAll(/headers\[\s*["']([A-Za-z0-9-]+)["']\s*\]/g)) note(match[1].toLowerCase(), file);
-    for (const match of text.matchAll(/\[((?:\s*"[A-Za-z0-9-]+",?)+)\s*\]\s*\.some\(\(name\) => headers\.get\(name\)/g)) for (const name of match[1].matchAll(/"([A-Za-z0-9-]+)"/g)) note(name[1].toLowerCase(), file);
-    // public-origin.ts exports the name of its secret header as a constant that is then read through headers.get(constant)
-    for (const match of text.matchAll(/export const \w*[Hh]eader = "([a-z0-9-]+)"/g)) note(match[1].toLowerCase(), file);
+    for (const name of names) found.set(name, [...(found.get(name) ?? []), file]);
   }
-  return { found, outbound };
+  return found;
 }
 
-function sourceProgram(files: string[]): ts.Program {
-  const configPath = path.join(root, "tsconfig.json");
-  const config = ts.readConfigFile(configPath, (file) => readFileSync(file, "utf8"));
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
-  return ts.createProgram(files, { ...parsed.options, noEmit: true, incremental: false, tsBuildInfoFile: undefined, plugins: undefined });
-}
-
-let realScan: HeaderScan | null = null;
 function headersReadBySrc(): Map<string, string[]> {
-  realScan ??= (() => {
-    const files = sourceFiles(path.join(root, "src")).sort();
-    const scan = scanHeaderReads(files.map((file) => ({ name: file, text: readFileSync(file, "utf8") })), sourceProgram(files));
-    const relative = (file: string) => path.relative(root, file).replace(/\\/g, "/");
-    return {
-      found: new Map([...scan.found].map(([name, list]) => [name, list.map(relative)])),
-      outbound: scan.outbound.map((read) => ({ ...read, file: relative(read.file) })),
-    };
-  })();
-  return realScan.found;
+  const files = sourceFiles(path.join(root, "src")).map((file) => [
+    path.relative(root, file).replace(/\\/g, "/"), readFileSync(file, "utf8"),
+  ] as const);
+  return inboundHeaderReads(new Map(files));
 }
 
 test("CONTRACT: every header the real application reads is bound, derived, transport, refused, spoofable or an ingress indicator: never silently dropped", () => {
@@ -123,57 +69,47 @@ test("CONTRACT: every header the real application reads is bound, derived, trans
   assert.deepEqual(dropped, [], `the application started interpreting a header the plane drops: bump SEMANTIC_POLICY_VERSION and bind or refuse it (${dropped.join(", ")})`);
 });
 
-
-/** In-memory project: the virtual files plus the real compiler libraries, so `Request`/`Response`/`fetch` resolve to the library types. */
-function virtualProgram(sources: Record<string, string>): { program: ts.Program; files: Array<{ name: string; text: string }> } {
-  const options: ts.CompilerOptions = { target: ts.ScriptTarget.ES2022, lib: ["lib.dom.d.ts", "lib.esnext.d.ts"], strict: true, noEmit: true, types: [], skipLibCheck: true, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler };
-  const host = ts.createCompilerHost(options);
-  const virtual = new Map(Object.entries(sources).map(([name, text]) => [path.join(root, "virtual", name).replace(/\\/g, "/"), text]));
-  const originalGet = host.getSourceFile.bind(host);
-  host.getSourceFile = (name, languageVersion, ...rest) => virtual.has(name) ? ts.createSourceFile(name, virtual.get(name)!, languageVersion, true) : originalGet(name, languageVersion, ...rest);
-  host.fileExists = ((original) => (name: string) => virtual.has(name) || original(name))(host.fileExists.bind(host));
-  host.readFile = ((original) => (name: string) => virtual.get(name) ?? original(name))(host.readFile.bind(host));
-  const names = [...virtual.keys()];
-  return { program: ts.createProgram(names, options, host), files: names.map((name) => ({ name, text: virtual.get(name)! })) };
-}
-
-const virtualScan = (sources: Record<string, string>) => {
-  const { program, files } = virtualProgram(sources);
-  const scan = scanHeaderReads(files, program);
-  return { found: [...scan.found.keys()].sort(), outbound: scan.outbound.map((read) => read.header) };
-};
-
-test("CONTRACT: the one proven outbound provider-response read is the only read the scan does not count as inbound", () => {
-  headersReadBySrc();
-  assert.deepEqual(realScan?.outbound, [{ file: "src/lib/resend-notification-adapter.ts", header: "retry-after" }], "adding another outbound read is a reviewed change to this list");
-  assert.equal(headersReadBySrc().has("retry-after"), false, "it is not an inbound header");
-  assert.equal(SEMANTIC_POLICY_VERSION, 1);
-  assert.equal(classifyHeader("retry-after"), "dropped", "the plane policy is unchanged: an inbound retry-after is still dropped");
+test("the outbound inventory fails closed on a missing, moved, duplicated or replaced provider read", () => {
+  const transport = read(resendTransport);
+  const access = 'response.headers.get("retry-after")';
+  const copied = 'async function read(request: Request) { const response = await Promise.resolve(new Response(null, { headers: request.headers })); return response.headers.get("retry-after"); }';
+  const check = (source: string) => inboundHeaderReads(new Map([[resendTransport, source]]));
+  assert.equal(check(transport).size, 0);
+  assert.equal(check(transport.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n")).size, 0);
+  assert.throws(() => inboundHeaderReads(new Map([["src/moved.ts", transport]])), /transport is missing/);
+  for (const changed of [
+    transport.replace(access, "null"),
+    transport.replace(access, 'response.headers.get("origin")'),
+    transport.replace(access, access + " ?? " + access),
+    transport.replace(access, "null") + 'function read(response: Request) { return response.headers.get("retry-after"); }',
+    transport.replace(access, "null") + copied,
+    transport.replace('globalThis.fetch("https://api.resend.com/emails", init)', "Promise.resolve(new Response(null, init))"),
+  ]) assert.throws(() => check(changed), /review the Resend fetch/);
 });
 
-test("CONTRACT: the outbound privilege is a type proof; an inbound Request cannot obtain it, even under identical names", () => {
-  const provider = 'export async function send(fetchImplementation: (u: string) => Promise<Response>) { const response = await fetchImplementation("x"); return response.headers.get("retry-after"); }';
-  assert.deepEqual(virtualScan({ "a.ts": provider }), { found: [], outbound: ["retry-after"] }, "the provider-response read is accepted");
-  const inbound: Record<string, string> = {
-    "same-names": 'export async function handle(request: Request) { const response = request; return response.headers.get("retry-after"); }',
-    "same-names-await": 'export async function handle(request: Request) { const response = await Promise.resolve(request); return response.headers.get("retry-after"); }',
-    "request-param": 'export function handle(request: Request) { return request.headers.get("retry-after"); }',
-    "response-param": "export function f(response: Response) { return response.headers.get(\"retry-after\"); }",
-    "annotated": 'export async function f(request: Request) { const response: Response = await (request as never); return response.headers.get("retry-after"); }',
-    "cast-through-call": 'declare function id(value: unknown): any; export async function f(request: Request) { const response = await id(request); return response.headers.get("retry-after"); }',
-    "assertion": 'export async function f(request: Request) { const response = await (request as unknown as Promise<Response>); return response.headers.get("retry-after"); }',
-    "let-binding": 'export async function f(g: () => Promise<Response>) { let response = await g(); return response.headers.get("retry-after"); }',
-    "optional": 'export async function f(g: () => Promise<Response | null>) { const response = await g(); return response?.headers.get("retry-after"); }',
-    "has": 'export async function f(g: () => Promise<Response>) { const response = await g(); return response.headers.has("retry-after"); }',
-    "bracket": 'export async function f(g: () => Promise<Response>) { const response = await g(); return (response as never as { headers: Record<string, string> }).headers["retry-after"]; }',
-    "project-type": 'type Response = { headers: Headers }; export async function f(request: Request, g: () => Promise<Response>) { const response = await g(); return response.headers.get("retry-after"); }',
-    "bare-headers": 'export function f(request: Request) { const headers = request.headers; return headers.get("retry-after"); }',
-  };
-  for (const [name, source] of Object.entries(inbound)) {
-    assert.deepEqual(virtualScan({ [name + ".ts"]: source }), { found: ["retry-after"], outbound: [] }, name);
-  }
-  // one file, one provider read plus an unrelated inbound read of the same header name: only the provider read is outbound
-  assert.deepEqual(virtualScan({ "mixed.ts": provider + ' export function handle(request: Request) { return request.headers.get("retry-after"); }' }), { found: ["retry-after"], outbound: ["retry-after"] });
+test("the inventoried header comes from the fixed-endpoint fetch response", async (t) => {
+  const reply = new Response(null, { status: 429, headers: { "retry-after": "120" } });
+  const init = { method: "POST", headers: { "retry-after": "30" } };
+  const fetch = t.mock.method(globalThis, "fetch", async () => reply);
+  const result = await postResendEmail(init);
+  assert.deepEqual(fetch.mock.calls.map((call) => call.arguments), [["https://api.resend.com/emails", init]]);
+  assert.equal(result.response, reply);
+  assert.equal(result.retryAfter, "120");
+});
+
+test("the provider read grants no exemption to other source files or inbound header shapes", () => {
+  const inbound = [
+    'function read(response: Request) { return response.headers.get("retry-after"); }',
+    'async function copy(req: Request) { const response = await Promise.resolve(new Response(null, { headers: req.headers })); return response.headers.get("retry-after"); }',
+    'headers./* metadata */get("x-literal"); headers.has("x-present"); headers["x-bracket"];',
+    '["x-first", "x-second"].some((name) => headers.get(name));',
+    'export const secretHeader = "x-constant";',
+  ].join("\n");
+  const file = "src/inbound.ts";
+  const found = inboundHeaderReads(new Map([[resendTransport, read(resendTransport)], [file, inbound]]));
+  assert.deepEqual(found.get("retry-after"), [file, file]);
+  assert.deepEqual([...found.keys()].sort(), ["retry-after", "x-bracket", "x-constant", "x-first", "x-literal", "x-present", "x-second"]);
+  assert.equal(classifyHeader("retry-after"), "dropped");
 });
 
 test("CONTRACT: the bound set is exactly what the application's public path interprets, and the policy is versioned", () => {

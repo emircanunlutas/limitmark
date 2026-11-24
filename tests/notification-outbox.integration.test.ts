@@ -222,16 +222,17 @@ test("sent, failed, live processing, and future rows are never claimed", integra
   assert.equal(claimed.length, 0);
 });
 
-test("a throttled delivery is claimed exactly once per attempt and only when its retry is due", integration, async () => {
+test("a throttled delivery is claimed exactly once per attempt and only when its retry is due", integration, async (t) => {
   const { job } = await createPendingJob();
   let currentMs = now.getTime();
   const keys: Array<string | null> = [];
-  const client = new ResendHttpClient("synthetic", async (_url, init) => {
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => {
     keys.push(new Headers(init?.headers).get("Idempotency-Key"));
     currentMs += 2_000;
     if (keys.length === 1) return new Response(null, { status: 429, headers: { "Retry-After": "7" } });
     return new Response(null, { status: 200 });
   });
+  const client = new ResendHttpClient("synthetic");
   const adapter = new ResendNotificationAdapter(client, "from@example.test", "to@example.test");
   const run = () => processor(adapter, { now: () => new Date(currentMs) });
 

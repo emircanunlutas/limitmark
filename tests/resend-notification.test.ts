@@ -207,10 +207,13 @@ test("only throttled or unavailable responses carry a numeric retry delay", asyn
     [500, "120", undefined],
     [400, "120", undefined],
   ];
+  const client = new ResendHttpClient("synthetic");
+  const fetchMock = t.mock.method(globalThis, "fetch", () => { throw new Error("unexpected fetch"); });
   for (const [status, header, retryAfterMs] of cases) {
-    const client = new ResendHttpClient("synthetic", async () => new Response("invalid JSON", {
-      status, headers: header === null ? {} : { "retry-after": header },
-    }));
+    fetchMock.mock.mockImplementationOnce(async (url) => {
+      assert.equal(url, "https://api.resend.com/emails");
+      return new Response("invalid JSON", { status, headers: header === null ? {} : { "retry-after": header } });
+    });
     const result = await new ResendNotificationAdapter(client, "from@example.test", "to@example.test").deliver(command);
     const errorCode = status === 429 ? "rate_limited" : status >= 500 ? "provider_unavailable" : "unknown";
     assert.deepEqual(result, {
@@ -219,7 +222,7 @@ test("only throttled or unavailable responses carry a numeric retry delay", asyn
   }
 });
 
-test("the HTTPS client bounds calls, sends the official idempotency header, and discards raw errors", async () => {
+test("the HTTPS client bounds calls, sends the official idempotency header, and discards raw errors", async (t) => {
   let capturedInit: RequestInit | undefined;
   const rawProviderText = "RAW PROVIDER RESPONSE MUST NOT ESCAPE";
   const rejectingFetch = async (_input: string | URL | Request, init?: RequestInit) => {
@@ -230,7 +233,8 @@ test("the HTTPS client bounds calls, sends the official idempotency header, and 
       unexpected: { sensitive: rawProviderText },
     }), { status: 400 });
   };
-  const client = new ResendHttpClient("re_synthetic_unit_test_key", rejectingFetch, 50);
+  const fetchMock = t.mock.method(globalThis, "fetch", rejectingFetch);
+  const client = new ResendHttpClient("re_synthetic_unit_test_key", 50);
   const adapter = new ResendNotificationAdapter(client, "from@example.test", "to@example.test");
   const result = await adapter.deliver(command);
 
@@ -267,7 +271,8 @@ test("the HTTPS client bounds calls, sends the official idempotency header, and 
     new Promise((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
     });
-  const timedClient = new ResendHttpClient("re_synthetic_unit_test_key", hangingFetch, 5);
+  fetchMock.mock.mockImplementation(hangingFetch);
+  const timedClient = new ResendHttpClient("re_synthetic_unit_test_key", 5);
   const timedResult = await new ResendNotificationAdapter(
     timedClient,
     "from@example.test",

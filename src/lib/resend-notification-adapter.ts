@@ -1,4 +1,5 @@
 import "server-only";
+import { postResendEmail } from "./resend-transport";
 import type {
   NotificationAdapter,
   NotificationCommand,
@@ -9,7 +10,6 @@ import {
   type NotificationEnvironment,
 } from "./notification-config";
 
-const resendEndpoint = "https://api.resend.com/emails";
 export const resendRequestTimeoutMs = 10_000;
 
 type ResendSendRequest = {
@@ -26,11 +26,6 @@ type ResendSendResult =
 export interface ResendEmailClient {
   send(request: ResendSendRequest, idempotencyKey: string): Promise<ResendSendResult>;
 }
-
-type FetchImplementation = (
-  input: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
 
 function readErrorName(value: unknown): string | null {
   if (!value || typeof value !== "object") return null;
@@ -57,7 +52,6 @@ function readRetryAfterMs(value: string | null): number | undefined {
 export class ResendHttpClient implements ResendEmailClient {
   constructor(
     private readonly apiKey: string,
-    private readonly fetchImplementation: FetchImplementation = fetch,
     private readonly timeoutMs = resendRequestTimeoutMs,
   ) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
@@ -66,7 +60,7 @@ export class ResendHttpClient implements ResendEmailClient {
   }
 
   async send(request: ResendSendRequest, idempotencyKey: string): Promise<ResendSendResult> {
-    const response = await this.fetchImplementation(resendEndpoint, {
+    const { response, retryAfter } = await postResendEmail({
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
@@ -86,9 +80,7 @@ export class ResendHttpClient implements ResendEmailClient {
     } catch {
       // A malformed provider body is deliberately discarded and classified by status only.
     }
-    const retryAfterMs = response.status === 429 || response.status === 503
-      ? readRetryAfterMs(response.headers.get("retry-after"))
-      : undefined;
+    const retryAfterMs = readRetryAfterMs(retryAfter);
     return { accepted: false, statusCode: response.status, errorName, retryAfterMs };
   }
 }
