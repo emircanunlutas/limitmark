@@ -91,6 +91,7 @@ export async function renderAdminInquiryList(
   return (
     <div className="page-shell admin-shell"><Container>
       <header className="admin-heading"><p className="admin-eyebrow">Limitmark Admin</p><h1>Inquiries</h1><p>Controlled inquiry administration.</p></header>
+      <nav className="admin-heading" aria-label="Operational views"><Link className="text-link" href="/admin/field-health" prefetch={false}>Defense field health</Link></nav>
       {invalidMutation && <p className="admin-notice admin-notice-warning" role="status">Nothing changed because that operation is not valid.</p>}
       {deliveryHealth && <NotificationDeliveryHealthPanel view={deliveryHealth} configuration={deliveryConfiguration} />}
       <form className="admin-filters" action="/admin" method="get" role="search">
