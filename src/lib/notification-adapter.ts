@@ -17,7 +17,7 @@ export type NotificationCommand = {
 
 export type NotificationDeliveryResult =
   | { outcome: "delivered" }
-  | { outcome: "retryable_failure"; errorCode: NotificationErrorCode }
+  | { outcome: "retryable_failure"; errorCode: NotificationErrorCode; retryAfterMs?: number }
   | { outcome: "permanent_failure"; errorCode: NotificationErrorCode };
 
 /** Delivery-only boundary. Implementations must not persist outbox state. */

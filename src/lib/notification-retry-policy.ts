@@ -1,7 +1,7 @@
 export interface NotificationRetryPolicy {
   /** Total delivery attempts, including the first attempt. */
   readonly maxAttempts: number;
-  delayAfterFailure(attempts: number): number;
+  delayAfterFailure(attempts: number, retryAfterMs?: number): number;
 }
 
 export type ExponentialRetryPolicyOptions = {
@@ -38,9 +38,11 @@ export function createExponentialRetryPolicy(
 
   return {
     maxAttempts,
-    delayAfterFailure(attempts) {
+    delayAfterFailure(attempts, retryAfterMs = 0) {
       requirePositiveInteger("attempts", attempts);
-      return Math.min(initialDelayMs * (2 ** Math.min(attempts - 1, 52)), maximumDelayMs);
+      const backoff = initialDelayMs * (2 ** Math.min(attempts - 1, 52));
+      const providerDelay = Number.isSafeInteger(retryAfterMs) ? retryAfterMs : 0;
+      return Math.min(Math.max(backoff, providerDelay), maximumDelayMs);
     },
   };
 }

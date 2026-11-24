@@ -19,7 +19,8 @@ export const defaultOutboxLeaseDurationMs = 5 * 60_000;
 export type ProcessOutboxBatchOptions = {
   repository: NotificationOutboxRepository;
   adapter: NotificationAdapter;
-  now: Date;
+  /** Sampled at claim and after each delivery. A Date supplies a fixed clock. */
+  now: Date | (() => Date);
   batchSize?: number;
   leaseDurationMs?: number;
   retryPolicy?: NotificationRetryPolicy;
@@ -34,13 +35,17 @@ export type OutboxBatchSummary = {
   leaseLost: number;
 };
 
+function readTime(clock: ProcessOutboxBatchOptions["now"]): Date {
+  const now = typeof clock === "function" ? clock() : clock;
+  if (!Number.isFinite(now.getTime())) throw new RangeError("now must be a valid Date");
+  return now;
+}
+
 function validateOptions(
-  now: Date,
   batchSize: number,
   leaseDurationMs: number,
   retryPolicy: NotificationRetryPolicy,
 ) {
-  if (!Number.isFinite(now.getTime())) throw new RangeError("now must be a valid Date");
   if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > maximumOutboxBatchSize) {
     throw new RangeError(`batchSize must be an integer from 1 through ${maximumOutboxBatchSize}`);
   }
@@ -78,10 +83,11 @@ export async function processOutboxBatch(
   const batchSize = options.batchSize ?? defaultOutboxBatchSize;
   const leaseDurationMs = options.leaseDurationMs ?? defaultOutboxLeaseDurationMs;
   const retryPolicy = options.retryPolicy ?? createExponentialRetryPolicy();
-  validateOptions(options.now, batchSize, leaseDurationMs, retryPolicy);
+  validateOptions(batchSize, leaseDurationMs, retryPolicy);
 
-  const lockedUntil = new Date(options.now.getTime() + leaseDurationMs);
-  const jobs = await options.repository.claimBatch({ now: options.now, lockedUntil, batchSize });
+  const claimedAt = readTime(options.now);
+  const lockedUntil = new Date(claimedAt.getTime() + leaseDurationMs);
+  const jobs = await options.repository.claimBatch({ now: claimedAt, lockedUntil, batchSize });
   const summary: OutboxBatchSummary = {
     claimed: jobs.length,
     sent: 0,
@@ -93,8 +99,9 @@ export async function processOutboxBatch(
   // Sequential delivery is intentional: it bounds provider pressure and memory.
   for (const job of jobs) {
     const result = await deliver(options.adapter, job);
+    const completedAt = readTime(options.now);
     if (result.outcome === "delivered") {
-      const recorded = await options.repository.markSent({ ...job, now: options.now });
+      const recorded = await options.repository.markSent({ ...job, now: completedAt });
       if (recorded) summary.sent++;
       else summary.leaseLost++;
       continue;
@@ -104,16 +111,16 @@ export async function processOutboxBatch(
       && job.attempts < retryPolicy.maxAttempts;
     let retryAt: Date | null = null;
     if (hasAttemptsRemaining) {
-      const delayMs = retryPolicy.delayAfterFailure(job.attempts);
+      const delayMs = retryPolicy.delayAfterFailure(job.attempts, result.retryAfterMs);
       if (!Number.isSafeInteger(delayMs) || delayMs < 1) {
         throw new RangeError("retry policy returned an invalid delay");
       }
-      retryAt = new Date(options.now.getTime() + delayMs);
+      retryAt = new Date(completedAt.getTime() + delayMs);
     }
 
     const recorded = await options.repository.markFailure({
       ...job,
-      now: options.now,
+      now: completedAt,
       retryAt,
       errorCode: sanitizeNotificationErrorCode(result.errorCode),
     });

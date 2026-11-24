@@ -188,6 +188,37 @@ test("timeouts and network failures remain retryable without exposing exception 
   assert.equal(JSON.stringify(unknown).includes("RAW UNKNOWN PROVIDER TEXT"), false);
 });
 
+test("only throttled or unavailable responses carry a numeric retry delay", async (t) => {
+  const now = Date.UTC(2030, 8, 11, 12);
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const cases: Array<[number, string | null, number | undefined]> = [
+    [429, "120", 120_000],
+    [503, new Date(now + 90_000).toUTCString(), 90_000],
+    [429, "0005", 5_000],
+    [429, "99999999999999999999", Number.MAX_SAFE_INTEGER],
+    [429, null, undefined],
+    [429, "0", undefined],
+    [429, new Date(now - 1_000).toUTCString(), undefined],
+    [429, "1.5", undefined],
+    [429, "-2", undefined],
+    [429, "120, 240", undefined],
+    [429, "2030-09-12", undefined],
+    [429, "private provider text", undefined],
+    [500, "120", undefined],
+    [400, "120", undefined],
+  ];
+  for (const [status, header, retryAfterMs] of cases) {
+    const client = new ResendHttpClient("synthetic", async () => new Response("invalid JSON", {
+      status, headers: header === null ? {} : { "retry-after": header },
+    }));
+    const result = await new ResendNotificationAdapter(client, "from@example.test", "to@example.test").deliver(command);
+    const errorCode = status === 429 ? "rate_limited" : status >= 500 ? "provider_unavailable" : "unknown";
+    assert.deepEqual(result, {
+      outcome: "retryable_failure", errorCode, ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    }, `status=${status} header=${header}`);
+  }
+});
+
 test("the HTTPS client bounds calls, sends the official idempotency header, and discards raw errors", async () => {
   let capturedInit: RequestInit | undefined;
   const rawProviderText = "RAW PROVIDER RESPONSE MUST NOT ESCAPE";

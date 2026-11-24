@@ -52,7 +52,7 @@ export async function GET(request: Request): Promise<Response> {
     const summary = await processOutboxBatch({
       repository,
       adapter: notificationAdapter.adapter,
-      now: new Date(),
+      now: () => new Date(),
     });
     return Response.json({ ok: true, ...summary }, { headers: noStoreHeaders });
   } catch {

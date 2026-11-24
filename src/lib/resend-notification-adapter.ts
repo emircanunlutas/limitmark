@@ -21,7 +21,7 @@ type ResendSendRequest = {
 
 type ResendSendResult =
   | { accepted: true }
-  | { accepted: false; statusCode: number | null; errorName: string | null };
+  | { accepted: false; statusCode: number | null; errorName: string | null; retryAfterMs?: number };
 
 export interface ResendEmailClient {
   send(request: ResendSendRequest, idempotencyKey: string): Promise<ResendSendResult>;
@@ -36,6 +36,21 @@ function readErrorName(value: unknown): string | null {
   if (!value || typeof value !== "object") return null;
   const name = Reflect.get(value, "name");
   return typeof name === "string" ? name : null;
+}
+
+function readRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+  if (/^\d+$/.test(value)) {
+    // Saturate before passing the duration to the outbox's configured delay cap.
+    const duration = Math.min(Number(value) * 1000, Number.MAX_SAFE_INTEGER);
+    return duration > 0 ? duration : undefined;
+  }
+
+  // Date.parse alone also accepts values such as "-2" and comma-separated numbers.
+  const date = new Date(value);
+  if (date.toUTCString() !== value) return undefined;
+  const remaining = date.getTime() - Date.now();
+  return remaining > 0 ? remaining : undefined;
 }
 
 /** Minimal typed Resend HTTPS client. It never logs or returns response bodies/messages. */
@@ -71,7 +86,10 @@ export class ResendHttpClient implements ResendEmailClient {
     } catch {
       // A malformed provider body is deliberately discarded and classified by status only.
     }
-    return { accepted: false, statusCode: response.status, errorName };
+    const retryAfterMs = response.status === 429 || response.status === 503
+      ? readRetryAfterMs(response.headers.get("retry-after"))
+      : undefined;
+    return { accepted: false, statusCode: response.status, errorName, retryAfterMs };
   }
 }
 
@@ -158,9 +176,12 @@ export class ResendNotificationAdapter implements NotificationAdapter {
 
     try {
       const result = await this.client.send(request, command.idempotencyKey);
-      return result.accepted
-        ? { outcome: "delivered" }
-        : classifyProviderFailure(result.statusCode, result.errorName);
+      if (result.accepted) return { outcome: "delivered" };
+      const failure = classifyProviderFailure(result.statusCode, result.errorName);
+      if (failure.outcome === "retryable_failure" && result.retryAfterMs !== undefined) {
+        return { ...failure, retryAfterMs: result.retryAfterMs };
+      }
+      return failure;
     } catch (error) {
       // Provider exception messages and stacks are deliberately neither logged nor returned.
       return classifyThrownFailure(error);
