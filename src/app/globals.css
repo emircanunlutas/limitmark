@@ -240,6 +240,9 @@ fieldset.form-field { padding: 0; margin: 0; border: 0; }
 .admin-detail-heading { margin-top: var(--space-6); }
 .admin-panel { padding: var(--space-8); margin-top: var(--space-6); border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: var(--surface); }
 .admin-panel > h2 { font-size: 1.5rem; }
+.admin-incident-evidence dt { color: var(--text-secondary); margin-top: var(--space-3); font-weight: 600; }
+.admin-incident-evidence dd { margin: var(--space-1) 0 0; }
+.admin-incident-evidence ul { margin: 0; padding-inline-start: var(--space-6); }
 .admin-section-intro { margin-top: var(--space-2); }
 .admin-definition-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); margin: var(--space-6) 0 0; }
 .admin-definition-list div { min-width: 0; padding-bottom: var(--space-3); border-bottom: 1px solid var(--border-subtle); }
