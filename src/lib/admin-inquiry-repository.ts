@@ -67,29 +67,31 @@ export class PostgresAdminInquiryReadRepository implements AdminInquiryReadRepos
   }
 
   async getInquiryDetail(id: string): Promise<AdminInquiryDetail | null> {
-    const [inquiry] = await this.database.select({
-      id: inquiries.id, receivedAt: inquiries.createdAt, status: inquiries.status, revision: inquiries.revision,
-      archivedAt: inquiries.archivedAt, preArchiveStatus: inquiries.preArchiveStatus, name: inquiries.name, email: inquiries.email,
-      company: inquiries.company, service: inquiries.service, system: inquiries.system, objective: inquiries.objective,
-      environment: inquiries.environment, authority: inquiries.authority, protection: inquiries.protection,
-      provider: inquiries.provider, notes: inquiries.notes,
-    }).from(inquiries).where(eq(inquiries.id, id)).limit(1);
-    if (!inquiry) return null;
-    const [events, notes] = await Promise.all([
-      this.database.select({ id: inquiryEvents.id, createdAt: inquiryEvents.createdAt, eventType: inquiryEvents.eventType, actorType: inquiryEvents.actorType, actorIdentifier: inquiryEvents.actorIdentifier, metadata: inquiryEvents.metadata })
-        .from(inquiryEvents).where(eq(inquiryEvents.inquiryId, id)).orderBy(desc(inquiryEvents.createdAt), desc(inquiryEvents.id)).limit(DETAIL_HISTORY_LIMIT + 1),
-      this.database.select({ id: adminNotes.id, createdAt: adminNotes.createdAt, authorIdentifier: adminNotes.authorIdentifier, content: adminNotes.content })
-        .from(adminNotes).where(eq(adminNotes.inquiryId, id)).orderBy(desc(adminNotes.createdAt), desc(adminNotes.id)).limit(DETAIL_HISTORY_LIMIT + 1),
-    ]);
-    return {
-      inquiry: { ...inquiry, preArchiveStatus: isActiveInquiryStatus(inquiry.preArchiveStatus) ? inquiry.preArchiveStatus : null },
-      events: events.slice(0, DETAIL_HISTORY_LIMIT).reverse().map(({ metadata, ...event }) => ({
-        ...event,
-        detail: parseInquiryAuditDetail(event.eventType, metadata),
-      })),
-      adminNotes: notes.slice(0, DETAIL_HISTORY_LIMIT).reverse(),
-      eventsTruncated: events.length > DETAIL_HISTORY_LIMIT,
-      adminNotesTruncated: notes.length > DETAIL_HISTORY_LIMIT,
-    };
+    // A note or status change commits its revision and history together. Read them from the same snapshot.
+    return this.database.transaction(async (reader) => {
+      const [inquiry] = await reader.select({
+        id: inquiries.id, receivedAt: inquiries.createdAt, status: inquiries.status, revision: inquiries.revision,
+        archivedAt: inquiries.archivedAt, preArchiveStatus: inquiries.preArchiveStatus, name: inquiries.name, email: inquiries.email,
+        company: inquiries.company, service: inquiries.service, system: inquiries.system, objective: inquiries.objective,
+        environment: inquiries.environment, authority: inquiries.authority, protection: inquiries.protection,
+        provider: inquiries.provider, notes: inquiries.notes,
+      }).from(inquiries).where(eq(inquiries.id, id)).limit(1);
+      if (!inquiry) return null;
+
+      const events = await reader.select({ id: inquiryEvents.id, createdAt: inquiryEvents.createdAt, eventType: inquiryEvents.eventType, actorType: inquiryEvents.actorType, actorIdentifier: inquiryEvents.actorIdentifier, metadata: inquiryEvents.metadata })
+        .from(inquiryEvents).where(eq(inquiryEvents.inquiryId, id)).orderBy(desc(inquiryEvents.createdAt), desc(inquiryEvents.id)).limit(DETAIL_HISTORY_LIMIT + 1);
+      const notes = await reader.select({ id: adminNotes.id, createdAt: adminNotes.createdAt, authorIdentifier: adminNotes.authorIdentifier, content: adminNotes.content })
+        .from(adminNotes).where(eq(adminNotes.inquiryId, id)).orderBy(desc(adminNotes.createdAt), desc(adminNotes.id)).limit(DETAIL_HISTORY_LIMIT + 1);
+      return {
+        inquiry: { ...inquiry, preArchiveStatus: isActiveInquiryStatus(inquiry.preArchiveStatus) ? inquiry.preArchiveStatus : null },
+        events: events.slice(0, DETAIL_HISTORY_LIMIT).reverse().map(({ metadata, ...event }) => ({
+          ...event,
+          detail: parseInquiryAuditDetail(event.eventType, metadata),
+        })),
+        adminNotes: notes.slice(0, DETAIL_HISTORY_LIMIT).reverse(),
+        eventsTruncated: events.length > DETAIL_HISTORY_LIMIT,
+        adminNotesTruncated: notes.length > DETAIL_HISTORY_LIMIT,
+      };
+    }, { isolationLevel: "repeatable read", accessMode: "read only" });
   }
 }
