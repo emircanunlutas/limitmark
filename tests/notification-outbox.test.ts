@@ -16,6 +16,46 @@ test("bounded exponential retry delays are deterministic and capped", () => {
   });
   assert.equal(policy.maxAttempts, 4);
   assert.deepEqual([1, 2, 3, 4].map((attempt) => policy.delayAfterFailure(attempt)), [1_000, 2_000, 2_500, 2_500]);
+  assert.equal(policy.delayAfterFailure(2, 200), 2_000);
+  assert.equal(policy.delayAfterFailure(1, 2_250), 2_250);
+  assert.equal(policy.delayAfterFailure(1, Number.MAX_SAFE_INTEGER), 2_500);
+  for (const invalid of [NaN, Infinity, -10, 1.5]) {
+    assert.equal(policy.delayAfterFailure(1, invalid), 1_000);
+  }
+});
+
+test("a slow batch timestamps each outcome and waits after the failure before retrying", async () => {
+  const start = Date.UTC(2030, 8, 11, 12);
+  let time = start;
+  const outcomeTimes: number[] = [];
+  const summary = await processOutboxBatch({
+    now: () => new Date(time),
+    repository: {
+      async claimBatch({ now, lockedUntil }) {
+        assert.equal(now.getTime(), start);
+        return ["first", "second", "exhausted"].map((id) => ({
+          outboxId: id, inquiryId: id, attempts: id === "exhausted" ? 5 : 1,
+          eventType: "inquiry_received", lockedUntil,
+        }));
+      },
+      async markSent({ now }) { outcomeTimes.push(now.getTime()); return true; },
+      async markFailure({ now, outboxId, retryAt }) {
+        outcomeTimes.push(now.getTime());
+        if (outboxId === "exhausted") assert.equal(retryAt, null);
+        else assert.equal(retryAt?.getTime(), start + 140_000 + 180_000);
+        return true;
+      },
+    },
+    adapter: {
+      async deliver({ idempotencyKey }) {
+        time += 70_000;
+        return idempotencyKey === "first" ? { outcome: "delivered" } :
+          { outcome: "retryable_failure", errorCode: "rate_limited", retryAfterMs: 180_000 };
+      },
+    },
+  });
+  assert.deepEqual(outcomeTimes, [start + 70_000, start + 140_000, start + 210_000]);
+  assert.deepEqual(summary, { claimed: 3, sent: 1, retryable: 1, failed: 1, leaseLost: 0 });
 });
 
 test("processor rejects unbounded batches before accessing the repository", async () => {

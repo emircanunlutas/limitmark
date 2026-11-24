@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -6,6 +7,7 @@ import { BOUND_HEADER_NAMES, REFUSED_HEADERS, SEMANTIC_POLICY_VERSION, classifyH
 import { OB_REASONS } from "../defense/core/types";
 import { DIRECT_CORPUS_FIXED_COUNT, DIRECT_ENTRIES, DIRECT_POSITIVE_CONTROLS, DIRECT_SCENARIOS } from "../lab/defense/direct-corpus";
 import { SEMANTIC_CORPUS, SEMANTIC_CORPUS_FIXED_COUNT, SEMANTIC_EXPECTED_DROPPED } from "../lab/defense/semantic-corpus";
+import { postResendEmail } from "../src/lib/resend-transport";
 
 const root = path.join(__dirname, "..");
 const read = (relative: string) => readFileSync(path.join(root, relative), "utf8");
@@ -16,19 +18,45 @@ function sourceFiles(directory: string): string[] {
   });
 }
 
-/** Every header name the real application reads, by literal: `headers.get("x")`, `headers.has("x")`, and the name arrays it probes with `.some((name) => headers.get(name))`. */
-function headersReadBySrc(): Map<string, string[]> {
+// The transport calls the platform fetch at the fixed Resend endpoint and reads
+// the header on the returned object. Changes to that boundary require reviewing the pin.
+const resendTransport = "src/lib/resend-transport.ts";
+const resendTransportSha256 = "e8ec70ab80b98e894f68b218f50c4979c903efaaebdef311dc0024d359f1b92b";
+
+function headerNames(source: string): string[] {
+  const names: string[] = [];
+  const text = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  for (const match of text.matchAll(/headers\.(?:get|has)\(\s*["']([A-Za-z0-9-]+)["']/g)) names.push(match[1].toLowerCase());
+  for (const match of text.matchAll(/headers\[\s*["']([A-Za-z0-9-]+)["']\s*\]/g)) names.push(match[1].toLowerCase());
+  for (const match of text.matchAll(/\[((?:\s*"[A-Za-z0-9-]+",?)+)\s*\]\s*\.some\(\(name\) => headers\.get\(name\)/g)) for (const name of match[1].matchAll(/"([A-Za-z0-9-]+)"/g)) names.push(name[1].toLowerCase());
+  // public-origin.ts exports the name of its secret header as a constant that is then read through headers.get(constant)
+  for (const match of text.matchAll(/export const \w*[Hh]eader = "([a-z0-9-]+)"/g)) names.push(match[1].toLowerCase());
+  return names;
+}
+
+function inboundHeaderReads(files: ReadonlyMap<string, string>): Map<string, string[]> {
+  const transport = files.get(resendTransport);
+  assert.ok(transport, "reviewed Resend transport is missing");
+  const digest = createHash("sha256").update(transport.replaceAll("\r\n", "\n")).digest("hex");
+  assert.equal(digest, resendTransportSha256, "review the Resend fetch and header read before updating the pin");
+
   const found = new Map<string, string[]>();
-  const note = (name: string, file: string) => found.set(name, [...(found.get(name) ?? []), path.relative(root, file).replace(/\\/g, "/")]);
-  for (const file of sourceFiles(path.join(root, "src"))) {
-    const text = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
-    for (const match of text.matchAll(/headers\.(?:get|has)\(\s*["']([A-Za-z0-9-]+)["']/g)) note(match[1].toLowerCase(), file);
-    for (const match of text.matchAll(/headers\[\s*["']([A-Za-z0-9-]+)["']\s*\]/g)) note(match[1].toLowerCase(), file);
-    for (const match of text.matchAll(/\[((?:\s*"[A-Za-z0-9-]+",?)+)\s*\]\s*\.some\(\(name\) => headers\.get\(name\)/g)) for (const name of match[1].matchAll(/"([A-Za-z0-9-]+)"/g)) note(name[1].toLowerCase(), file);
-    // public-origin.ts exports the name of its secret header as a constant that is then read through headers.get(constant)
-    for (const match of text.matchAll(/export const \w*[Hh]eader = "([a-z0-9-]+)"/g)) note(match[1].toLowerCase(), file);
+  for (const [file, source] of files) {
+    const names = headerNames(source);
+    if (file === resendTransport) {
+      assert.deepEqual(names, ["retry-after"], "expected exactly the reviewed outbound header read");
+      continue;
+    }
+    for (const name of names) found.set(name, [...(found.get(name) ?? []), file]);
   }
   return found;
+}
+
+function headersReadBySrc(): Map<string, string[]> {
+  const files = sourceFiles(path.join(root, "src")).map((file) => [
+    path.relative(root, file).replace(/\\/g, "/"), readFileSync(file, "utf8"),
+  ] as const);
+  return inboundHeaderReads(new Map(files));
 }
 
 test("CONTRACT: every header the real application reads is bound, derived, transport, refused, spoofable or an ingress indicator: never silently dropped", () => {
@@ -39,6 +67,49 @@ test("CONTRACT: every header the real application reads is bound, derived, trans
   }
   const dropped = [...reads.keys()].filter((name) => classifyHeader(name) === "dropped");
   assert.deepEqual(dropped, [], `the application started interpreting a header the plane drops: bump SEMANTIC_POLICY_VERSION and bind or refuse it (${dropped.join(", ")})`);
+});
+
+test("the outbound inventory fails closed on a missing, moved, duplicated or replaced provider read", () => {
+  const transport = read(resendTransport);
+  const access = 'response.headers.get("retry-after")';
+  const copied = 'async function read(request: Request) { const response = await Promise.resolve(new Response(null, { headers: request.headers })); return response.headers.get("retry-after"); }';
+  const check = (source: string) => inboundHeaderReads(new Map([[resendTransport, source]]));
+  assert.equal(check(transport).size, 0);
+  assert.equal(check(transport.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n")).size, 0);
+  assert.throws(() => inboundHeaderReads(new Map([["src/moved.ts", transport]])), /transport is missing/);
+  for (const changed of [
+    transport.replace(access, "null"),
+    transport.replace(access, 'response.headers.get("origin")'),
+    transport.replace(access, access + " ?? " + access),
+    transport.replace(access, "null") + 'function read(response: Request) { return response.headers.get("retry-after"); }',
+    transport.replace(access, "null") + copied,
+    transport.replace('globalThis.fetch("https://api.resend.com/emails", init)', "Promise.resolve(new Response(null, init))"),
+  ]) assert.throws(() => check(changed), /review the Resend fetch/);
+});
+
+test("the inventoried header comes from the fixed-endpoint fetch response", async (t) => {
+  const reply = new Response(null, { status: 429, headers: { "retry-after": "120" } });
+  const init = { method: "POST", headers: { "retry-after": "30" } };
+  const fetch = t.mock.method(globalThis, "fetch", async () => reply);
+  const result = await postResendEmail(init);
+  assert.deepEqual(fetch.mock.calls.map((call) => call.arguments), [["https://api.resend.com/emails", init]]);
+  assert.equal(result.response, reply);
+  assert.equal(result.retryAfter, "120");
+});
+
+test("the provider read grants no exemption to other source files or inbound header shapes", () => {
+  const inbound = [
+    'function read(response: Request) { return response.headers.get("retry-after"); }',
+    'async function copy(req: Request) { const response = await Promise.resolve(new Response(null, { headers: req.headers })); return response.headers.get("retry-after"); }',
+    'headers./* metadata */get("x-literal"); headers.has("x-present"); headers["x-bracket"];',
+    '["x-first", "x-second"].some((name) => headers.get(name));',
+    'export const secretHeader = "x-constant";',
+  ].join("\n");
+  const file = "src/inbound.ts";
+  const found = inboundHeaderReads(new Map([[resendTransport, read(resendTransport)], [file, inbound]]));
+  assert.deepEqual(found.get("retry-after"), [file, file]);
+  assert.deepEqual([...found.keys()].sort(), ["retry-after", "x-bracket", "x-constant", "x-first", "x-literal", "x-present", "x-second"]);
+  assert.equal(classifyHeader("retry-after"), "dropped");
 });
 
 test("CONTRACT: the bound set is exactly what the application's public path interprets, and the policy is versioned", () => {

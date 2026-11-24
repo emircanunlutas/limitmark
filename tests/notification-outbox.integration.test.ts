@@ -9,6 +9,8 @@ import { PostgresNotificationOutboxRepository } from "../src/lib/notification-ou
 import { createPayloadFingerprint } from "../src/lib/payload-fingerprint";
 import { requestSchema } from "../src/lib/request-schema";
 import { createExponentialRetryPolicy } from "../src/lib/notification-retry-policy";
+import type { NotificationAdapter } from "../src/lib/notification-adapter";
+import { ResendHttpClient, ResendNotificationAdapter } from "../src/lib/resend-notification-adapter";
 import { processOutboxBatch } from "../src/lib/outbox-processor";
 import { SyntheticNotificationAdapter } from "./support/synthetic-notification-adapter";
 import { disposableTestDatabase } from "./support/test-database-guard";
@@ -66,7 +68,7 @@ async function readJob(id: string) {
   return job;
 }
 
-function processor(adapter: SyntheticNotificationAdapter, overrides: Partial<Parameters<typeof processOutboxBatch>[0]> = {}) {
+function processor(adapter: NotificationAdapter, overrides: Partial<Parameters<typeof processOutboxBatch>[0]> = {}) {
   return processOutboxBatch({
     repository: new PostgresNotificationOutboxRepository(database!),
     adapter,
@@ -220,15 +222,34 @@ test("sent, failed, live processing, and future rows are never claimed", integra
   assert.equal(claimed.length, 0);
 });
 
-test("attempts increments exactly once for each claimed delivery attempt", integration, async () => {
+test("a throttled delivery is claimed exactly once per attempt and only when its retry is due", integration, async (t) => {
   const { job } = await createPendingJob();
-  await processor(new SyntheticNotificationAdapter({ outcome: "retryable_failure", errorCode: "timeout" }));
+  let currentMs = now.getTime();
+  const keys: Array<string | null> = [];
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => {
+    keys.push(new Headers(init?.headers).get("Idempotency-Key"));
+    currentMs += 2_000;
+    if (keys.length === 1) return new Response(null, { status: 429, headers: { "Retry-After": "7" } });
+    return new Response(null, { status: 200 });
+  });
+  const client = new ResendHttpClient("synthetic");
+  const adapter = new ResendNotificationAdapter(client, "from@example.test", "to@example.test");
+  const run = () => processor(adapter, { now: () => new Date(currentMs) });
+
+  assert.equal((await run()).retryable, 1);
+  const scheduled = await readJob(job.id);
+  assert.equal(scheduled.lastErrorCode, "rate_limited");
+  assert.equal(scheduled.availableAt.getTime(), now.getTime() + 9_000);
+  currentMs = scheduled.availableAt.getTime() - 1;
+  assert.equal((await run()).claimed, 0);
   assert.equal((await readJob(job.id)).attempts, 1);
-  const secondNow = new Date(now.getTime() + 1_000);
-  await processor(new SyntheticNotificationAdapter(), { now: secondNow });
+  currentMs++;
+  assert.equal((await run()).sent, 1);
   const stored = await readJob(job.id);
   assert.equal(stored.attempts, 2);
   assert.equal(stored.status, "sent");
+  assert.equal(stored.sentAt?.getTime(), now.getTime() + 11_000);
+  assert.deepEqual(keys, [job.id, job.id]);
 });
 
 test("an unexpected adapter throw is sanitized and remains recoverable", integration, async () => {
