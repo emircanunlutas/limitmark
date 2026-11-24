@@ -4,8 +4,16 @@ import { notFound } from "next/navigation";
 import { Container } from "@/components/container";
 import { requireAdmin } from "@/lib/admin-auth";
 import type { AuthorizedAdminIdentity } from "@/lib/admin-auth-core";
-import { getAdminInquiryReadRepository } from "@/lib/admin-inquiry-data";
+import { getAdminInquiryReadRepository, getAdminNotificationDeliveryRepository } from "@/lib/admin-inquiry-data";
 import type { AdminInquiryDetail, AdminInquiryEvent, AdminInquiryReadRepository } from "@/lib/admin-inquiry-repository";
+import { InquiryNotificationDeliverySection } from "@/components/admin-notification-delivery";
+import {
+  loadInquiryNotificationDeliveries,
+  type AdminNotificationDeliveryRepositoryFactory,
+  type InquiryNotificationDeliveryView,
+  type NotificationDeliveryConfigurationEvidence,
+} from "@/lib/admin-notification-delivery";
+import { getNotificationDeliveryConfigurationEvidence } from "@/lib/admin-notification-delivery-config";
 import { allowedInquiryStatusTransitions, type InquiryStatus } from "@/lib/inquiry-status-workflow";
 import { addInquiryNoteAction, archiveInquiryAction, changeInquiryStatusAction, restoreInquiryAction } from "../actions";
 
@@ -44,13 +52,14 @@ function InquiryMutationControls({ detail }: { detail: AdminInquiryDetail }) {
   </div></section>;
 }
 
-function InquiryDetailView({ detail }: { detail: AdminInquiryDetail }) {
+function InquiryDetailView({ detail, deliveries, deliveryConfiguration }: { detail: AdminInquiryDetail; deliveries: InquiryNotificationDeliveryView; deliveryConfiguration: NotificationDeliveryConfigurationEvidence }) {
   const fields = [["Reference", detail.inquiry.id], ["Received", timestamp(detail.inquiry.receivedAt)], ["Status", displayStatus(detail.inquiry.status)], ["Name", detail.inquiry.name], ["Email", detail.inquiry.email], ["Company", detail.inquiry.company], ["Service", detail.inquiry.service], ["Environment", detail.inquiry.environment], ["Authority", detail.inquiry.authority], ["Protection", detail.inquiry.protection], ["Provider", detail.inquiry.provider]] as const;
   return <>
     <section className="admin-panel" aria-labelledby="submitted-heading"><h2 id="submitted-heading">Customer-submitted data</h2><dl className="admin-definition-list">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{valueOrNotProvided(value)}</dd></div>)}</dl>
       <div className="admin-long-fields"><div><h3>System</h3><p>{detail.inquiry.system}</p></div><div><h3>Objective</h3><p>{detail.inquiry.objective}</p></div><div><h3>Customer-submitted notes</h3><p>{valueOrNotProvided(detail.inquiry.notes)}</p></div></div></section>
     <InquiryMutationControls detail={detail} />
     <section className="admin-panel" aria-labelledby="history-heading"><h2 id="history-heading">Event history</h2><p className="admin-section-intro">Oldest first. Events are append-only.{detail.eventsTruncated && " Showing the 500 most recent events."}</p>{detail.events.length ? <ol className="admin-timeline">{detail.events.map((event) => <li key={event.id}><time dateTime={event.createdAt.toISOString()}>{timestamp(event.createdAt)}</time><strong>{eventDescription(event)}</strong><span>{event.actorType}{event.actorType === "admin" && event.actorIdentifier ? ` · ${event.actorIdentifier}` : ""}</span></li>)}</ol> : <p className="admin-muted admin-neutral-empty">No events recorded.</p>}</section>
+    <InquiryNotificationDeliverySection view={deliveries} configuration={deliveryConfiguration} />
     <section className="admin-panel" aria-labelledby="notes-heading"><h2 id="notes-heading">Internal admin notes</h2><p className="admin-section-intro">Plain text, visible only to authorized administrators.</p><form action={addInquiryNoteAction} className="admin-note-form"><MutationTargetFields detail={detail} /><label htmlFor="admin-note">Add internal note</label><textarea id="admin-note" name="content" minLength={1} maxLength={10000} required rows={5} /><button className="button button-primary" type="submit">Add note</button></form>{detail.adminNotesTruncated && <p className="admin-section-intro">Showing the 500 most recent notes, oldest first.</p>}{detail.adminNotes.length ? <ol className="admin-note-list">{detail.adminNotes.map((note) => <li key={note.id}><div><time dateTime={note.createdAt.toISOString()}>{timestamp(note.createdAt)}</time><span>{note.authorIdentifier}</span></div><p>{note.content}</p></li>)}</ol> : <p className="admin-muted admin-neutral-empty">No internal admin notes.</p>}</section>
   </>;
 }
@@ -62,6 +71,9 @@ export async function renderAdminInquiryDetail(
   authorize: () => Promise<AuthorizedAdminIdentity> = requireAdmin,
   getRepository: () => Promise<AdminInquiryReadRepository | null> = getAdminInquiryReadRepository,
   searchParams: DetailSearchParams = Promise.resolve({}),
+  getDeliveryRepository: AdminNotificationDeliveryRepositoryFactory = getAdminNotificationDeliveryRepository,
+  now: () => Date = () => new Date(),
+  getDeliveryConfiguration: () => NotificationDeliveryConfigurationEvidence = () => getNotificationDeliveryConfigurationEvidence(process.env),
 ) {
   await authorize();
   const { id } = await params;
@@ -72,9 +84,12 @@ export async function renderAdminInquiryDetail(
   try { detail = await repository.getInquiryDetail(id); }
   catch { return <div className="page-shell admin-shell"><Container><Link className="text-link" href="/admin">Back to inquiries</Link><div className="admin-outage" role="status"><h1>Inquiry data unavailable</h1><p>The inquiry store is not configured or cannot be reached. Try again later.</p></div></Container></div>; }
   if (!detail) notFound();
+  // Read only after authorization and a confirmed inquiry. Failure or timeout renders "unavailable".
+  const deliveries = await loadInquiryNotificationDeliveries(getDeliveryRepository, detail.inquiry.id, now());
+  const deliveryConfiguration = getDeliveryConfiguration();
   const mutationValue = (await searchParams).mutation;
   const mutation = typeof mutationValue === "string" ? mutationNotices[mutationValue] : undefined;
-  return <div className="page-shell admin-shell"><Container><Link className="text-link" href="/admin">Back to inquiries</Link><header className="admin-detail-heading"><p className="admin-eyebrow">Limitmark Admin</p><h1>Inquiry detail</h1></header>{mutation && <p className={`admin-notice ${mutation.tone}`} role="status">{mutation.message}</p>}<InquiryDetailView detail={detail} /></Container></div>;
+  return <div className="page-shell admin-shell"><Container><Link className="text-link" href="/admin">Back to inquiries</Link><header className="admin-detail-heading"><p className="admin-eyebrow">Limitmark Admin</p><h1>Inquiry detail</h1></header>{mutation && <p className={`admin-notice ${mutation.tone}`} role="status">{mutation.message}</p>}<InquiryDetailView detail={detail} deliveries={deliveries} deliveryConfiguration={deliveryConfiguration} /></Container></div>;
 }
 
 export default async function AdminInquiryPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: DetailSearchParams }) { return renderAdminInquiryDetail(params, requireAdmin, getAdminInquiryReadRepository, searchParams); }

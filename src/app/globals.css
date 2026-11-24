@@ -267,6 +267,21 @@ fieldset.form-field { padding: 0; margin: 0; border: 0; }
 .admin-confirm input { width: 18px; height: 18px; margin-top: 2px; }
 .admin-note-form { display: grid; gap: var(--space-3); margin-top: var(--space-6); }
 .admin-note-form textarea { resize: vertical; white-space: pre-wrap; }
+.admin-delivery-health { margin-top: 0; margin-bottom: var(--space-6); }
+.admin-delivery-health .admin-notice { margin-top: var(--space-4); }
+.admin-notice strong { display: block; }
+.admin-notice p { margin-top: var(--space-1); }
+.admin-delivery-counts { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-4); margin: var(--space-6) 0 0; }
+.admin-delivery-counts div, .admin-delivery-facts div { min-width: 0; padding-bottom: var(--space-3); border-bottom: 1px solid var(--border-subtle); }
+.admin-delivery-counts dt, .admin-delivery-facts dt { color: var(--text-secondary); font-size: .8125rem; }
+.admin-delivery-counts dd { margin: var(--space-1) 0 0; font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+.admin-delivery-list { padding: 0; margin: var(--space-6) 0 0; list-style: none; }
+.admin-delivery-list li { padding-block: var(--space-4); border-top: 1px solid var(--border-subtle); }
+.admin-delivery-list li > div { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+.admin-delivery-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); margin: var(--space-3) 0 0; }
+.admin-delivery-facts dd { margin: var(--space-1) 0 0; }
+.admin-delivery-overdue { border-color: var(--accent) !important; }
+.admin-notice-neutral { border-color: var(--border-control); }
 
 @media (min-width: 1024px) and (max-width: 1279px) {
   .hero { padding-block: 56px 64px; }
@@ -323,6 +338,8 @@ fieldset.form-field { padding: 0; margin: 0; border: 0; }
   .admin-definition-list { grid-template-columns: 1fr; }
   .admin-panel { padding: var(--space-6); }
   .admin-timeline li { grid-template-columns: 1fr; gap: var(--space-1); }
+  .admin-delivery-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-delivery-facts { grid-template-columns: 1fr; }
 }
 @media (max-width: 479px) {
   .hero-actions { flex-direction: column; }
