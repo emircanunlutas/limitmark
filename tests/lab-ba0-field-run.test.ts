@@ -3,6 +3,8 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { test } from "node:test";
+import type { Tick } from "../defense/core/telemetry";
+import { TickMonitor } from "../lab/defense/field-monitor";
 import { ba0FieldFingerprint, BA0_FIELD_V1, type Ba0FieldThresholds } from "../lab/defense/field-thresholds";
 import { FIELD_LEVELS, canaryScheduleLagP99, parseFieldArguments, runFieldLevel, type AuthorizationLike, type FieldRunOutcome, type FieldRunSeams } from "../lab/defense/ba0-field-run";
 import { DISPOSABLE_MARKER_CONTENT, type FieldEnvironment } from "../lab/defense/field-preflight";
@@ -133,6 +135,25 @@ async function assertTornDown(r: Rig): Promise<void> {
   await assert.rejects(() => new Promise((resolve, reject) => { const probe = net.connect({ host: "127.0.0.1", port: r.port }, () => { probe.destroy(); resolve(true); }); probe.on("error", reject); }), /ECONNREFUSED/, "the public ingress is closed");
   assert.equal(fs.existsSync(r.lockFile), false, "the single-instance lock is released");
 }
+
+test("losing the app's first heartbeat invalidates the saved field evidence despite a complete drain", { timeout: 120_000 }, async (t) => {
+  const observe = TickMonitor.prototype.observe;
+  t.mock.method(TickMonitor.prototype, "observe", function (this: TickMonitor, tick: Tick<unknown>) {
+    return tick.role === "app" && tick.tickSeq === 1 ? [] : observe.call(this, tick);
+  });
+  const r = await rig();
+  try {
+    const outcome = await run(r);
+    assert.equal(outcome.status, "invalid");
+    assert.ok(outcome.serverSide?.reasons.some(({ code, detail }) => code === "evidence_gap" && detail === "e10.no_tick_gaps"));
+    const saved = readJson(outcome, "telemetry.json");
+    assert.equal(saved.gaps, 1);
+    assert.deepEqual(saved.gapDetails, ["app 0>2"]);
+    assert.deepEqual(saved.finalTicks, { plane: true, boundary: true, app: true });
+    assert.deepEqual(outcome.write!.failed, []);
+    await assertTornDown(r);
+  } finally { r.cleanup(); }
+});
 
 // ------------------------------------------------------------------------------------------------ the happy path
 test("a full level runs PREFLIGHT -> ... -> DONE: ordered states, every finalization step ok, evidence complete, ingress closed, every process gone", { timeout: 120_000 }, async () => {
