@@ -202,6 +202,45 @@ test("the generator report is strictly shape-checked: it round-trips, and a miss
   assert.throws(() => parseGeneratorReport(JSON.stringify(badSha)), /gitSha/);
 });
 
+test("each fixed numeric group and fixture row requires its named measurements", () => {
+  const { report } = consistent();
+  for (const group of ["bytes", "concurrency", "connections", "rate", "generatorHealth"] as const) {
+    for (const field of Object.keys(report[group])) {
+      const incomplete: Record<string, number> = { ...report[group] };
+      delete incomplete[field];
+      assert.throws(() => parseGeneratorReport(JSON.stringify({ ...report, [group]: incomplete })), {
+        message: `generator report field ${group}.${field} is missing or malformed`,
+      });
+    }
+  }
+  for (const field of ["attempted", "responses", "transportFailures"] as const) {
+    const row: Partial<typeof report.perFixture.get_home> = { ...report.perFixture.get_home };
+    delete row[field];
+    const perFixture = { ...report.perFixture, get_home: row };
+    assert.throws(() => parseGeneratorReport(JSON.stringify({ ...report, perFixture })), {
+      message: `generator report field perFixture.${field} is missing or malformed`,
+    });
+  }
+});
+
+test("the report parser distinguishes missing or impossible measurements from measured zeroes", () => {
+  const { report } = consistent();
+  for (const fields of [
+    { generatorHealth: { ...report.generatorHealth, eldP99Ms: -1 } },
+    { schedule: { ...report.schedule, lagMs: { ...report.schedule.lagMs, count: -1 } } },
+    { latencyMs: { ...report.latencyMs, p99: -1 } },
+    { statuses: { "200": 0.5 } }, { outcomes: { ok: -1 } }, { transportFailures: -1 },
+    { attempted: Number.MAX_SAFE_INTEGER + 1 }, { workers: 0 }, { perFixture: [] }, { perFixture: {} },
+  ]) {
+    assert.throws(() => parseGeneratorReport(JSON.stringify({ ...report, ...fields })), /missing or malformed/);
+  }
+  report.generatorHealth.eldP99Ms = 0;
+  report.generatorHealth.cpuSystemMs = 0.25;
+  report.perFixture.get_home = { attempted: 0, responses: 0, transportFailures: 0 };
+  report.perFixture.get_privacy = { attempted: 50, responses: 50, transportFailures: 0 };
+  assert.deepEqual(parseGeneratorReport(JSON.stringify(report)), report);
+});
+
 // ------------------------------------------------------------------------------------------------ the offline CLI
 const testRoot = (): string => { const root = path.join(REPOSITORY_ROOT, "artifacts", "lab", `evidence-test-${process.pid}-${Math.random().toString(16).slice(2, 8)}`); fs.mkdirSync(root, { recursive: true }); return root; };
 
@@ -241,6 +280,25 @@ test("the offline reconcile verifies the server evidence's checksums, compares i
     assert.equal(withoutReport.verdict, "INVALID");
     assert.match(withoutReport.reasons.join(" "), /generator_report_missing/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("offline reconcile refuses a report missing the event-loop measurement used by the saturation gate", () => {
+  const root = testRoot();
+  try {
+    const { server, report } = consistent();
+    const serverId = serverEvidence(root, server);
+    const reportPath = path.join(root, "generator-report.json");
+    const incomplete: Partial<GeneratorReport["generatorHealth"]> = { ...report.generatorHealth };
+    delete incomplete.eldP99Ms;
+    fs.writeFileSync(reportPath, JSON.stringify({ ...report, generatorHealth: incomplete }));
+
+    const outcome = reconcileLevel({ serverId, reportPath }, root);
+    assert.equal(outcome.verdict, "REFUSED");
+    assert.equal(outcome.exit, 2);
+    assert.match(outcome.reasons[0], /generatorHealth\.eldP99Ms/);
+    assert.equal(outcome.evidenceId, null);
+    assert.equal(outcome.result, null);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test("a server evidence that fails its checksums, is unfinalized or is not a level evidence is REFUSED, never reconciled", () => {

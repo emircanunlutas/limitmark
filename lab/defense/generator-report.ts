@@ -76,10 +76,24 @@ export function buildGeneratorReport(input: {
   };
 }
 
-const isRecordOfNumbers = (value: unknown): value is Record<string, number> =>
-  typeof value === "object" && value !== null && !Array.isArray(value) && Object.values(value).every((entry) => typeof entry === "number" && Number.isFinite(entry));
-const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
-const isSummary = (value: unknown): value is LatencySummary => typeof value === "object" && value !== null && ["count", "min", "mean", "p50", "p90", "p95", "p99", "max"].every((key) => isFiniteNumber((value as Record<string, unknown>)[key]));
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isMeasurement = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+const isCount = (value: unknown): value is number => isMeasurement(value) && Number.isSafeInteger(value);
+
+function need(ok: boolean, field: string): asserts ok {
+  if (!ok) throw new Error(`generator report field ${field} is missing or malformed`);
+}
+
+function requireNumbers(value: unknown, field: string, keys: readonly string[], valid = isMeasurement): void {
+  need(isRecord(value), field);
+  for (const key of keys) need(valid(value[key]), `${field}.${key}`);
+  need(Object.values(value).every(valid), field);
+}
+
+function requireSummary(value: unknown, field: string): void {
+  need(isRecord(value) && isCount(value.count), `${field}.count`);
+  for (const key of ["min", "mean", "p50", "p90", "p95", "p99", "max"]) need(isMeasurement(value[key]), `${field}.${key}`);
+}
 
 /** Parses and strictly shape-checks a report. Throws a plain Error naming the first bad field; never returns a half-valid report. */
 export function parseGeneratorReport(text: string): GeneratorReport {
@@ -87,22 +101,25 @@ export function parseGeneratorReport(text: string): GeneratorReport {
   try { value = JSON.parse(text); } catch { throw new Error("generator report is not JSON"); }
   if (typeof value !== "object" || value === null) throw new Error("generator report is not an object");
   const r = value as Record<string, unknown>;
-  const need = (ok: boolean, field: string) => { if (!ok) throw new Error(`generator report field ${field} is missing or malformed`); };
   need(r.schema === GENERATOR_REPORT_SCHEMA, "schema");
   for (const field of ["campaignId", "levelId", "runId", "gitSha", "paramsFingerprintSha256", "workloadFingerprintSha256", "targetId", "startedAt", "endedAt"]) need(typeof r[field] === "string", field);
   need(/^[0-9a-f]{40}$/.test(r.gitSha as string), "gitSha");
   need(/^[0-9a-f]{64}$/.test(r.paramsFingerprintSha256 as string) && /^[0-9a-f]{64}$/.test(r.workloadFingerprintSha256 as string), "fingerprints");
-  for (const field of ["workers", "wallClockSeconds", "attempted", "responses", "transportFailures"]) need(isFiniteNumber(r[field]), field);
-  need(isRecordOfNumbers(r.outcomes) && isRecordOfNumbers(r.statuses), "outcomes/statuses");
-  need(typeof r.perFixture === "object" && r.perFixture !== null && Object.values(r.perFixture as object).every((entry) => isRecordOfNumbers(entry)), "perFixture");
-  need(isSummary(r.latencyMs), "latencyMs");
-  need(typeof r.bytes === "object" && r.bytes !== null && isRecordOfNumbers(r.bytes), "bytes");
-  need(typeof r.concurrency === "object" && r.concurrency !== null && isRecordOfNumbers(r.concurrency), "concurrency");
-  need(typeof r.connections === "object" && r.connections !== null && isRecordOfNumbers(r.connections), "connections");
-  need(typeof r.rate === "object" && r.rate !== null && isRecordOfNumbers(r.rate), "rate");
-  const schedule = r.schedule as { paced?: unknown; lagMs?: unknown } | undefined;
-  need(typeof schedule === "object" && schedule !== null && isFiniteNumber(schedule.paced) && isSummary(schedule.lagMs), "schedule");
-  need(typeof r.generatorHealth === "object" && r.generatorHealth !== null && isRecordOfNumbers(r.generatorHealth), "generatorHealth");
+  need(isCount(r.workers) && r.workers > 0, "workers");
+  need(isMeasurement(r.wallClockSeconds), "wallClockSeconds");
+  for (const field of ["attempted", "responses", "transportFailures"]) need(isCount(r[field]), field);
+  requireNumbers(r.outcomes, "outcomes", [], isCount);
+  requireNumbers(r.statuses, "statuses", [], isCount);
+  need(isRecord(r.perFixture) && Object.keys(r.perFixture).length > 0, "perFixture");
+  for (const row of Object.values(r.perFixture)) requireNumbers(row, "perFixture", ["attempted", "responses", "transportFailures"], isCount);
+  requireSummary(r.latencyMs, "latencyMs");
+  requireNumbers(r.bytes, "bytes", ["wireSent", "wireReceived", "contentReceived"], isCount);
+  requireNumbers(r.concurrency, "concurrency", ["planned", "inFlightNow", "maxInFlightObserved"], isCount);
+  requireNumbers(r.connections, "connections", ["new", "reused"], isCount);
+  requireNumbers(r.rate, "rate", ["achievedPerSecond", "ceilingPerSecond"]);
+  need(isRecord(r.schedule) && isCount(r.schedule.paced), "schedule.paced");
+  requireSummary(r.schedule.lagMs, "schedule.lagMs");
+  requireNumbers(r.generatorHealth, "generatorHealth", ["eldP50Ms", "eldP99Ms", "eldMaxMs", "cpuUserMs", "cpuSystemMs", "rssMb"]);
   const stop = r.stop as { kind?: unknown; detail?: unknown } | undefined;
   need(typeof stop === "object" && stop !== null && typeof stop.kind === "string" && (stop.detail === null || typeof stop.detail === "string"), "stop");
   need(r.retries === 0 && r.pipelining === false, "retries/pipelining");
