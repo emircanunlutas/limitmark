@@ -17,13 +17,47 @@ function sourceFiles(directory: string): string[] {
 }
 
 /** Every header name the real application reads, by literal: `headers.get("x")`, `headers.has("x")`, and the name arrays it probes with `.some((name) => headers.get(name))`. */
-function headersReadBySrc(): Map<string, string[]> {
+/**
+ * The ONLY outbound (provider-response) header reads the contract does not count as request-header interpretation.
+ * Each entry is exact: one file, the receiver expression `response` (so `response.headers.get(...)`), one header, one
+ * occurrence. A request-shaped receiver (`request.headers`, bare `headers`, `req.headers`), another file, another
+ * header or a second read in the same file is NOT covered and stays classified like any inbound header. An entry that
+ * no longer matches fails the stale-entry assertion below, so the list cannot silently outlive its reviewed code.
+ */
+export const REVIEWED_OUTBOUND_RESPONSE_HEADER_READS: ReadonlyArray<{ file: string; receiver: string; header: string; count: number }> = [
+  // ResendHttpClient.send reads the provider's throttling hint from its own fetch() Response (feature 02, reviewed).
+  { file: "src/lib/resend-notification-adapter.ts", receiver: "response", header: "retry-after", count: 1 },
+];
+
+/** Header names read by one source text. `exempted` lists reviewed outbound reads that were NOT counted as inbound. */
+export function scanHeaderReads(source: string, relativeFile: string): { names: string[]; exempted: string[] } {
+  const names: string[] = [];
+  const exempted: string[] = [];
+  const stripped = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  const used = new Map<string, number>();
+  for (const match of stripped.matchAll(/([\w$.?]*)headers\.(get|has)\(\s*["']([A-Za-z0-9-]+)["']/g)) {
+    const header = match[3].toLowerCase();
+    const reviewed = REVIEWED_OUTBOUND_RESPONSE_HEADER_READS.find((entry) =>
+      match[2] === "get" && entry.file === relativeFile && entry.header === header && `${entry.receiver}.` === match[1]);
+    const key = reviewed ? `${reviewed.file}|${reviewed.header}` : "";
+    if (reviewed && (used.get(key) ?? 0) < reviewed.count) {
+      used.set(key, (used.get(key) ?? 0) + 1);
+      exempted.push(key);
+    } else names.push(header);
+  }
+  for (const match of stripped.matchAll(/headers\[\s*["']([A-Za-z0-9-]+)["']\s*\]/g)) names.push(match[1].toLowerCase());
+  return { names, exempted };
+}
+
+function headersReadBySrc(exempted: string[] = []): Map<string, string[]> {
   const found = new Map<string, string[]>();
   const note = (name: string, file: string) => found.set(name, [...(found.get(name) ?? []), path.relative(root, file).replace(/\\/g, "/")]);
   for (const file of sourceFiles(path.join(root, "src"))) {
+    const relative = path.relative(root, file).replace(/\\/g, "/");
     const text = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
-    for (const match of text.matchAll(/headers\.(?:get|has)\(\s*["']([A-Za-z0-9-]+)["']/g)) note(match[1].toLowerCase(), file);
-    for (const match of text.matchAll(/headers\[\s*["']([A-Za-z0-9-]+)["']\s*\]/g)) note(match[1].toLowerCase(), file);
+    const scanned = scanHeaderReads(readFileSync(file, "utf8"), relative);
+    for (const name of scanned.names) note(name, file);
+    exempted.push(...scanned.exempted);
     for (const match of text.matchAll(/\[((?:\s*"[A-Za-z0-9-]+",?)+)\s*\]\s*\.some\(\(name\) => headers\.get\(name\)/g)) for (const name of match[1].matchAll(/"([A-Za-z0-9-]+)"/g)) note(name[1].toLowerCase(), file);
     // public-origin.ts exports the name of its secret header as a constant that is then read through headers.get(constant)
     for (const match of text.matchAll(/export const \w*[Hh]eader = "([a-z0-9-]+)"/g)) note(match[1].toLowerCase(), file);
@@ -32,13 +66,38 @@ function headersReadBySrc(): Map<string, string[]> {
 }
 
 test("CONTRACT: every header the real application reads is bound, derived, transport, refused, spoofable or an ingress indicator: never silently dropped", () => {
-  const reads = headersReadBySrc();
+  const exempted: string[] = [];
+  const reads = headersReadBySrc(exempted);
+  assert.deepEqual(exempted.sort(), REVIEWED_OUTBOUND_RESPONSE_HEADER_READS.flatMap((entry) => Array(entry.count).fill(`${entry.file}|${entry.header}`)).sort(),
+    "every reviewed outbound read exists exactly as listed (no stale or partial entry)");
   assert.ok(reads.size >= 10, `the scan must actually see the application's header reads (saw ${[...reads.keys()].join(", ")})`);
   for (const expected of ["host", "origin", "content-type", "content-length", "content-encoding", "x-forwarded-host", "x-limitmark-origin-secret", "x-vercel-forwarded-for", "authorization", "cf-connecting-ip", "cf-ray"]) {
     assert.ok(reads.has(expected), `the scan found ${expected}`);
   }
   const dropped = [...reads.keys()].filter((name) => classifyHeader(name) === "dropped");
   assert.deepEqual(dropped, [], `the application started interpreting a header the plane drops: bump SEMANTIC_POLICY_VERSION and bind or refuse it (${dropped.join(", ")})`);
+});
+
+test("CONTRACT: only the reviewed provider-response read is exempt; every inbound or unreviewed header access is still scanned", () => {
+  const reviewed = REVIEWED_OUTBOUND_RESPONSE_HEADER_READS[0];
+  const code = (receiver: string, name = reviewed.header) => `const v = ${receiver}.get("${name}");`;
+  const scan = (source: string, file = reviewed.file) => scanHeaderReads(source, file);
+  // accepted: the exact reviewed provider-response read, including the multi-line form used in the adapter
+  assert.deepEqual(scan(code("response.headers")), { names: [], exempted: [`${reviewed.file}|retry-after`] });
+  assert.deepEqual(scan('const v = cond\n  ? response.headers.get(\n  "Retry-After")\n  : undefined;'), { names: [], exempted: [`${reviewed.file}|retry-after`] });
+  // rejected: inbound-shaped receivers in the SAME file
+  for (const receiver of ["request.headers", "req.headers", "headers", "this.response.headers", "xresponse.headers", "response?.headers", "context.response.headers"]) {
+    assert.deepEqual(scan(code(receiver)), { names: ["retry-after"], exempted: [] }, receiver);
+  }
+  assert.deepEqual(scan('const v = response.headers["retry-after"];'), { names: ["retry-after"], exempted: [] }, "bracket access is never exempt");
+  assert.deepEqual(scan('const v = response.headers.has("retry-after");'), { names: ["retry-after"], exempted: [] }, "only get() is reviewed");
+  // rejected: same read in another file, another header in the reviewed file, and a second read beyond the reviewed count
+  assert.deepEqual(scan(code("response.headers"), "src/lib/other.ts"), { names: ["retry-after"], exempted: [] });
+  assert.deepEqual(scan(code("response.headers", "x-forwarded-host")), { names: ["x-forwarded-host"], exempted: [] });
+  assert.deepEqual(scan(code("response.headers") + code("response.headers")), { names: ["retry-after"], exempted: [`${reviewed.file}|retry-after`] });
+  // an inbound header classified "dropped" is still reported by the contract's classification step
+  assert.equal(classifyHeader("retry-after"), "dropped", "the plane policy is unchanged: an inbound retry-after would still be rejected");
+  assert.equal(SEMANTIC_POLICY_VERSION, 1);
 });
 
 test("CONTRACT: the bound set is exactly what the application's public path interprets, and the policy is versioned", () => {
