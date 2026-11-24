@@ -584,7 +584,7 @@ export async function runFieldLevel(args: FieldLevelArgs, seams: FieldRunSeams =
       windowClosedWall = wallNow();
       windowClosedAtMs = clock();
       acceptedAtWindowClose = reducer.counters().accepted;
-      monitor.setWindowActive(false);
+      latchAll(monitor.setWindowActive(false));
     }
     // ---- RESIDUAL
     if (machine.canStartWork()) {

@@ -55,7 +55,7 @@ test("ticks carry a gapless sequence, mark the final one, and are small and boun
   } finally { sampler.stop(); }
 });
 
-test("a tick that fails to build changes nothing: the source throws to its caller (the runtime's timer swallows it), and its sequence is not advanced by a failure", () => {
+test("a failed tick consumes its sequence number so the receiver can detect the loss", () => {
   const sampler = new ProcessSampler();
   try {
     let fail = true;
@@ -133,6 +133,56 @@ test("a missing sequence number while the window is open is a tick gap (a measur
   assert.deepEqual(reasons.map((reason) => reason.code), ["tick_gap"]);
   assert.equal(monitor.tickGaps, 2);
   assert.deepEqual(monitor.gapDetails(), ["plane 2>4", "plane 4>7"]);
+});
+
+test("a missing first tick is visible even if all three processes eventually deliver final ticks", () => {
+  const monitor = new TickMonitor(BA0_FIELD_V1, clock().now);
+  assert.deepEqual(monitor.observe(child("app", 2, true)), [], "outside the window, retain the gap for accounting");
+  monitor.observe(plane(1, { final: true }));
+  monitor.observe(child("boundary", 1, true));
+  assert.deepEqual(monitor.finalTicks(), { plane: true, boundary: true, app: true });
+  assert.equal(monitor.tickGaps, 1);
+  assert.deepEqual(monitor.gapDetails(), ["app 0>2"]);
+});
+
+test("a process silent since window open reports one gap per outage and rearms on receipt", () => {
+  const t = clock();
+  const monitor = new TickMonitor(BA0_FIELD_V1, t.now);
+  const tolerance = BA0_FIELD_V1.telemetry.gapToleranceMs;
+  t.advance(10 * tolerance);
+  monitor.setWindowActive(true);
+  t.advance(tolerance);
+  assert.deepEqual(monitor.checkSilence(), []);
+  t.advance(1);
+  monitor.observe(plane(1));
+  monitor.observe(child("boundary", 1));
+  assert.deepEqual(monitor.checkSilence(), [{ code: "tick_gap", detail: `app silent for ${tolerance + 1} ms` }]);
+  t.advance(2 * tolerance);
+  assert.equal(monitor.checkSilence().some((reason) => reason.detail?.startsWith("app ")), false);
+  assert.deepEqual(monitor.observe(child("app", 1)), []);
+  t.advance(tolerance + 1);
+  assert.deepEqual(monitor.checkSilence(), [{ code: "tick_gap", detail: `app silent for ${tolerance + 1} ms` }]);
+  assert.equal(monitor.gapDetails().filter((detail) => detail.startsWith("app ")).length, 2);
+});
+
+test("a late sequential tick and window closure preserve silence between watchdog polls", () => {
+  const t = clock();
+  const monitor = new TickMonitor(BA0_FIELD_V1, t.now);
+  const elapsed = BA0_FIELD_V1.telemetry.gapToleranceMs + 1;
+  monitor.observe(plane(1));
+  monitor.observe(child("boundary", 1));
+  monitor.observe(child("app", 1));
+  monitor.setWindowActive(true);
+  t.advance(elapsed);
+  assert.deepEqual(monitor.observe(plane(2)), [{ code: "tick_gap", detail: `plane silent for ${elapsed} ms` }]);
+  assert.deepEqual(monitor.setWindowActive(false), [
+    { code: "tick_gap", detail: `boundary silent for ${elapsed} ms` },
+    { code: "tick_gap", detail: `app silent for ${elapsed} ms` },
+  ]);
+  assert.equal(monitor.tickGaps, 3);
+  t.advance(elapsed);
+  assert.deepEqual(monitor.checkSilence(), []);
+  assert.deepEqual(monitor.observe(plane(3)), []);
 });
 
 test("silence longer than the tolerance while the window is open is a gap even when no number was skipped, and it is reported once", () => {

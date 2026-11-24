@@ -25,34 +25,63 @@ export class TickMonitor {
   private readonly last = new Map<TickRole, { seq: number; atMs: number }>();
   private readonly ringState = new Map<TickRole, Tick<unknown>[]>();
   private readonly finals = new Set<TickRole>();
-  private windowActive = false;
+  private windowOpenedAt: number | null = null;
+  private readonly reportedSilent = new Set<TickRole>();
   private gapCount = 0;
   private hostCpuHigh = 0;
   private planeEldHigh = 0;
   private harnessEldHighTicks = 0;
   private harnessEldMax = 0;
   private harnessTicks = 0;
-  private sequenceGapDetails: string[] = [];
+  private readonly gaps: string[] = [];
 
   constructor(private readonly thresholds: Ba0FieldThresholds, private readonly now: () => number) {}
 
-  setWindowActive(active: boolean): void { this.windowActive = active; }
+  setWindowActive(active: boolean): Reason[] {
+    if (active) {
+      this.windowOpenedAt ??= this.now();
+      return [];
+    }
+    const reasons = this.checkSilence();
+    this.windowOpenedAt = null;
+    this.reportedSilent.clear();
+    return reasons;
+  }
   get tickGaps(): number { return this.gapCount; }
   finalTicks(): Record<TickRole, boolean> { return { plane: this.finals.has("plane"), boundary: this.finals.has("boundary"), app: this.finals.has("app") }; }
   harnessEld(): { highTicks: number; max: number; ticks: number } { return { highTicks: this.harnessEldHighTicks, max: this.harnessEldMax, ticks: this.harnessTicks }; }
   ring(): Record<TickRole, readonly Tick<unknown>[]> { return { plane: this.ringState.get("plane") ?? [], boundary: this.ringState.get("boundary") ?? [], app: this.ringState.get("app") ?? [] }; }
-  gapDetails(): readonly string[] { return this.sequenceGapDetails; }
+  gapDetails(): readonly string[] { return this.gaps; }
+
+  private recordGap(detail: string): void {
+    this.gapCount++;
+    if (this.gaps.length < 16) this.gaps.push(detail);
+  }
+
+  private silenceReason(role: TickRole, now: number): Reason | null {
+    if (this.windowOpenedAt === null || this.reportedSilent.has(role)) return null;
+    const elapsed = now - (this.last.get(role)?.atMs ?? this.windowOpenedAt);
+    if (elapsed <= this.thresholds.telemetry.gapToleranceMs) return null;
+    this.reportedSilent.add(role);
+    const detail = `${role} silent for ${Math.round(elapsed)} ms`;
+    this.recordGap(detail);
+    return { code: "tick_gap", detail };
+  }
 
   /** A tick arrived from a child process. Returns the reasons it raises. */
   observe(tick: Tick<unknown>): Reason[] {
     const reasons: Reason[] = [];
-    const previous = this.last.get(tick.role);
-    if (previous !== undefined && tick.tickSeq !== previous.seq + 1) {
-      this.gapCount++;
-      if (this.sequenceGapDetails.length < 16) this.sequenceGapDetails.push(`${tick.role} ${previous.seq}>${tick.tickSeq}`);
-      if (this.windowActive) reasons.push({ code: "tick_gap", detail: `${tick.role} sequence ${previous.seq} to ${tick.tickSeq}` });
+    const now = this.now();
+    // Check before updating receipt time: an overdue tick can arrive before the watchdog runs.
+    const silence = this.silenceReason(tick.role, now);
+    if (silence) reasons.push(silence);
+    const previousSeq = this.last.get(tick.role)?.seq ?? 0;
+    if (tick.tickSeq !== previousSeq + 1) {
+      this.recordGap(`${tick.role} ${previousSeq}>${tick.tickSeq}`);
+      if (this.windowOpenedAt !== null) reasons.push({ code: "tick_gap", detail: `${tick.role} sequence ${previousSeq} to ${tick.tickSeq}` });
     }
-    this.last.set(tick.role, { seq: tick.tickSeq, atMs: this.now() });
+    this.last.set(tick.role, { seq: tick.tickSeq, atMs: now });
+    this.reportedSilent.delete(tick.role);
     if (tick.final) this.finals.add(tick.role);
     const ring = this.ringState.get(tick.role) ?? [];
     ring.push(tick);
@@ -94,17 +123,12 @@ export class TickMonitor {
 
   /** Silence from a child while the window is open is a gap, even when no sequence number was skipped. */
   checkSilence(): Reason[] {
-    if (!this.windowActive) return [];
+    if (this.windowOpenedAt === null) return [];
     const reasons: Reason[] = [];
     const now = this.now();
     for (const role of ROLES) {
-      const seen = this.last.get(role);
-      if (seen !== undefined && now - seen.atMs > this.thresholds.telemetry.gapToleranceMs) {
-        this.gapCount++;
-        reasons.push({ code: "tick_gap", detail: `${role} silent for ${Math.round(now - seen.atMs)} ms` });
-        // Re-arm so one long silence is reported once, not on every check.
-        this.last.set(role, { seq: seen.seq, atMs: now });
-      }
+      const reason = this.silenceReason(role, now);
+      if (reason) reasons.push(reason);
     }
     return reasons;
   }
