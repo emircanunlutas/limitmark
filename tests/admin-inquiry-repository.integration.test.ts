@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
+import { PostgresAdminInquiryMutationRepository } from "../src/lib/admin-inquiry-mutation-repository";
 import { ADMIN_INQUIRY_PAGE_SIZE, type AdminInquiryQuery } from "../src/lib/admin-inquiry-query";
 import { PostgresAdminInquiryReadRepository } from "../src/lib/admin-inquiry-repository";
 import { adminNotes, inquiries, inquiryEvents, notificationOutbox } from "../src/lib/db/schema";
@@ -87,7 +89,7 @@ test("status and conservative search return only intended fields", integration, 
   assert.equal(invalidStatus.items.length, 3);
 });
 
-test("detail returns only the selected inquiry with deterministic history and plain note data", integration, async () => {
+test("detail returns one revision with its own bounded history and notes across a concurrent commit", integration, async () => {
   const selected = row(10);
   const other = row(11);
   await database!.insert(inquiries).values([selected, other]);
@@ -100,8 +102,36 @@ test("detail returns only the selected inquiry with deterministic history and pl
   await database!.insert(adminNotes).values({ inquiryId: selected.id!, authorIdentifier: "synthetic-admin@example.test", content: "<b>plain text</b>", createdAt: eventTime });
   await database!.insert(notificationOutbox).values({ inquiryId: selected.id!, eventType: "inquiry_received", status: "failed", lastErrorCode: "provider_unavailable" });
 
-  const detail = await repository!.getInquiryDetail(selected.id!);
+  // Let the reader fetch the original revision, then commit a note before it can fetch history.
+  const historyRequested = Promise.withResolvers<void>();
+  const reader = new PostgresAdminInquiryReadRepository(drizzle(client!, {
+    schema,
+    logger: {
+      logQuery(query) {
+        if (/from "(?:inquiry_events|admin_notes)"/.test(query)) historyRequested.resolve();
+      },
+    },
+  }));
+  let pendingDetail: ReturnType<typeof reader.getInquiryDetail>;
+  await database!.transaction(async (writer) => {
+    await writer.execute(sql`LOCK TABLE inquiry_events, admin_notes IN ACCESS EXCLUSIVE MODE`);
+    pendingDetail = reader.getInquiryDetail(selected.id!);
+    const timeout = setTimeout(() => historyRequested.reject(new Error("Timed out waiting for a history query")), 5_000);
+    try {
+      await Promise.race([historyRequested.promise, pendingDetail.then(() => assert.fail("Expected a history query"))]);
+    } finally {
+      clearTimeout(timeout);
+    }
+    const result = await new PostgresAdminInquiryMutationRepository(writer).addNote({
+      inquiryId: selected.id!, expectedRevision: 0, identity: { actorIdentifier: "editor@example.test" }, content: "Concurrent note",
+    });
+    assert.deepEqual(result, { status: "success", revision: 1 });
+  });
+
+  const detail = await pendingDetail!;
   assert.equal(detail?.inquiry.id, selected.id);
+  assert.equal(detail?.inquiry.revision, 0);
+  assert.equal(detail?.adminNotes.length, 1);
   assert.deepEqual(detail?.events.map((event) => event.id), ["00000000-0000-4000-8000-000000000101", "00000000-0000-4000-8000-000000000102"]);
   assert.equal(detail?.adminNotes[0].content, "<b>plain text</b>");
   assert.equal("metadata" in detail!.events[0], false);
@@ -112,5 +142,9 @@ test("detail returns only the selected inquiry with deterministic history and pl
   assert.equal(detail!.adminNotesTruncated, false);
   assert.equal(JSON.stringify(detail).includes("must-not-appear"), false);
   assert.equal(JSON.stringify(detail).includes("provider_unavailable"), false);
+  const refreshed = await repository!.getInquiryDetail(selected.id!);
+  assert.equal(refreshed?.inquiry.revision, 1);
+  assert.ok(refreshed?.events.some((event) => event.eventType === "note_added"));
+  assert.ok(refreshed?.adminNotes.some((note) => note.content === "Concurrent note"));
   assert.equal(await repository!.getInquiryDetail("00000000-0000-4000-8000-000000000099"), null);
 });
