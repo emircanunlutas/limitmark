@@ -34,3 +34,22 @@ export function buildAdminInquiryHref(query: Pick<AdminInquiryQuery, "status" | 
   const encoded = parameters.toString();
   return encoded ? `/admin?${encoded}` : "/admin";
 }
+
+export function buildAdminInquiryReturnContext({ status, page, search }: AdminInquiryQuery): string | null {
+  // Search can contain contact information. A searched page number only applies to those results.
+  const returnPage = search ? 1 : page;
+  return status || returnPage > 1 ? `${status ?? "all"}.${returnPage}` : null;
+}
+
+export function parseAdminInquiryReturnContext(value: unknown): { token: string; href: string } | null {
+  if (typeof value !== "string") return null;
+  const match = /^([a-z_]{1,16})\.([1-9]\d{0,4})$/.exec(value);
+  if (!match || match[0] !== value) return null;
+
+  const [, rawStatus, rawPage] = match;
+  const status = adminInquiryStatuses.find((candidate) => candidate === rawStatus) ?? null;
+  const page = Number(rawPage);
+  if ((!status && rawStatus !== "all") || page > ADMIN_INQUIRY_MAX_PAGE) return null;
+
+  return { token: value, href: buildAdminInquiryHref({ status, page, search: "" }) };
+}

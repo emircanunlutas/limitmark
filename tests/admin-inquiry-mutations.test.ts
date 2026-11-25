@@ -5,6 +5,7 @@ import { runInNewContext } from "node:vm";
 import { ModuleKind, transpileModule } from "typescript";
 import * as mutationInput from "../src/lib/admin-inquiry-mutation-input";
 import { parseMutationTarget, parseNoteMutation, parseStatusMutation } from "../src/lib/admin-inquiry-mutation-input";
+import * as inquiryQuery from "../src/lib/admin-inquiry-query";
 import { parseInquiryAuditDetail } from "../src/lib/inquiry-audit";
 import { inquiryStatusValues } from "../src/lib/db/schema";
 import {
@@ -106,6 +107,7 @@ test("an unacknowledged commit is not retried or presented as a confirmed rollba
     "next/navigation": { redirect: (path: string) => { destination = path; throw redirected; } },
     "@/lib/admin-auth": { requireAdmin: async () => ({ email: "verified-admin@example.test" }) },
     "@/lib/admin-inquiry-mutation-input": mutationInput,
+    "@/lib/admin-inquiry-query": inquiryQuery,
     "@/lib/admin-inquiry-data": {
       getAdminInquiryMutationRepository: async () => ({
         addNote: async (input: { eventId: string; identity: { actorIdentifier: string } }) => {
@@ -121,17 +123,25 @@ test("an unacknowledged commit is not retried or presented as a confirmed rollba
   runInNewContext(transpileModule(source, { compilerOptions: { module: ModuleKind.CommonJS } }).outputText, {
     exports: actionExports,
     crypto: { randomUUID: () => generatedId },
+    URLSearchParams,
     require: (name: string) => {
       assert.ok(Object.hasOwn(dependencies, name), `Unexpected dependency: ${name}`);
       return dependencies[name];
     },
   });
-  await assert.rejects(
-    actionExports.addInquiryNoteAction!(form({ inquiryId: id, expectedRevision: "0", content: "Committed note", eventId: id })),
-    (error: unknown) => error === redirected,
-  );
-  assert.equal(committedNotes, 1);
-  assert.equal(committedActor, "verified-admin@example.test");
-  assert.equal(committedEventId, generatedId);
-  assert.equal(destination, `/admin/inquiries/${id}?receipt=${committedEventId}`);
+  for (const [submitted, suffix] of [
+    [[], ""],
+    [["received.2"], "&from=received.2"],
+    [["received.2", "received.2"], ""],
+    [["//example.test"], ""],
+  ] as const) {
+    const data = form({ inquiryId: id, expectedRevision: "0", content: "Committed note", eventId: id });
+    for (const from of submitted) data.append("from", from);
+    const previousCount = committedNotes;
+    await assert.rejects(actionExports.addInquiryNoteAction!(data), (error: unknown) => error === redirected);
+    assert.equal(committedNotes, previousCount + 1);
+    assert.equal(committedActor, "verified-admin@example.test");
+    assert.equal(committedEventId, generatedId);
+    assert.equal(destination, `/admin/inquiries/${id}?receipt=${committedEventId}${suffix}`);
+  }
 });

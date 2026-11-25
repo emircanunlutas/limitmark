@@ -6,6 +6,7 @@ import { requireAdmin } from "@/lib/admin-auth";
 import type { AuthorizedAdminIdentity } from "@/lib/admin-auth-core";
 import { getAdminInquiryReadRepository, getAdminNotificationDeliveryRepository } from "@/lib/admin-inquiry-data";
 import type { AdminInquiryDetail, AdminInquiryEvent, AdminInquiryReadRepository } from "@/lib/admin-inquiry-repository";
+import { parseAdminInquiryReturnContext } from "@/lib/admin-inquiry-query";
 import { InquiryNotificationDeliverySection } from "@/components/admin-notification-delivery";
 import {
   loadInquiryNotificationDeliveries,
@@ -40,31 +41,31 @@ export function eventDescription(event: Pick<AdminInquiryEvent, "eventType" | "d
   return known[event.eventType] ?? "Activity recorded";
 }
 
-function MutationTargetFields({ detail }: { detail: AdminInquiryDetail }) {
-  return <><input type="hidden" name="inquiryId" value={detail.inquiry.id} /><input type="hidden" name="expectedRevision" value={detail.inquiry.revision} /></>;
+function MutationTargetFields({ detail, from }: { detail: AdminInquiryDetail; from?: string }) {
+  return <><input type="hidden" name="inquiryId" value={detail.inquiry.id} /><input type="hidden" name="expectedRevision" value={detail.inquiry.revision} />{from && <input type="hidden" name="from" value={from} />}</>;
 }
 
-function InquiryMutationControls({ detail }: { detail: AdminInquiryDetail }) {
+function InquiryMutationControls({ detail, from }: { detail: AdminInquiryDetail; from?: string }) {
   const nextStatuses = allowedInquiryStatusTransitions(detail.inquiry.status);
   return <section className="admin-panel" aria-labelledby="actions-heading"><h2 id="actions-heading">Admin actions</h2><p className="admin-section-intro">Each action uses revision {detail.inquiry.revision}. Concurrent changes are rejected.</p><div className="admin-action-grid">
-    {detail.inquiry.status !== "archived" && nextStatuses.length > 0 && <form action={changeInquiryStatusAction} className="admin-action-form"><h3>Change status</h3><MutationTargetFields detail={detail} /><label htmlFor="new-status">Permitted next status</label><select id="new-status" name="newStatus" required defaultValue={nextStatuses[0]}>{nextStatuses.map((status: InquiryStatus) => <option key={status} value={status}>{displayStatus(status)}</option>)}</select><button className="button button-primary" type="submit">Change status</button></form>}
-    {detail.inquiry.status === "archived" ? <div className="admin-action-form"><h3>Restore inquiry</h3>{detail.inquiry.preArchiveStatus ? <form action={restoreInquiryAction}><MutationTargetFields detail={detail} /><p>Restore to <strong>{displayStatus(detail.inquiry.preArchiveStatus)}</strong>.</p><button className="button button-secondary" type="submit">Restore inquiry</button></form> : <p className="admin-muted">This legacy archive has no verified prior status and cannot be restored safely.</p>}</div> : <form action={archiveInquiryAction} className="admin-action-form"><h3>Archive inquiry</h3><MutationTargetFields detail={detail} /><label className="admin-confirm"><input type="checkbox" name="confirmArchive" value="archive" required /> I understand this removes the inquiry from the active workflow.</label><button className="button button-secondary" type="submit">Archive inquiry</button></form>}
+    {detail.inquiry.status !== "archived" && nextStatuses.length > 0 && <form action={changeInquiryStatusAction} className="admin-action-form"><h3>Change status</h3><MutationTargetFields detail={detail} from={from} /><label htmlFor="new-status">Permitted next status</label><select id="new-status" name="newStatus" required defaultValue={nextStatuses[0]}>{nextStatuses.map((status: InquiryStatus) => <option key={status} value={status}>{displayStatus(status)}</option>)}</select><button className="button button-primary" type="submit">Change status</button></form>}
+    {detail.inquiry.status === "archived" ? <div className="admin-action-form"><h3>Restore inquiry</h3>{detail.inquiry.preArchiveStatus ? <form action={restoreInquiryAction}><MutationTargetFields detail={detail} from={from} /><p>Restore to <strong>{displayStatus(detail.inquiry.preArchiveStatus)}</strong>.</p><button className="button button-secondary" type="submit">Restore inquiry</button></form> : <p className="admin-muted">This legacy archive has no verified prior status and cannot be restored safely.</p>}</div> : <form action={archiveInquiryAction} className="admin-action-form"><h3>Archive inquiry</h3><MutationTargetFields detail={detail} from={from} /><label className="admin-confirm"><input type="checkbox" name="confirmArchive" value="archive" required /> I understand this removes the inquiry from the active workflow.</label><button className="button button-secondary" type="submit">Archive inquiry</button></form>}
   </div></section>;
 }
 
-function InquiryDetailView({ detail, deliveries, deliveryConfiguration }: { detail: AdminInquiryDetail; deliveries: InquiryNotificationDeliveryView; deliveryConfiguration: NotificationDeliveryConfigurationEvidence }) {
+function InquiryDetailView({ detail, deliveries, deliveryConfiguration, from }: { detail: AdminInquiryDetail; deliveries: InquiryNotificationDeliveryView; deliveryConfiguration: NotificationDeliveryConfigurationEvidence; from?: string }) {
   const fields = [["Reference", detail.inquiry.id], ["Received", timestamp(detail.inquiry.receivedAt)], ["Status", displayStatus(detail.inquiry.status)], ["Name", detail.inquiry.name], ["Email", detail.inquiry.email], ["Company", detail.inquiry.company], ["Service", detail.inquiry.service], ["Environment", detail.inquiry.environment], ["Authority", detail.inquiry.authority], ["Protection", detail.inquiry.protection], ["Provider", detail.inquiry.provider]] as const;
   return <>
     <section className="admin-panel" aria-labelledby="submitted-heading"><h2 id="submitted-heading">Customer-submitted data</h2><dl className="admin-definition-list">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{valueOrNotProvided(value)}</dd></div>)}</dl>
       <div className="admin-long-fields"><div><h3>System</h3><p>{detail.inquiry.system}</p></div><div><h3>Objective</h3><p>{detail.inquiry.objective}</p></div><div><h3>Customer-submitted notes</h3><p>{valueOrNotProvided(detail.inquiry.notes)}</p></div></div></section>
-    <InquiryMutationControls detail={detail} />
+    <InquiryMutationControls detail={detail} from={from} />
     <section className="admin-panel" aria-labelledby="history-heading"><h2 id="history-heading">Event history</h2><p className="admin-section-intro">Oldest first. Events are append-only.{detail.eventsTruncated && " Showing the 500 most recent events."}</p>{detail.events.length ? <ol className="admin-timeline">{detail.events.map((event) => <li key={event.id}><time dateTime={event.createdAt.toISOString()}>{timestamp(event.createdAt)}</time><strong>{eventDescription(event)}</strong><span>{event.actorType}{event.actorType === "admin" && event.actorIdentifier ? ` · ${event.actorIdentifier}` : ""}</span></li>)}</ol> : <p className="admin-muted admin-neutral-empty">No events recorded.</p>}</section>
     <InquiryNotificationDeliverySection view={deliveries} configuration={deliveryConfiguration} />
-    <section className="admin-panel" aria-labelledby="notes-heading"><h2 id="notes-heading">Internal admin notes</h2><p className="admin-section-intro">Plain text, visible only to authorized administrators.</p><form action={addInquiryNoteAction} className="admin-note-form"><MutationTargetFields detail={detail} /><label htmlFor="admin-note">Add internal note</label><textarea id="admin-note" name="content" minLength={1} maxLength={10000} required rows={5} /><button className="button button-primary" type="submit">Add note</button></form>{detail.adminNotesTruncated && <p className="admin-section-intro">Showing the 500 most recent notes, oldest first.</p>}{detail.adminNotes.length ? <ol className="admin-note-list">{detail.adminNotes.map((note) => <li key={note.id}><div><time dateTime={note.createdAt.toISOString()}>{timestamp(note.createdAt)}</time><span>{note.authorIdentifier}</span></div><p>{note.content}</p></li>)}</ol> : <p className="admin-muted admin-neutral-empty">No internal admin notes.</p>}</section>
+    <section className="admin-panel" aria-labelledby="notes-heading"><h2 id="notes-heading">Internal admin notes</h2><p className="admin-section-intro">Plain text, visible only to authorized administrators.</p><form action={addInquiryNoteAction} className="admin-note-form"><MutationTargetFields detail={detail} from={from} /><label htmlFor="admin-note">Add internal note</label><textarea id="admin-note" name="content" minLength={1} maxLength={10000} required rows={5} /><button className="button button-primary" type="submit">Add note</button></form>{detail.adminNotesTruncated && <p className="admin-section-intro">Showing the 500 most recent notes, oldest first.</p>}{detail.adminNotes.length ? <ol className="admin-note-list">{detail.adminNotes.map((note) => <li key={note.id}><div><time dateTime={note.createdAt.toISOString()}>{timestamp(note.createdAt)}</time><span>{note.authorIdentifier}</span></div><p>{note.content}</p></li>)}</ol> : <p className="admin-muted admin-neutral-empty">No internal admin notes.</p>}</section>
   </>;
 }
 
-type DetailSearchParams = Promise<{ mutation?: string | string[]; receipt?: string | string[] }>;
+type DetailSearchParams = Promise<{ mutation?: string | string[]; receipt?: string | string[]; from?: string | string[] }>;
 
 function mutationNotice(
   { mutation, receipt }: Awaited<DetailSearchParams>,
@@ -89,6 +90,8 @@ export async function renderAdminInquiryDetail(
   const { id } = await params;
   if (!isInquiryUuid(id)) notFound();
   const query = await searchParams;
+  const returnContext = parseAdminInquiryReturnContext(query.from);
+  const backLink = <Link className="text-link" href={returnContext?.href ?? "/admin"}>Back to inquiries</Link>;
   const lookup = query.mutation === undefined && isInquiryUuid(query.receipt)
     ? { eventId: query.receipt, actorIdentifier: admin.email } : undefined;
   let detail: AdminInquiryDetail | null | undefined;
@@ -99,7 +102,7 @@ export async function renderAdminInquiryDetail(
     detail = undefined;
   }
   if (detail === undefined) {
-    return <div className="page-shell admin-shell"><Container><Link className="text-link" href="/admin">Back to inquiries</Link><div className="admin-outage" role="status"><h1>Inquiry data unavailable</h1><p>The inquiry store is not configured or cannot be reached. Try again later.</p>
+    return <div className="page-shell admin-shell"><Container>{backLink}<div className="admin-outage" role="status"><h1>Inquiry data unavailable</h1><p>The inquiry store is not configured or cannot be reached. Try again later.</p>
       {lookup && <p>Refresh this page when the store is available to check whether your change was saved.</p>}
       {query.mutation === "service-unavailable" && <p>The save could not start.</p>}
     </div></Container></div>;
@@ -109,7 +112,7 @@ export async function renderAdminInquiryDetail(
   const deliveries = await loadInquiryNotificationDeliveries(getDeliveryRepository, detail.inquiry.id, now());
   const deliveryConfiguration = getDeliveryConfiguration();
   const mutation = mutationNotice(query, lookup ? detail.confirmedMutation : undefined);
-  return <div className="page-shell admin-shell"><Container><Link className="text-link" href="/admin">Back to inquiries</Link><header className="admin-detail-heading"><p className="admin-eyebrow">Limitmark Admin</p><h1>Inquiry detail</h1></header>{mutation && <p className={`admin-notice ${mutation.tone}`} role="status">{mutation.message}</p>}<InquiryDetailView detail={detail} deliveries={deliveries} deliveryConfiguration={deliveryConfiguration} /></Container></div>;
+  return <div className="page-shell admin-shell"><Container>{backLink}<header className="admin-detail-heading"><p className="admin-eyebrow">Limitmark Admin</p><h1>Inquiry detail</h1></header>{mutation && <p className={`admin-notice ${mutation.tone}`} role="status">{mutation.message}</p>}<InquiryDetailView detail={detail} deliveries={deliveries} deliveryConfiguration={deliveryConfiguration} from={returnContext?.token} /></Container></div>;
 }
 
 export default async function AdminInquiryPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: DetailSearchParams }) { return renderAdminInquiryDetail(params, requireAdmin, getAdminInquiryReadRepository, searchParams); }
