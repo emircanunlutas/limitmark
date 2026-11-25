@@ -4,7 +4,7 @@ import { ButtonLink } from "@/components/button-link";
 import { ContactLink } from "@/components/contact-link";
 import { isDemoSubmissionAllowed } from "@/lib/submission-policy";
 
-export const metadata: Metadata = { title: "Talebinizi aldık", robots: { index: false, follow: false } };
+export const metadata: Metadata = { title: "Test Talebi", robots: { index: false, follow: false } };
 
 export const dynamic = "force-dynamic";
 
@@ -17,17 +17,9 @@ export default function ConfirmationPage() {
     <ContactLink className="confirmation-contact" prefix="İletişim için:" />
   </div></Container></div>;
   return <div className="page-shell"><Container><div className="confirmation-page">
-    <h1>Talebinizi aldık.</h1>
-    <p>Paylaştığınız bilgileri manuel inceleyeceğiz. İhtiyacınızı netleştirmek ve uygun test kapsamını görüşmek için belirttiğiniz e-posta adresinden sizinle iletişime geçeceğiz.</p>
-    <h2>Bundan sonra ne olacak?</h2>
-    <ol>
-      <li>İhtiyacı ve uygunluğu değerlendireceğiz.</li>
-      <li>Kapsamı birlikte belirleyeceğiz.</li>
-      <li>Testten önce açık yetkilendirmeyi belgeleyeceğiz.</li>
-    </ol>
-    <div className="confirmation-authorization"><p>Bu başvuru bir test başlatmadı veya test zamanı ayırmadı. Formdaki yetki beyanı, test yürütme izni değildir.</p></div>
-    <p>Şu anda başka bir bilgi göndermeniz gerekmiyor. Parola, API anahtarı, özel anahtar, erişim belirteci veya yönetici erişim bilgisi paylaşmayın.</p>
+    <h1>Test Talebi</h1>
+    <p>Talebinizin alındığını bu sayfadan doğrulayamıyoruz. Gönderim sonucunu formu gönderdiğiniz sayfada kontrol edebilirsiniz.</p>
     <ButtonLink href="/">Ana Sayfaya Dön</ButtonLink>
-    <ContactLink className="confirmation-contact" prefix="Bir düzeltme veya ek bilgi için:" />
+    <ContactLink className="confirmation-contact" prefix="İletişim için:" />
   </div></Container></div>;
 }

@@ -57,7 +57,7 @@ test("ten rejected-challenge identities leave a fresh verified request admission
       turnstile: { async verify() { freshVerifierCalls++; return "verified"; } },
       repository: { async create() { repositoryCalls++; return { status: "created" as const }; } } });
     assert.deepEqual({ hostileGrants, hostileVerifierCalls, freshKind: fresh.kind, freshVerifierCalls, postCalls, repositoryCalls },
-      { hostileGrants: 30, hostileVerifierCalls: 30, freshKind: "redirect", freshVerifierCalls: 1, postCalls: 1, repositoryCalls: 1 });
+      { hostileGrants: 30, hostileVerifierCalls: 30, freshKind: "persisted", freshVerifierCalls: 1, postCalls: 1, repositoryCalls: 1 });
   } finally {
     storage.close();
   }
@@ -142,7 +142,7 @@ test("repository failures do not refund POST charges", async () => {
         admission: { async claimPre(input) { return authority.claimPre(input); }, async consumePost(input) { postCalls++; return authority.consumePost(input); } },
         turnstile: { async verify() { verifierCalls++; return "verified"; } },
         repository: { async create() { repositoryCalls++; throw new Error("synthetic-repository-fault"); } } });
-      assert.equal(result.kind, "state");
+      assert.equal(result.kind, attempt < 5 ? "unconfirmed" : "state");
     }
     assert.deepEqual({ verifierCalls, postCalls, repositoryCalls }, { verifierCalls: 6, postCalls: 6, repositoryCalls: 5 });
     assert.equal(Number((storage.database.prepare("SELECT COUNT(*) AS count FROM observations WHERE stage='post' AND scope='client'").get() as { count: number }).count), 5);

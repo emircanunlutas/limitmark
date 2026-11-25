@@ -17,6 +17,7 @@ const authorityOptions = [
   { value: "uncertain", label: "Henüz test yetkim yok / yetkimden emin değilim." },
 ];
 const initialState: RequestState = { errors: {} };
+const unconfirmedMessage = "Talebinizin alınıp alınmadığını doğrulayamadık. Bu sayfayı açık tutun ve bilgilerinizi değiştirmeden tekrar gönderin.";
 
 export function RequestForm({ initialService, submissionToken, turnstile }: {
   initialService: string;
@@ -27,6 +28,9 @@ export function RequestForm({ initialService, submissionToken, turnstile }: {
   const [serverState, formAction, serverPending] = useActionState(submitTestRequest, initialState);
   const [clientState, setClientState] = useState<RequestState | null>(null);
   const state = clientState ?? serverState;
+  const [formToken] = useState(submissionToken);
+  const [outcome, setOutcome] = useState<"unconfirmed" | "persisted" | null>(null);
+  const unconfirmed = outcome === "unconfirmed";
   const [values, setValues] = useState(() => ({ name: "", email: "", company: "", service: initialService, system: "", objective: "", environment: "", authority: "", protection: "unknown", provider: "", notes: "", ...serverState.values }));
   const [clientPending, startTransition] = useTransition();
   const pending = clientPending || serverPending;
@@ -45,13 +49,13 @@ export function RequestForm({ initialService, submissionToken, turnstile }: {
   const hasErrors = Object.keys(errors).length > 0;
 
   useEffect(() => {
-    if (hasErrors || state.message) summaryRef.current?.focus();
-  }, [state, validationAttempt, hasErrors]);
+    if (outcome || hasErrors || state.message) summaryRef.current?.focus();
+  }, [state, validationAttempt, hasErrors, outcome]);
 
   useEffect(() => {
-    if (!state.message || !turnstile) return;
+    if (!clientState || !turnstile || outcome === "persisted") return;
     (window as Window & { turnstile?: { reset(): void } }).turnstile?.reset();
-  }, [state.message, turnstile]);
+  }, [clientState, outcome, turnstile]);
 
   const update = (field: RequestField, value: string) => setValues((previous) => ({ ...previous, [field]: value }));
   function inputProps(field: RequestField, hasHelper = false) {
@@ -64,6 +68,16 @@ export function RequestForm({ initialService, submissionToken, turnstile }: {
     if (element instanceof HTMLFieldSetElement) element.querySelector("input")?.focus();
     else element?.focus();
   }
+
+  if (outcome === "persisted") return (
+    <div className="confirmation-page" role="status" tabIndex={-1} ref={summaryRef}>
+      <h2>Talebinizi aldık.</h2>
+      <p>Talebinizi inceleyip belirttiğiniz e-posta adresinden sizinle iletişime geçeceğiz.</p>
+      <div className="confirmation-authorization">
+        <p>Başvurunuz test başlatmaz veya test zamanı ayırmaz. Testten önce kapsamı birlikte belirleyip açık yetkilendirmeyi belgeleyeceğiz.</p>
+      </div>
+    </div>
+  );
 
   return (<>
     {turnstile && <Script src="https://challenges.cloudflare.com/turnstile/v0/api.js" strategy="afterInteractive" async defer />}
@@ -98,25 +112,35 @@ export function RequestForm({ initialService, submissionToken, turnstile }: {
             redirect: "error",
           });
           const responseBody = await response.json() as { kind?: string; location?: string; state?: RequestState };
-          if (responseBody.kind === "redirect" && responseBody.location === "/test-talep-et/tesekkurler") {
+          if (response.ok && responseBody.kind === "persisted") {
+            setOutcome("persisted");
+            return;
+          }
+          if (response.ok && !turnstile && responseBody.kind === "redirect" && responseBody.location === "/test-talep-et/tesekkurler") {
             router.push(responseBody.location);
             return;
           }
-          if (!responseBody.state) throw new Error("malformed-response");
+          if (responseBody.kind !== "state" || !responseBody.state?.errors ||
+              typeof responseBody.state.errors !== "object" || Array.isArray(responseBody.state.errors)) {
+            throw new Error("unconfirmed-response");
+          }
           setClientState(responseBody.state);
           setClientErrors(null);
         } catch {
-          setClientState({ errors: {}, message: "Talebiniz iletilemedi. Bilgileriniz bu sayfada duruyor; lütfen tekrar deneyin." });
+          // A lost response and an explicit persistence uncertainty have the same retry path.
+          // A later rejected attempt cannot resolve the earlier outcome.
+          setOutcome("unconfirmed");
+          setClientState({ errors: {} });
           setClientErrors(null);
         } finally {
           submittingRef.current = false;
         }
       });
     }}>
-      <input type="hidden" name={submissionTokenField} value={state.submissionToken ?? submissionToken} />
-      {(hasErrors || state.message) && <div className="error-summary" tabIndex={-1} ref={summaryRef} role="alert">
-        <h2>{hasErrors ? "Lütfen işaretli alanları kontrol edin." : "Talep gönderilemedi."}</h2>
-        {state.message && <p>{state.message}</p>}
+      <input type="hidden" name={submissionTokenField} value={serverState.submissionToken ?? formToken} />
+      {(unconfirmed || hasErrors || state.message) && <div className="error-summary" tabIndex={-1} ref={summaryRef} role="alert">
+        <h2>{unconfirmed ? "Gönderim sonucu belirsiz." : hasErrors ? "Lütfen işaretli alanları kontrol edin." : "Talep gönderilemedi."}</h2>
+        {unconfirmed ? <p>{unconfirmedMessage}</p> : state.message && <p>{state.message}</p>}
         {hasErrors && <ul>{(Object.entries(errors) as [RequestField, string][]).map(([field, message]) => <li key={field}><a href={`#${field}`} onClick={(event) => { event.preventDefault(); focusField(field); }}>{fieldLabels[field]}: {message}</a></li>)}</ul>}
       </div>}
 

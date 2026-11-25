@@ -25,7 +25,8 @@ function jsonState(state: RequestState, status = 400): Response {
   return Response.json({ kind: "state", state }, { status, headers: noStoreHeaders });
 }
 function responseFor(result: PublicInquiryFlowResult): Response {
-  return result.kind === "redirect" ? Response.json(result, { headers: noStoreHeaders }) : jsonState(result.state);
+  if (result.kind === "state") return jsonState(result.state);
+  return Response.json(result, { status: result.kind === "unconfirmed" ? 503 : 200, headers: noStoreHeaders });
 }
 
 export async function handlePublicInquiry(request: Request, dependencies: PublicInquiryHandlerDependencies): Promise<Response> {
@@ -52,7 +53,7 @@ export async function handlePublicInquiry(request: Request, dependencies: Public
       if (!parsed.success) return jsonState({ errors: getFieldErrors(parsed.error), values, submissionToken: token ?? undefined });
       if (!token) return jsonState({ errors: {}, values, message: "Talep gönderimi şu anda kullanılamıyor." });
       const result = await submitToAdapter(parsed.data, token, undefined, dependencies.environment);
-      return result.status === "demo-accepted" ? responseFor({ kind: "redirect", location: "/test-talep-et/tesekkurler" }) : jsonState({ errors: {}, values, submissionToken: token, message: "Talep gönderimi şu anda kullanılamıyor." });
+      return result.status === "demo-accepted" ? Response.json({ kind: "redirect", location: "/test-talep-et/tesekkurler" }, { headers: noStoreHeaders }) : jsonState({ errors: {}, values, submissionToken: token, message: "Talep gönderimi şu anda kullanılamıyor." });
     }
     if (mode !== "persistent" || dependencies.environment.VERCEL !== "1" || dependencies.environment.VERCEL_ENV !== "production" ||
         dependencies.environment.PUBLIC_ORIGIN_PROTECTION !== "required" || request.headers.get("origin") !== "https://limitmark.com" ||

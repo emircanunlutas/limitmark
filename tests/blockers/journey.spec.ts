@@ -29,7 +29,7 @@ test("blocked third parties do not prevent recovery from a failed submission tra
     const submit = page.getByRole("button", { name: "Talebi Gönder", exact: true });
     await submit.click();
     const alert = page.getByRole("main").getByRole("alert");
-    await expect(alert).toContainText("Talebiniz iletilemedi.");
+    await expect(alert).toContainText("Talebinizin alınıp alınmadığını doğrulayamadık.");
     await expect(alert).toBeFocused();
     await expect(page).toHaveURL("/test-talep-et");
     await expect(submit).toBeEnabled();
