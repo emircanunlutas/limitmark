@@ -1,9 +1,13 @@
+import { connection } from "next/server";
 import { ButtonLink } from "@/components/button-link";
 import { ContactLink } from "@/components/contact-link";
 import { Container } from "@/components/container";
 import { Disclosure } from "@/components/disclosure";
 import { MethodologyDiagram } from "@/components/methodology-diagram";
+import { getPublicIntakeState } from "@/lib/public-submission-config";
+import { availableProductionRateLimitProviders } from "@/lib/rate-limit";
 import { services } from "@/lib/services";
+import { siteConfig } from "@/lib/site-config";
 
 const deliveries = [
   ["Test Koşulları", "Hangi sistemlerin, hangi koşullarda ve hangi sınırlar içinde test edildiğini gösteren kapsam özeti. Hedefler, kapsam dışı alanlar ve testin yorumlanması için gerekli bağlam."],
@@ -24,7 +28,6 @@ const principles = [
   ["Kanıta bağlı yorum", "Yorumlar yalnızca gözlenen ölçümlere ve belgelenen koşullara dayanır. Ölçülemeyen noktalar ve sonuçların sınırları açıkça belirtilir."],
 ];
 const faqs = [
-  ["Hangi teste ihtiyacım olduğunu bilmiyorum. Ne yapmalıyım?", "Talep formunda “Karar veremiyorum / birlikte belirleyelim” seçeneğini kullanın. Sisteminizi ve öğrenmek istediğiniz konuyu anlatmanız yeterli. Uygun kapsamı görüşerek netleştirebiliriz."],
   ["Canlı sistem üzerinde test yapılabilir mi?", "Uygunluğu birlikte değerlendirebiliriz. Canlı sistemde test ancak olası etkiler, test zamanı, izleme, sınırlar ve durdurma prosedürü kararlaştırılıp açık yetkilendirme belgelendikten sonra yapılır. Her sistem için uygun olmayabilir."],
   ["Size hangi erişim bilgilerini vermem gerekiyor?", "İlk talep için alan adı, IP adresi veya kısa bir sistem açıklaması yeterlidir. Parola, API anahtarı, özel anahtar, erişim belirteci, yönetici erişim bilgisi veya özel erişim bağlantısı göndermeyin. Gerekli teknik bilgiler kapsam görüşmesinde ayrıca belirlenir."],
   ["Sistemim paylaşımlı hosting, CDN veya başka bir sağlayıcı kullanıyorsa ne olur?", "Sağlayıcının koşulları, ortak altyapıya olası etkiler ve gerekli ek izinler kapsam görüşmesinde değerlendirilir. Sistemin size ait olması, üçüncü taraf altyapısını test etme yetkisi anlamına gelmez. Gerekli izinler netleşmeden test yapılmaz."],
@@ -33,7 +36,33 @@ const faqs = [
   ["Test talebi gönderdiğimde test otomatik olarak başlar mı?", "Hayır. Talep yalnızca kapsam görüşmesini başlatmak içindir; test başlatmaz ve test yürütme izni vermez. Nihai hedefler, kapsam, istisnalar, takvim, sınırlar ve durdurma koşulları ile açık yetkilendirme testten önce manuel olarak belgelenir."],
 ];
 
-export default function HomePage() {
+const intakeNotice = {
+  closed: "Çevrim içi talepler şu anda kullanılamıyor.",
+  demo: "Demo formu bilgileri kaydetmez ve gerçek bir talep oluşturmaz.",
+  real: null,
+};
+
+function serviceChoiceAnswer(intake: "closed" | "demo" | "real", hasContact: boolean) {
+  if (intake === "closed") {
+    return hasContact
+      ? "Sisteminizi ve öğrenmek istediğiniz konuyu kısaca e-postayla paylaşabilirsiniz."
+      : "Hizmetler bölümündeki örnek sorular, ihtiyacınıza uygun test kapsamını değerlendirmenize yardımcı olabilir.";
+  }
+  if (intake === "demo") {
+    return "Demo formunda “Karar veremiyorum / birlikte belirleyelim” seçeneğini deneyebilirsiniz. Demo, gerçek bir talep oluşturmaz.";
+  }
+  return "Talep formunda “Karar veremiyorum / birlikte belirleyelim” seçeneğini kullanın. Sisteminizi ve öğrenmek istediğiniz konuyu anlatmanız yeterli. Uygun kapsamı görüşerek netleştirebiliriz.";
+}
+
+export default async function HomePage() {
+  await connection();
+  const { kind } = getPublicIntakeState(process.env, availableProductionRateLimitProviders);
+  const closed = kind === "closed";
+  const hasContact = siteConfig.contactEmail !== null;
+  const notice = intakeNotice[kind];
+  const inquiryLabel = kind === "demo" ? "Demo Formunu Aç" : "Test Talep Et";
+  const serviceInquiryLabel = kind === "demo" ? "Bu Hizmeti Demoda Seç" : "Bu Testi Görüşelim";
+
   return (
     <>
       <section className="hero" aria-labelledby="hero-title">
@@ -42,9 +71,10 @@ export default function HomePage() {
             <h1 id="hero-title">Dayanıklılığı varsaymayın.<br />Ölçün.</h1>
             <p className="hero-intro">Web uygulamanızın, sunucunuzun ve koruma katmanlarınızın yoğun trafik ve DDoS koşullarını temsil eden kontrollü yük altında nasıl davrandığını görün.</p>
             <p className="hero-manual">Testleri birlikte kapsamlandırıyor, manuel yürütüyor ve sonuçları ölçümlerle raporluyoruz.</p>
+            {notice && <p className="inquiry-availability">{notice}</p>}
             <div className="hero-actions">
-              <ButtonLink href="/test-talep-et">Test Talep Et</ButtonLink>
-              <ButtonLink href="#hizmetler" variant="secondary">Hizmetleri İncele</ButtonLink>
+              {closed ? <ContactLink variant="primary" /> : <ButtonLink href="/test-talep-et">{inquiryLabel}</ButtonLink>}
+              <ButtonLink href="#hizmetler" variant={closed && !hasContact ? "primary" : "secondary"}>Hizmetleri İncele</ButtonLink>
             </div>
             <p className="helper hero-authorization">Yalnızca size ait veya test için açıkça yetkilendirildiğiniz sistemlerde çalışıyoruz.</p>
           </div>
@@ -57,19 +87,20 @@ export default function HomePage() {
           <div className="section-intro">
             <h2 id="services-title">Neyi ölçmek istiyorsunuz?</h2>
             <p>Uygulamanızın, servislerinizin veya koruma katmanlarınızın davranışını inceleyelim. Test kapsamını, cevap aradığınız soruya göre birlikte belirleyelim.</p>
+            {notice && <p className="inquiry-availability">{notice} {closed && hasContact && <ContactLink />}</p>}
           </div>
-          <div className="services-grid">
+          <div className={closed ? "services-grid services-grid-closed" : "services-grid"}>
             {services.map((service) => (
               <article className="service-card" key={service.id}>
                 <h3>{service.title}</h3>
                 <p className="service-question">{service.question}</p>
                 <p className="service-scope">{service.scope}</p>
                 <div className="service-result"><h4>Sonuç</h4><p>{service.result}</p></div>
-                <ButtonLink variant="text" href={`/test-talep-et?hizmet=${service.id}`} aria-label={`${service.title} — Bu Testi Görüşelim`}>Bu Testi Görüşelim</ButtonLink>
+                {!closed && <ButtonLink variant="text" href={`/test-talep-et?hizmet=${service.id}`} aria-label={`${service.title} — ${serviceInquiryLabel}`}>{serviceInquiryLabel}</ButtonLink>}
               </article>
             ))}
           </div>
-          <p className="service-followup">Hangi hizmetin uygun olduğundan emin değil misiniz? <ButtonLink variant="text" href="/test-talep-et">İhtiyacınızı birlikte belirleyelim.</ButtonLink></p>
+          {!closed && <p className="service-followup">Hangi hizmetin uygun olduğundan emin değil misiniz? <ButtonLink variant="text" href="/test-talep-et">{kind === "demo" ? inquiryLabel : "İhtiyacınızı birlikte belirleyelim."}</ButtonLink></p>}
         </Container>
       </section>
 
@@ -119,7 +150,10 @@ export default function HomePage() {
       <section id="sss" className="section section-bordered" aria-labelledby="faq-title">
         <Container>
           <div className="section-intro"><h2 id="faq-title">Sık sorulan sorular</h2></div>
-          <div className="faq-list">{faqs.map(([question, answer]) => <Disclosure className="faq-item" key={question} label={question}><p>{answer}</p></Disclosure>)}</div>
+          <div className="faq-list">
+            <Disclosure className="faq-item" label="Hangi teste ihtiyacım olduğunu bilmiyorum. Ne yapmalıyım?"><p>{serviceChoiceAnswer(kind, hasContact)}</p></Disclosure>
+            {faqs.map(([question, answer]) => <Disclosure className="faq-item" key={question} label={question}><p>{answer}</p></Disclosure>)}
+          </div>
         </Container>
       </section>
 
@@ -128,9 +162,11 @@ export default function HomePage() {
           <div className="closing-panel">
             <div className="closing-copy">
               <h2 id="closing-title">Altyapınızla ilgili hangi soruya cevap arıyorsunuz?</h2>
-              <p>Sisteminizi ve öğrenmek istediğiniz konuyu paylaşın. Uygun test kapsamını birlikte netleştirelim.</p>
-              <ButtonLink href="/test-talep-et">Test Talep Et</ButtonLink>
-              <ContactLink className="closing-contact" />
+              <p>{notice ?? "Sisteminizi ve öğrenmek istediğiniz konuyu paylaşın. Uygun test kapsamını birlikte netleştirelim."}</p>
+              {closed ? <ContactLink variant="primary" /> : <>
+                <ButtonLink href="/test-talep-et">{inquiryLabel}</ButtonLink>
+                <ContactLink className="closing-contact" />
+              </>}
             </div>
           </div>
         </Container>
