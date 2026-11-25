@@ -39,10 +39,18 @@ type Comparison = z.infer<typeof comparison>;
 
 export type HealthState = "Healthy" | "Degraded" | "Unavailable" | "Unknown";
 export type ComponentHealth = { name: string; state: HealthState; detail: string; observations?: number };
-export type IncidentFinding = { title: string; facts: string[]; conclusion: string; uncertainty: string; guidance: string };
-type Assessment = { components: ComponentHealth[]; findings: IncidentFinding[] };
+export type IncidentFinding = { id: string; title: string; facts: string[]; conclusion: string; uncertainty: string; guidance: string };
+type Assessment = {
+  components: ComponentHealth[]; findings: IncidentFinding[];
+  accounting: "Reviewed" | "Insufficient" | "Conflicting" | "Refused";
+  telemetry: "Checks agreed" | "Coverage gaps" | "Unavailable";
+  requiredChecksPresent: number | null;
+  protectedAttempts: number | null;
+  clientAbortsReported: boolean;
+};
 export type FieldHealthReview = Assessment & {
-  endedAt: string; reviewedAt: string; stale: boolean; result: Manifest["result"]; diagnostics: string[];
+  startedAt: string; endedAt: string; reviewedAt: string; stale: boolean; result: Manifest["result"]; diagnostics: string[];
+  artifactsRefused: number | null;
 };
 
 // This is the age of an operator's snapshot at review, never an admission or qualification deadline.
@@ -137,8 +145,11 @@ const coverage: Check[] = [
 ];
 export type Artifact = { kind: "present"; value: unknown } | { kind: "unavailable" | "unknown"; detail: string };
 
-function limited(state: "Unavailable" | "Unknown", finding: IncidentFinding): Assessment {
+export const requiredFieldChecks = [...coverage, ...components.flatMap(component => component.checks)];
+
+function limited(state: "Unavailable" | "Unknown", accounting: Assessment["accounting"], finding: IncidentFinding): Assessment {
   return {
+    accounting, telemetry: "Unavailable", requiredChecksPresent: null, protectedAttempts: null, clientAbortsReported: false,
     components: components.map(({ name }) => ({ name, state, detail: finding.facts[0] })),
     findings: [finding],
   };
@@ -148,7 +159,7 @@ function interpret(manifest: Manifest, external: Artifact, canary: Artifact, rea
   const canaryEvidence = readCanary(canary);
   const canaryCounts = canaryEvidence.state === "Reviewed" ? canaryEvidence.counts : undefined;
   function incomplete(detail: string, state: "Unknown" | "Unavailable" = "Unknown") {
-    return limited(state, {
+    return limited(state, "Insufficient", { id: "external-evidence",
       title: "Evidence needed for component review",
       facts: canaryEvidence.state === "Reviewed" ? [detail] : [detail, canaryEvidence.detail],
       conclusion: "The external accounting needed to compare stages is unavailable.",
@@ -157,13 +168,13 @@ function interpret(manifest: Manifest, external: Artifact, canary: Artifact, rea
     });
   }
   function conflict(facts: string[]) {
-    return limited("Unknown", {
+    return limited("Unknown", "Conflicting", { id: "record-conflict",
       title: "Conflicting run records", facts, conclusion: "The records disagree on the observations used to assess these stages.",
       uncertainty: "The supplied files cannot establish which observation is correct.",
       guidance: "Compare the original manifest, final counters and ledger for the same run before attributing a fault.",
     });
   }
-  if (manifest.result === "REFUSED") return limited("Unavailable", {
+  if (manifest.result === "REFUSED") return limited("Unavailable", "Refused", { id: "refused",
     title: "Run refused before observation", facts: ["Preflight refused this run before component observations were collected."],
     conclusion: "This run supplies no component exercise.", uncertainty: "No component condition can be inferred.",
     guidance: "Review the preflight record in the original evidence.",
@@ -241,19 +252,19 @@ function diagnoseRun(manifest: Manifest, reasons: ReadonlySet<FieldReason>, obse
   const coverageIssues = checkProblems(coverage, byId);
   const coverageReasons = (["tick_gap", "telemetry_incomplete", "evidence_gap", "journal_overflow"] as const).filter(code => reasons.has(code));
   const coverageFacts = [...coverageIssues.map(issue => issue.fact), ...coverageReasons.map(code => `Manifest stop reason · ${code}.`)];
-  if (coverageFacts.length) findings.push({
+  if (coverageFacts.length) findings.push({ id: "telemetry",
     title: "Telemetry coverage across stages", facts: coverageFacts,
     conclusion: "The record cannot confirm complete observation across the defense plane, boundary and app.",
     uncertainty: "The affected requests and the condition of each stage during the gap are unresolved.",
     guidance: "Compare the final heartbeats and stream-drain records with the ledger for this run.",
   });
-  if (canary.state !== "Reviewed") findings.push({
+  if (canary.state !== "Reviewed") findings.push({ id: "canary-evidence",
     title: canary.state === "Unavailable" ? "Missing canary evidence" : "Unverified canary evidence", facts: [canary.detail],
     conclusion: "External counts alone cannot establish the protected journey outcome.",
     uncertainty: "The protected requests' admission and completion outcomes are unresolved.",
     guidance: "Check the manifest inventory for the matching canary.json.",
   });
-  if (clientAborted) findings.push({
+  if (clientAborted) findings.push({ id: "client-aborts",
     title: "Client-side aborts", facts: [`external.json recorded ${clientAborted} client-aborted requests.`],
     conclusion: "The runner classified these terminal outcomes as client-side aborts.",
     uncertainty: "The reason for disconnection and any relationship to a stage interruption are unresolved.",
@@ -270,7 +281,7 @@ function diagnoseRun(manifest: Manifest, reasons: ReadonlySet<FieldReason>, obse
       issues.push({ fact: `External stage count ${observations}, accepted ${counters.accepted}, comparison count ${witness?.left ?? "unavailable"}.`,
         guidance: "Compare the stage counters with the original ledger." });
     if (issues.length) {
-      findings.push({ title: `${name} accounting`, facts: issues.map(issue => issue.fact),
+      findings.push({ id: `accounting/${name}`, title: `${name} accounting`, facts: issues.map(issue => issue.fact),
         conclusion: "The available comparisons do not reconcile this stage with the request ledger.",
         uncertainty: "The discrepancy alone cannot locate a component fault.",
         guidance: issues[0].guidance,
@@ -289,7 +300,7 @@ function diagnoseRun(manifest: Manifest, reasons: ReadonlySet<FieldReason>, obse
     if (!window?.completed) return row("Unknown", "No completed protected canary journey was observed during the field window.");
     if (observations === 0) {
       findings.push({
-        title: `${name} exercise`, facts: [`external.json · 0 external requests observed at ${name}.`],
+        id: `exercise/${name}`, title: `${name} exercise`, facts: [`external.json · 0 external requests observed at ${name}.`],
         conclusion: "The run supplies no external exercise at this stage.",
         uncertainty: "Successful checks on an empty population cannot establish how the stage handled external requests.",
         guidance: "Review the upstream decision counts to determine how many requests were eligible to reach this stage.",
@@ -301,14 +312,14 @@ function diagnoseRun(manifest: Manifest, reasons: ReadonlySet<FieldReason>, obse
 
   if (assessed.some(stage => stage.state === "Unknown") && (!complete || manifest.metrics.artifactsRefused !== 0)) {
     findings.push({
-      title: "Limits of the run outcome",
+      id: "outcome", title: "Limits of the run outcome",
       facts: [`Recorded server result · ${manifest.result}. Artifacts refused · ${manifest.metrics.artifactsRefused ?? "unreported"}.`],
       conclusion: "Successful individual checks cannot establish overall component health for this record.",
       uncertainty: "The server result alone cannot locate a component fault.",
       guidance: "Review the recorded stop reasons and artifact inventory alongside the stage observations.",
     });
   }
-  if (canary.state === "Reviewed" && (!window?.attempted || window.completed < window.attempted)) findings.push({
+  if (canary.state === "Reviewed" && (!window?.attempted || window.completed < window.attempted)) findings.push({ id: "window",
     title: "Protected window coverage",
     facts: [window ? `Protected window journeys completed · ${window.completed} of ${window.attempted}.` : "canary.json contains no protected window journey summary."],
     conclusion: window?.attempted ? "Some protected journeys attempted in the window did not complete."
@@ -316,7 +327,12 @@ function diagnoseRun(manifest: Manifest, reasons: ReadonlySet<FieldReason>, obse
     uncertainty: "The journey summary alone cannot distinguish a component interruption from incomplete measurement.",
     guidance: "Inspect the phase and journey records from the same run.",
   });
-  return { components: assessed, findings: [...findings, ...relateSignals(signals, window)] };
+  return {
+    components: assessed, findings: [...findings, ...relateSignals(signals, window)],
+    accounting: "Reviewed", telemetry: coverageFacts.length ? "Coverage gaps" : "Checks agreed",
+    requiredChecksPresent: requiredFieldChecks.filter(([id]) => byId.has(id)).length,
+    protectedAttempts: window?.attempted ?? null, clientAbortsReported: clientAborted !== undefined,
+  };
 }
 
 // Callers supply only observations that passed the stage and shared coverage checks.
@@ -324,7 +340,7 @@ function relateSignals(signals: Signal[], window?: Canary["jcr"][number]): Incid
   const findings: IncidentFinding[] = [];
   const factsFor = (group: Signal["group"]) => signals.filter(signal => signal.group === group).map(signal => signal.fact);
   const screening = factsFor("canary");
-  if (screening.length) findings.push({
+  if (screening.length) findings.push({ id: "protected-admission",
     title: "Protected request admission",
     facts: [...screening, ...(window ? [`Protected window journeys completed · ${window.completed} of ${window.attempted}.`] : [])],
     conclusion: screening.length === 2 ? "Protected requests encountered adverse admission decisions at both stages during this run."
@@ -333,14 +349,14 @@ function relateSignals(signals: Signal[], window?: Canary["jcr"][number]): Incid
     guidance: "Compare the protected request decisions with the phase and journey records in the archived ledger.",
   });
   const decisions = factsFor("decision");
-  if (decisions.length) findings.push({
+  if (decisions.length) findings.push({ id: "external-decisions",
     title: "External request decisions", facts: decisions,
     conclusion: "The stage counters record exceptional outcomes during external request evaluation.",
     uncertainty: "Aggregate decisions cannot establish the cause or the impact on individual requests.",
     guidance: "Reconcile the recorded decision outcomes with the finalized evaluator counters.",
   });
   const interruptions = factsFor("interruption");
-  if (interruptions.length) findings.push({
+  if (interruptions.length) findings.push({ id: "interruptions",
     title: interruptions.length === 2 ? "Boundary and app interruptions" : "Interrupted external requests",
     facts: interruptions, conclusion: interruptions.length === 2 ? "Both stages recorded interrupted or incomplete work in the same run."
       : "The stage recorded interrupted or incomplete work during this run.",
@@ -380,7 +396,8 @@ export function assessFieldRun(manifest: Manifest, external: Artifact, canary: A
   const { known, diagnostics } = readFieldReasons(manifest.resultReasons);
   if (manifest.result !== "SERVER-COMPLETE" && !diagnostics.length) diagnostics.push("No stop reason was supplied. Inspect the finalized run record.");
   return {
-    endedAt: manifest.endedAt, reviewedAt: new Date(now).toISOString(), stale: now - end > REVIEW_AGE_MS,
+    startedAt: manifest.startedAt, endedAt: manifest.endedAt, reviewedAt: new Date(now).toISOString(), stale: now - end > REVIEW_AGE_MS,
+    artifactsRefused: manifest.metrics.artifactsRefused ?? null,
     result: manifest.result, diagnostics, ...interpret(manifest, external, canary, known),
   };
 }
