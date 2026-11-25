@@ -11,9 +11,9 @@ import {
   parseStatusMutation,
   type ParsedMutationTarget,
 } from "@/lib/admin-inquiry-mutation-input";
-import type { AdminMutationResult } from "@/lib/admin-inquiry-mutation-repository";
+import type { AdminInquiryMutationRepository, AdminMutationResult } from "@/lib/admin-inquiry-mutation-repository";
 
-type MutationNotice = "success" | "conflict" | "invalid" | "unavailable";
+type MutationNotice = "conflict" | "invalid" | "service-unavailable";
 
 function targetPath(inquiryId: string, notice: MutationNotice): string {
   return `/admin/inquiries/${inquiryId}?mutation=${notice}`;
@@ -21,19 +21,25 @@ function targetPath(inquiryId: string, notice: MutationNotice): string {
 
 async function runMutation(
   target: ParsedMutationTarget,
-  mutate: () => Promise<AdminMutationResult>,
+  mutate: (repository: AdminInquiryMutationRepository, eventId: string) => Promise<AdminMutationResult>,
 ): Promise<never> {
+  const repository = await getAdminInquiryMutationRepository().catch(() => null);
+  if (!repository) redirect(targetPath(target.inquiryId, "service-unavailable"));
+
+  // Allocate before the transaction so a lost COMMIT reply can be checked by a read.
+  const eventId = crypto.randomUUID();
+  const receiptPath = `/admin/inquiries/${target.inquiryId}?receipt=${eventId}`;
   let result: AdminMutationResult;
   try {
-    result = await mutate();
+    result = await mutate(repository, eventId);
+    if (result.status === "success") {
+      revalidatePath("/admin");
+      revalidatePath(`/admin/inquiries/${target.inquiryId}`);
+    }
   } catch {
-    redirect(targetPath(target.inquiryId, "unavailable"));
+    redirect(receiptPath);
   }
-  if (result.status === "success") {
-    revalidatePath("/admin");
-    revalidatePath(`/admin/inquiries/${target.inquiryId}`);
-  }
-  redirect(targetPath(target.inquiryId, result.status));
+  redirect(result.status === "success" ? receiptPath : targetPath(target.inquiryId, result.status));
 }
 
 export async function changeInquiryStatusAction(formData: FormData): Promise<never> {
@@ -42,10 +48,9 @@ export async function changeInquiryStatusAction(formData: FormData): Promise<nev
   if (!target) redirect("/admin?mutation=invalid");
   const input = parseStatusMutation(formData);
   if (!input) redirect(targetPath(target.inquiryId, "invalid"));
-  const repository = await getAdminInquiryMutationRepository();
-  if (!repository) redirect(targetPath(input.inquiryId, "unavailable"));
-  return runMutation(input, () => repository.changeStatus({
+  return runMutation(input, (repository, eventId) => repository.changeStatus({
     ...input,
+    eventId,
     identity: { actorIdentifier: admin.email },
   }));
 }
@@ -56,10 +61,9 @@ export async function addInquiryNoteAction(formData: FormData): Promise<never> {
   if (!target) redirect("/admin?mutation=invalid");
   const input = parseNoteMutation(formData);
   if (!input) redirect(targetPath(target.inquiryId, "invalid"));
-  const repository = await getAdminInquiryMutationRepository();
-  if (!repository) redirect(targetPath(input.inquiryId, "unavailable"));
-  return runMutation(input, () => repository.addNote({
+  return runMutation(input, (repository, eventId) => repository.addNote({
     ...input,
+    eventId,
     identity: { actorIdentifier: admin.email },
   }));
 }
@@ -69,10 +73,9 @@ export async function archiveInquiryAction(formData: FormData): Promise<never> {
   const input = parseMutationTarget(formData);
   if (!input) redirect("/admin?mutation=invalid");
   if (!hasArchiveConfirmation(formData)) redirect(targetPath(input.inquiryId, "invalid"));
-  const repository = await getAdminInquiryMutationRepository();
-  if (!repository) redirect(targetPath(input.inquiryId, "unavailable"));
-  return runMutation(input, () => repository.archive({
+  return runMutation(input, (repository, eventId) => repository.archive({
     ...input,
+    eventId,
     identity: { actorIdentifier: admin.email },
   }));
 }
@@ -81,10 +84,9 @@ export async function restoreInquiryAction(formData: FormData): Promise<never> {
   const admin = await requireAdmin();
   const input = parseMutationTarget(formData);
   if (!input) redirect("/admin?mutation=invalid");
-  const repository = await getAdminInquiryMutationRepository();
-  if (!repository) redirect(targetPath(input.inquiryId, "unavailable"));
-  return runMutation(input, () => repository.restore({
+  return runMutation(input, (repository, eventId) => repository.restore({
     ...input,
+    eventId,
     identity: { actorIdentifier: admin.email },
   }));
 }

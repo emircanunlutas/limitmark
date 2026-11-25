@@ -19,7 +19,8 @@ test("list and detail routes each authorize before repository access", async () 
     assert.ok(authorization < repository);
   }
   assert.ok(detailSource.indexOf("await authorize();") < detailSource.indexOf("await params"));
-  assert.ok(detailSource.indexOf("uuidPattern.test(id)") < detailSource.indexOf("await getRepository()"));
+  const validatesId = detailSource.indexOf("if (!isInquiryUuid(id)) notFound();");
+  assert.ok(validatesId >= 0 && validatesId < detailSource.indexOf("await getRepository()"));
 });
 
 test("customer and note values remain JSX text with no HTML renderer or internal projections", async () => {

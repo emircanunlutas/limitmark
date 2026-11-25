@@ -5,6 +5,7 @@ import { count, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { type TransactionSql } from "postgres";
 import { PostgresAdminInquiryMutationRepository } from "../src/lib/admin-inquiry-mutation-repository";
+import { PostgresAdminInquiryReadRepository } from "../src/lib/admin-inquiry-repository";
 import { adminNotes, inquiries, inquiryEvents } from "../src/lib/db/schema";
 import * as schema from "../src/lib/db/schema";
 import { disposableTestDatabase } from "./support/test-database-guard";
@@ -19,6 +20,8 @@ const database = client ? drizzle(client, { schema }) : null;
 const repository = database ? new PostgresAdminInquiryMutationRepository(database) : null;
 const inquiryId = "00000000-0000-4000-8000-000000000042";
 const adminIdentity = { actorIdentifier: "verified-admin@example.test" } as const;
+const eventId = "00000000-0000-4000-8000-000000000081";
+const nextEventId = "00000000-0000-4000-8000-000000000082";
 
 before(async () => {
   if (!database) return;
@@ -53,6 +56,11 @@ function row(overrides: Partial<typeof inquiries.$inferInsert> = {}): typeof inq
 
 function target(expectedRevision: number) { return { inquiryId, expectedRevision, identity: adminIdentity }; }
 
+async function readReceipt(id = eventId, actor: string = adminIdentity.actorIdentifier, inquiry = inquiryId) {
+  const reader = new PostgresAdminInquiryReadRepository(database!);
+  return (await reader.getInquiryDetail(inquiry, { eventId: id, actorIdentifier: actor }))?.confirmedMutation;
+}
+
 async function eventCount() {
   return (await database!.select({ value: count() }).from(inquiryEvents))[0].value;
 }
@@ -70,7 +78,8 @@ async function payload() {
 test("an allowed transition updates status and appends exactly one bounded admin event", integration, async () => {
   await database!.insert(inquiries).values(row());
   const beforePayload = await payload();
-  assert.deepEqual(await repository!.changeStatus({ ...target(0), newStatus: "in_review" }), { status: "success", revision: 1 });
+  assert.deepEqual(await repository!.changeStatus({ ...target(0), eventId, newStatus: "in_review" }), { status: "success", revision: 1 });
+  assert.deepEqual((await readReceipt())?.detail, { kind: "status_changed", previousStatus: "received", newStatus: "in_review" });
   const [stored] = await database!.select().from(inquiries);
   const [event] = await database!.select().from(inquiryEvents);
   assert.equal(stored.status, "in_review");
@@ -107,7 +116,8 @@ test("event insertion failure rolls back the status compare-and-swap", integrati
   await database!.insert(inquiries).values(row());
   await testDatabase.destructive(client, (tx) => tx.unsafe("CREATE TRIGGER test_fail_admin_event BEFORE INSERT ON inquiry_events FOR EACH ROW EXECUTE FUNCTION reject_inquiry_event_mutation()"));
   try {
-    await assert.rejects(repository!.changeStatus({ ...target(0), newStatus: "in_review" }));
+    await assert.rejects(repository!.changeStatus({ ...target(0), eventId, newStatus: "in_review" }));
+    assert.equal(await readReceipt(), undefined);
     const [stored] = await database!.select().from(inquiries);
     assert.equal(stored.status, "received");
     assert.equal(stored.revision, 0);
@@ -119,7 +129,7 @@ test("event insertion failure rolls back the status compare-and-swap", integrati
 
 test("note and note_added event commit atomically without note content in metadata", integration, async () => {
   await database!.insert(inquiries).values(row());
-  assert.deepEqual(await repository!.addNote({ ...target(0), content: "<b>internal plain text</b>" }), { status: "success", revision: 1 });
+  assert.deepEqual(await repository!.addNote({ ...target(0), eventId, content: "<b>internal plain text</b>" }), { status: "success", revision: 1 });
   const [note] = await database!.select().from(adminNotes);
   const [event] = await database!.select().from(inquiryEvents);
   assert.equal(note.content, "<b>internal plain text</b>");
@@ -127,8 +137,24 @@ test("note and note_added event commit atomically without note content in metada
   assert.equal(event.eventType, "note_added");
   assert.equal(event.metadata, null);
   assert.equal(JSON.stringify(event).includes(note.content), false);
-  assert.deepEqual(await repository!.addNote({ ...target(0), content: "stale" }), { status: "conflict" });
+  assert.deepEqual(await repository!.addNote({ ...target(0), eventId: nextEventId, content: "stale" }), { status: "conflict" });
   assert.equal((await database!.select({ value: count() }).from(adminNotes))[0].value, 1);
+  assert.equal(await readReceipt(nextEventId), undefined);
+  assert.equal(await readReceipt(eventId, "other-admin@example.test"), undefined);
+  const other = row({ id: "00000000-0000-4000-8000-000000000099", submissionToken: "B".repeat(43) });
+  await database!.insert(inquiries).values(other);
+  assert.equal(await readReceipt(eventId, adminIdentity.actorIdentifier, other.id), undefined);
+
+  // The matching event remains verifiable after it leaves the displayed history.
+  await database!.insert(inquiryEvents).values(Array.from({ length: 500 }, () => ({
+    inquiryId, eventType: "notification_sent" as const, actorType: "system" as const,
+    createdAt: new Date(event.createdAt.getTime() + 1000),
+  })));
+  const detail = await new PostgresAdminInquiryReadRepository(database!).getInquiryDetail(inquiryId, { eventId, ...adminIdentity });
+  assert.equal(detail?.eventsTruncated, true);
+  assert.equal(detail.events.some((e) => e.id === eventId), false);
+  assert.deepEqual(detail.confirmedMutation, { eventType: "note_added", createdAt: event.createdAt, detail: null });
+  assert.equal(await readReceipt(detail.events[0].id), undefined);
 });
 
 test("invalid notes are rejected and an event failure rolls back both note and revision", integration, async () => {
@@ -149,7 +175,7 @@ test("invalid notes are rejected and an event failure rolls back both note and r
 test("archive preserves exact prior status and restore returns to it without duplicate events", integration, async () => {
   await database!.insert(inquiries).values(row({ status: "proposal_sent", revision: 7 }));
   const beforePayload = await payload();
-  assert.deepEqual(await repository!.archive(target(7)), { status: "success", revision: 8 });
+  assert.deepEqual(await repository!.archive({ ...target(7), eventId }), { status: "success", revision: 8 });
   let [stored] = await database!.select().from(inquiries);
   assert.equal(stored.status, "archived");
   assert.equal(stored.preArchiveStatus, "proposal_sent");
@@ -158,7 +184,9 @@ test("archive preserves exact prior status and restore returns to it without dup
   assert.deepEqual(await repository!.archive(target(8)), { status: "invalid" });
   assert.equal(await eventCount(), 1);
 
-  assert.deepEqual(await repository!.restore(target(8)), { status: "success", revision: 9 });
+  assert.deepEqual(await repository!.restore({ ...target(8), eventId: nextEventId }), { status: "success", revision: 9 });
+  assert.equal((await readReceipt())?.eventType, "archived");
+  assert.equal((await readReceipt(nextEventId))?.eventType, "restored");
   [stored] = await database!.select().from(inquiries);
   assert.equal(stored.status, "proposal_sent");
   assert.equal(stored.preArchiveStatus, null);

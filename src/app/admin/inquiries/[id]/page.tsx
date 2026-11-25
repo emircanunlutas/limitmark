@@ -15,14 +15,14 @@ import {
 } from "@/lib/admin-notification-delivery";
 import { getNotificationDeliveryConfigurationEvidence } from "@/lib/admin-notification-delivery-config";
 import { allowedInquiryStatusTransitions, type InquiryStatus } from "@/lib/inquiry-status-workflow";
+import { isInquiryUuid } from "@/lib/admin-inquiry-mutation-input";
 import { addInquiryNoteAction, archiveInquiryAction, changeInquiryStatusAction, restoreInquiryAction } from "../actions";
 
 export const metadata: Metadata = { title: "Admin inquiry detail", robots: { index: false, follow: false } };
 export const dynamic = "force-dynamic";
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const statusLabels: Record<string, string> = { received: "Received", in_review: "In review", awaiting_scope: "Awaiting scope", proposal_sent: "Proposal sent", approved: "Approved", completed: "Completed", declined: "Declined", archived: "Archived" };
 const mutationNotices: Record<string, { tone: string; message: string }> = {
-  success: { tone: "admin-notice-success", message: "Change saved." },
+  "service-unavailable": { tone: "admin-notice-warning", message: "The inquiry store was unavailable. The save could not start. Try again when the store is available." },
   conflict: { tone: "admin-notice-warning", message: "Nothing changed because this inquiry was updated elsewhere. Review the refreshed record and try again." },
   invalid: { tone: "admin-notice-warning", message: "Nothing changed because that operation is not valid." },
   unavailable: { tone: "admin-notice-warning", message: "The save outcome could not be confirmed. Review the refreshed record and event history before trying again." },
@@ -31,7 +31,7 @@ function displayStatus(value: string): string { return statusLabels[value] ?? va
 function timestamp(value: Date): string { return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Istanbul" }).format(value); }
 function valueOrNotProvided(value: string) { return value || <span className="admin-muted">Not provided</span>; }
 
-export function eventDescription(event: AdminInquiryEvent): string {
+export function eventDescription(event: Pick<AdminInquiryEvent, "eventType" | "detail">): string {
   if (event.eventType === "note_added") return "Internal note added";
   if (event.detail?.kind === "status_changed") return `Status changed: ${displayStatus(event.detail.previousStatus)} → ${displayStatus(event.detail.newStatus)}`;
   if (event.detail?.kind === "archived") return `Archived from ${displayStatus(event.detail.previousStatus)}`;
@@ -64,7 +64,17 @@ function InquiryDetailView({ detail, deliveries, deliveryConfiguration }: { deta
   </>;
 }
 
-type DetailSearchParams = Promise<{ mutation?: string | string[] }>;
+type DetailSearchParams = Promise<{ mutation?: string | string[]; receipt?: string | string[] }>;
+
+function mutationNotice(
+  { mutation, receipt }: Awaited<DetailSearchParams>,
+  confirmed: AdminInquiryDetail["confirmedMutation"],
+) {
+  if (confirmed) return { tone: "admin-notice-success", message: `${eventDescription(confirmed)}. Saved on ${timestamp(confirmed.createdAt)} (Istanbul time).` };
+  if (isInquiryUuid(receipt) && mutation === undefined) return { tone: "admin-notice-warning", message: "No matching save could be confirmed. Refresh this page to check again. Review the inquiry before repeating the action." };
+  if (receipt !== undefined || mutation === "success") return mutationNotices.unavailable;
+  return typeof mutation === "string" && Object.hasOwn(mutationNotices, mutation) ? mutationNotices[mutation] : undefined;
+}
 
 export async function renderAdminInquiryDetail(
   params: Promise<{ id: string }>,
@@ -75,20 +85,30 @@ export async function renderAdminInquiryDetail(
   now: () => Date = () => new Date(),
   getDeliveryConfiguration: () => NotificationDeliveryConfigurationEvidence = () => getNotificationDeliveryConfigurationEvidence(process.env),
 ) {
-  await authorize();
+  const admin = await authorize();
   const { id } = await params;
-  if (!uuidPattern.test(id)) notFound();
-  const repository = await getRepository();
-  if (!repository) return <div className="page-shell admin-shell"><Container><Link className="text-link" href="/admin">Back to inquiries</Link><div className="admin-outage" role="status"><h1>Inquiry data unavailable</h1><p>The inquiry store is not configured or cannot be reached. Try again later.</p></div></Container></div>;
-  let detail: AdminInquiryDetail | null;
-  try { detail = await repository.getInquiryDetail(id); }
-  catch { return <div className="page-shell admin-shell"><Container><Link className="text-link" href="/admin">Back to inquiries</Link><div className="admin-outage" role="status"><h1>Inquiry data unavailable</h1><p>The inquiry store is not configured or cannot be reached. Try again later.</p></div></Container></div>; }
+  if (!isInquiryUuid(id)) notFound();
+  const query = await searchParams;
+  const lookup = query.mutation === undefined && isInquiryUuid(query.receipt)
+    ? { eventId: query.receipt, actorIdentifier: admin.email } : undefined;
+  let detail: AdminInquiryDetail | null | undefined;
+  try {
+    const repository = await getRepository();
+    detail = await repository?.getInquiryDetail(id, lookup);
+  } catch {
+    detail = undefined;
+  }
+  if (detail === undefined) {
+    return <div className="page-shell admin-shell"><Container><Link className="text-link" href="/admin">Back to inquiries</Link><div className="admin-outage" role="status"><h1>Inquiry data unavailable</h1><p>The inquiry store is not configured or cannot be reached. Try again later.</p>
+      {lookup && <p>Refresh this page when the store is available to check whether your change was saved.</p>}
+      {query.mutation === "service-unavailable" && <p>The save could not start.</p>}
+    </div></Container></div>;
+  }
   if (!detail) notFound();
   // Read only after authorization and a confirmed inquiry. Failure or timeout renders "unavailable".
   const deliveries = await loadInquiryNotificationDeliveries(getDeliveryRepository, detail.inquiry.id, now());
   const deliveryConfiguration = getDeliveryConfiguration();
-  const mutationValue = (await searchParams).mutation;
-  const mutation = typeof mutationValue === "string" ? mutationNotices[mutationValue] : undefined;
+  const mutation = mutationNotice(query, lookup ? detail.confirmedMutation : undefined);
   return <div className="page-shell admin-shell"><Container><Link className="text-link" href="/admin">Back to inquiries</Link><header className="admin-detail-heading"><p className="admin-eyebrow">Limitmark Admin</p><h1>Inquiry detail</h1></header>{mutation && <p className={`admin-notice ${mutation.tone}`} role="status">{mutation.message}</p>}<InquiryDetailView detail={detail} deliveries={deliveries} deliveryConfiguration={deliveryConfiguration} /></Container></div>;
 }
 

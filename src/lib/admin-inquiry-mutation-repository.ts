@@ -14,7 +14,7 @@ import {
 export type AdminMutationResult = { status: "success"; revision: number } | { status: "conflict" } | { status: "invalid" };
 
 export type AdminMutationIdentity = Readonly<{ actorIdentifier: string }>;
-export type RevisionMutationInput = Readonly<{ inquiryId: string; expectedRevision: number; identity: AdminMutationIdentity }>;
+export type RevisionMutationInput = Readonly<{ inquiryId: string; expectedRevision: number; identity: AdminMutationIdentity; eventId?: string }>;
 export type StatusMutationInput = RevisionMutationInput & Readonly<{ newStatus: InquiryStatus }>;
 export type NoteMutationInput = RevisionMutationInput & Readonly<{ content: string }>;
 
@@ -53,6 +53,7 @@ export class PostgresAdminInquiryMutationRepository implements AdminInquiryMutat
       )).returning({ revision: inquiries.revision });
       if (!updated) return { status: "conflict" };
       await transaction.insert(inquiryEvents).values({
+        id: input.eventId,
         inquiryId: input.inquiryId,
         eventType: "status_changed",
         actorType: "admin",
@@ -81,6 +82,7 @@ export class PostgresAdminInquiryMutationRepository implements AdminInquiryMutat
         content: input.content,
       });
       await transaction.insert(inquiryEvents).values({
+        id: input.eventId,
         inquiryId: input.inquiryId,
         eventType: "note_added",
         actorType: "admin",
@@ -111,6 +113,7 @@ export class PostgresAdminInquiryMutationRepository implements AdminInquiryMutat
       )).returning({ revision: inquiries.revision });
       if (!updated) return { status: "conflict" };
       await transaction.insert(inquiryEvents).values({
+        id: input.eventId,
         inquiryId: input.inquiryId,
         eventType: "archived",
         actorType: "admin",
@@ -146,6 +149,7 @@ export class PostgresAdminInquiryMutationRepository implements AdminInquiryMutat
       )).returning({ revision: inquiries.revision });
       if (!updated) return { status: "conflict" };
       await transaction.insert(inquiryEvents).values({
+        id: input.eventId,
         inquiryId: input.inquiryId,
         eventType: "restored",
         actorType: "admin",

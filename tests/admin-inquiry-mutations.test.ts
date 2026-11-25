@@ -74,11 +74,12 @@ test("every Server Action independently authorizes before parsing or repository 
     assert.ok(start >= 0);
     assert.ok(action.indexOf("await requireAdmin()") >= 0);
     assert.ok(action.indexOf("await requireAdmin()") < action.indexOf("parse"));
-    assert.ok(action.indexOf("parse") < action.indexOf("getAdminInquiryMutationRepository"));
+    assert.ok(action.indexOf("parse") < action.indexOf("runMutation("));
+    assert.doesNotMatch(action, /getAdminInquiryMutationRepository/);
     assert.doesNotMatch(action, /formData\.get\([^)]*actor|actorIdentifier:\s*formData|error\.message|sql/i);
     assert.match(action, /admin\.email/);
   }
-  assert.match(source, /"success" \| "conflict" \| "invalid" \| "unavailable"/);
+  assert.match(source, /async function runMutation\([\s\S]*?await getAdminInquiryMutationRepository\(\)/);
 });
 
 test("direct-origin mutation requests still depend on a verified Access identity", async () => {
@@ -93,9 +94,11 @@ test("direct-origin mutation requests still depend on a verified Access identity
 
 test("an unacknowledged commit is not retried or presented as a confirmed rollback", async () => {
   const source = await readFile(new URL("../src/app/admin/inquiries/actions.ts", import.meta.url), "utf8");
-  const pageSource = await readFile(new URL("../src/app/admin/inquiries/[id]/page.tsx", import.meta.url), "utf8");
   const actionExports: { addInquiryNoteAction?: (data: FormData) => Promise<never> } = {};
   let committedNotes = 0;
+  let committedEventId = "";
+  let committedActor = "";
+  const generatedId = "00000000-0000-4000-8000-000000000043";
   const redirected = new Error("redirect");
   let destination = "";
   const dependencies: Record<string, unknown> = {
@@ -105,9 +108,11 @@ test("an unacknowledged commit is not retried or presented as a confirmed rollba
     "@/lib/admin-inquiry-mutation-input": mutationInput,
     "@/lib/admin-inquiry-data": {
       getAdminInquiryMutationRepository: async () => ({
-        addNote: async () => {
+        addNote: async (input: { eventId: string; identity: { actorIdentifier: string } }) => {
           // Model COMMIT succeeding before the driver loses its acknowledgement.
           committedNotes += 1;
+          committedEventId = input.eventId;
+          committedActor = input.identity.actorIdentifier;
           throw new Error("connection closed after COMMIT; private database detail");
         },
       }),
@@ -115,20 +120,18 @@ test("an unacknowledged commit is not retried or presented as a confirmed rollba
   };
   runInNewContext(transpileModule(source, { compilerOptions: { module: ModuleKind.CommonJS } }).outputText, {
     exports: actionExports,
+    crypto: { randomUUID: () => generatedId },
     require: (name: string) => {
       assert.ok(Object.hasOwn(dependencies, name), `Unexpected dependency: ${name}`);
       return dependencies[name];
     },
   });
   await assert.rejects(
-    actionExports.addInquiryNoteAction!(form({ inquiryId: id, expectedRevision: "0", content: "Committed note" })),
+    actionExports.addInquiryNoteAction!(form({ inquiryId: id, expectedRevision: "0", content: "Committed note", eventId: id })),
     (error: unknown) => error === redirected,
   );
   assert.equal(committedNotes, 1);
-  assert.equal(destination, `/admin/inquiries/${id}?mutation=unavailable`);
-  const notice = pageSource.match(/unavailable:\s*\{[^}]*message:\s*"([^"]+)"/)?.[1];
-  assert.ok(notice, "The unavailable redirect must have a user-facing notice");
-  assert.doesNotMatch(notice, /nothing changed|not saved|rolled back/i);
-  assert.match(notice, /confirm/i);
-  assert.match(notice, /review.*before.*try|review.*before.*retry/i);
+  assert.equal(committedActor, "verified-admin@example.test");
+  assert.equal(committedEventId, generatedId);
+  assert.equal(destination, `/admin/inquiries/${id}?receipt=${committedEventId}`);
 });
