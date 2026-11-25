@@ -4,7 +4,7 @@ import { Container } from "@/components/container";
 import { requireAdmin } from "@/lib/admin-auth";
 import type { AuthorizedAdminIdentity } from "@/lib/admin-auth-core";
 import { getAdminInquiryReadRepository, getAdminNotificationDeliveryRepository } from "@/lib/admin-inquiry-data";
-import { adminInquiryStatuses, buildAdminInquiryHref, normalizeAdminInquiryQuery, type AdminInquiryQuery } from "@/lib/admin-inquiry-query";
+import { adminInquiryStatuses, buildAdminInquiryHref, buildAdminInquiryReturnContext, normalizeAdminInquiryQuery, type AdminInquiryQuery } from "@/lib/admin-inquiry-query";
 import type { AdminInquiryReadRepository } from "@/lib/admin-inquiry-repository";
 import { NotificationDeliveryHealthPanel } from "@/components/admin-notification-delivery";
 import {
@@ -36,7 +36,11 @@ function formatTimestamp(value: Date): string {
 
 async function InquiryList({ query, repository }: { query: AdminInquiryQuery; repository: AdminInquiryReadRepository }) {
   const result = await repository.listInquiries(query);
-  if (!result.items.length) return <div className="admin-empty"><h2>No inquiries found</h2><p>No inquiries match the current view.</p></div>;
+  if (!result.items.length) return <div className="admin-empty">
+    <h2>No inquiries found</h2><p>No inquiries match the current view.</p>
+    {query.page > 1 && <Link className="text-link" href={buildAdminInquiryHref({ ...query, page: 1 })}>Back to first page</Link>}
+  </div>;
+  const context = buildAdminInquiryReturnContext(query);
   return <>
     <div className="admin-table-wrap"><table className="admin-table">
       <caption className="sr-only">Inquiry results, newest first</caption>
@@ -47,7 +51,7 @@ async function InquiryList({ query, repository }: { query: AdminInquiryQuery; re
         <td><strong>{inquiry.name}</strong><span>{inquiry.email}</span></td>
         <td>{inquiry.company || <span className="admin-muted">Not provided</span>}</td>
         <td>{displayLabel(inquiry.service)}</td><td>{displayLabel(inquiry.environment)}</td>
-        <td><Link className="text-link" href={`/admin/inquiries/${inquiry.id}`} prefetch={false} aria-label={`Open inquiry ${inquiry.id}`}>Open</Link></td>
+        <td><Link className="text-link" href={`/admin/inquiries/${inquiry.id}${context ? `?from=${context}` : ""}`} prefetch={false} aria-label={`Open inquiry ${inquiry.id}`}>Open</Link></td>
       </tr>)}</tbody>
     </table></div>
     <nav className="admin-pagination" aria-label="Inquiry pagination">
