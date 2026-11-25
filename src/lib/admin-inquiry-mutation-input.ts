@@ -3,6 +3,10 @@ import { isInquiryStatus, type InquiryStatus } from "./inquiry-status-workflow";
 const inquiryUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const maxIncrementableRevision = 2_147_483_646;
 
+export function isInquiryUuid(value: unknown): value is string {
+  return typeof value === "string" && inquiryUuidPattern.test(value);
+}
+
 function stringField(formData: FormData, name: string): string | null {
   const value = formData.get(name);
   return typeof value === "string" ? value : null;
@@ -13,7 +17,7 @@ export type ParsedMutationTarget = { inquiryId: string; expectedRevision: number
 export function parseMutationTarget(formData: FormData): ParsedMutationTarget | null {
   const inquiryId = stringField(formData, "inquiryId")?.trim() ?? "";
   const revisionValue = stringField(formData, "expectedRevision")?.trim() ?? "";
-  if (!inquiryUuidPattern.test(inquiryId) || !/^(0|[1-9]\d*)$/.test(revisionValue)) return null;
+  if (!isInquiryUuid(inquiryId) || !/^(0|[1-9]\d*)$/.test(revisionValue)) return null;
   const expectedRevision = Number(revisionValue);
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision > maxIncrementableRevision) return null;
   return { inquiryId, expectedRevision };

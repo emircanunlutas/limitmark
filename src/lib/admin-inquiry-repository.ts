@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, desc, eq, ilike, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   ADMIN_INQUIRY_MAX_PAGE,
@@ -20,9 +20,11 @@ export type AdminInquiryListItem = { id: string; receivedAt: Date; status: strin
 export type AdminInquiryListResult = { items: AdminInquiryListItem[]; hasNextPage: boolean };
 export type AdminInquiryEvent = { id: string; createdAt: Date; eventType: string; actorType: string; actorIdentifier: string | null; detail: InquiryAuditDetail | null };
 export type AdminInquiryNote = { id: string; createdAt: Date; authorIdentifier: string; content: string };
+export type AdminMutationLookup = { eventId: string; actorIdentifier: string };
 export type AdminInquiryDetail = {
   inquiry: { id: string; receivedAt: Date; status: InquiryStatus; revision: number; archivedAt: Date | null; preArchiveStatus: ActiveInquiryStatus | null; name: string; email: string; company: string; service: string; system: string; objective: string; environment: string; authority: string; protection: string; provider: string; notes: string };
   events: AdminInquiryEvent[];
+  confirmedMutation?: Pick<AdminInquiryEvent, "createdAt" | "eventType" | "detail">;
   adminNotes: AdminInquiryNote[];
   eventsTruncated: boolean;
   adminNotesTruncated: boolean;
@@ -30,7 +32,7 @@ export type AdminInquiryDetail = {
 
 export interface AdminInquiryReadRepository {
   listInquiries(query: AdminInquiryQuery): Promise<AdminInquiryListResult>;
-  getInquiryDetail(id: string): Promise<AdminInquiryDetail | null>;
+  getInquiryDetail(id: string, lookup?: AdminMutationLookup): Promise<AdminInquiryDetail | null>;
 }
 
 const DETAIL_HISTORY_LIMIT = 500;
@@ -66,7 +68,7 @@ export class PostgresAdminInquiryReadRepository implements AdminInquiryReadRepos
     return { items: rows.slice(0, ADMIN_INQUIRY_PAGE_SIZE), hasNextPage: rows.length > ADMIN_INQUIRY_PAGE_SIZE };
   }
 
-  async getInquiryDetail(id: string): Promise<AdminInquiryDetail | null> {
+  async getInquiryDetail(id: string, lookup?: AdminMutationLookup): Promise<AdminInquiryDetail | null> {
     // A note or status change commits its revision and history together. Read them from the same snapshot.
     return this.database.transaction(async (reader) => {
       const [inquiry] = await reader.select({
@@ -78,11 +80,24 @@ export class PostgresAdminInquiryReadRepository implements AdminInquiryReadRepos
       }).from(inquiries).where(eq(inquiries.id, id)).limit(1);
       if (!inquiry) return null;
 
+      // Look up the exact committed event even if it has aged out of the visible timeline.
+      const [receipt] = lookup ? await reader.select({
+        createdAt: inquiryEvents.createdAt, eventType: inquiryEvents.eventType, metadata: inquiryEvents.metadata,
+      }).from(inquiryEvents).where(and(
+        eq(inquiryEvents.id, lookup.eventId), eq(inquiryEvents.inquiryId, id),
+        eq(inquiryEvents.actorType, "admin"), eq(inquiryEvents.actorIdentifier, lookup.actorIdentifier),
+        inArray(inquiryEvents.eventType, ["status_changed", "note_added", "archived", "restored"]),
+      )).limit(1) : [];
+
       const events = await reader.select({ id: inquiryEvents.id, createdAt: inquiryEvents.createdAt, eventType: inquiryEvents.eventType, actorType: inquiryEvents.actorType, actorIdentifier: inquiryEvents.actorIdentifier, metadata: inquiryEvents.metadata })
         .from(inquiryEvents).where(eq(inquiryEvents.inquiryId, id)).orderBy(desc(inquiryEvents.createdAt), desc(inquiryEvents.id)).limit(DETAIL_HISTORY_LIMIT + 1);
       const notes = await reader.select({ id: adminNotes.id, createdAt: adminNotes.createdAt, authorIdentifier: adminNotes.authorIdentifier, content: adminNotes.content })
         .from(adminNotes).where(eq(adminNotes.inquiryId, id)).orderBy(desc(adminNotes.createdAt), desc(adminNotes.id)).limit(DETAIL_HISTORY_LIMIT + 1);
       return {
+        confirmedMutation: receipt && {
+          createdAt: receipt.createdAt, eventType: receipt.eventType,
+          detail: parseInquiryAuditDetail(receipt.eventType, receipt.metadata),
+        },
         inquiry: { ...inquiry, preArchiveStatus: isActiveInquiryStatus(inquiry.preArchiveStatus) ? inquiry.preArchiveStatus : null },
         events: events.slice(0, DETAIL_HISTORY_LIMIT).reverse().map(({ metadata, ...event }) => ({
           ...event,
