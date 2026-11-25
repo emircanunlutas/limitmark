@@ -115,9 +115,11 @@ test("proxy denial covers prefetch and actions; narrow exceptions preserve admin
       assert.equal(response.headers.has(publicOriginHeader), false);
     }
     assert.equal(proxy(new NextRequest("https://admin.limitmark.com/_next/static/chunk.js")).headers.get("x-middleware-next"), "1");
-    for (const path of ["/admin", "/admin/inquiries/123", "/.well-known/vercel/probe", "/.well-known/acme-challenge/probe", "/api/cron/process-notifications"]) {
+    for (const path of ["/admin", "/admin/field-health", "/admin/inquiries/123", "/.well-known/vercel/probe", "/.well-known/acme-challenge/probe", "/api/cron/process-notifications"]) {
       const response = proxy(new NextRequest(`https://limitmark.com${path}`));
       assert.equal(response.headers.get("x-middleware-next"), "1");
+      assert.match(response.headers.get("cache-control")!, /private.*no-store/);
+      assert.equal(response.headers.get("vercel-cdn-cache-control"), "no-store");
       assert.equal(response.headers.get("cdn-cache-control"), "no-store");
     }
     for (const path of ["/test-talep-et", "/_next/static/chunk.js", "/.well-known/vercel/probe", "/.well-known/acme-challenge/probe", "/api/cron/process-notifications"]) {

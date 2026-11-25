@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { build } from "esbuild";
 import { chromium, expect } from "@playwright/test";
-import { changed, now, originals } from "./support/field-health-fixture";
+import { changed, comparisonFiles, later, now, originals } from "./support/field-health-fixture";
 
 async function verify() {
   const bundle = await build({
@@ -31,7 +31,8 @@ async function verify() {
     await page.goto(origin);
     await page.addScriptTag({ content: bundle.outputFiles[0].text });
     const input = page.getByLabel("Field-run evidence files");
-    const select = async (files: File[]) => input.setInputFiles(await Promise.all(files.map(async file => ({
+    const otherInput = page.getByLabel("Comparison evidence files");
+    const select = async (files: File[], picker = input) => picker.setInputFiles(await Promise.all(files.map(async file => ({
       name: file.name, mimeType: "application/octet-stream", buffer: Buffer.from(await file.arrayBuffer()),
     }))));
 
@@ -63,6 +64,68 @@ async function verify() {
     await expect(findings).toContainText("No incident finding");
     await input.setInputFiles([]);
     await expect(findings).toHaveCount(0);
+
+    const first = await comparisonFiles("baseline", ({ manifest, canary }) => {
+      manifest.result = "INVALID"; manifest.metrics.serverSide = "invalid"; canary.l1FalseRejects = 1;
+    });
+    const second = await comparisonFiles("comparison");
+    const pair = page.getByRole("region", { name: "Defensive run comparison" });
+    const baselineSlot = page.getByRole("region", { name: "Baseline selection" });
+    const comparisonSlot = page.getByRole("region", { name: "Comparison selection" });
+    await select(second, otherInput);
+    await expect(pair).toHaveCount(0);
+    await select(first);
+    await expect(pair).toContainText("No longer observed");
+    await expect(pair.getByRole("row", { name: /L1 request screening/ })).toContainText(/Degraded.*Healthy.*Observed condition changed/);
+    await expect(baselineSlot).toContainText("Stale");
+    await expect(comparisonSlot).toContainText(new Date(later).toISOString());
+    await expect(comparisonSlot).toContainText("Within 24 hours");
+    await expect(page.locator("main")).not.toContainText(/private-fixture|offline-aaaaaa/);
+    await select(second.slice(0, 2), otherInput);
+    await expect(pair).toContainText("Cannot assess");
+    await expect(pair).not.toContainText("No longer observed");
+    await select([first[0], second[1]], otherInput);
+    await expect(comparisonSlot).toContainText("manifest checksum disagrees");
+    await expect(pair).toHaveCount(0);
+    await expect(baselineSlot).toContainText("INVALID");
+    await select(second, otherInput);
+    await expect(pair).toContainText("No longer observed");
+    await select(second);
+    await expect(pair).toContainText("Both selections contain the same manifest");
+    await expect(pair).not.toContainText("No longer observed");
+    await page.getByRole("button", { name: "Clear baseline" }).click();
+    await expect(pair).toHaveCount(0);
+    await expect(input).toHaveValue("");
+    await expect(comparisonSlot).toContainText("SERVER-COMPLETE");
+
+    // Finish the obsolete read after replacement. A stale failure must leave the new pair intact.
+    await page.evaluate(() => {
+      const read = File.prototype.arrayBuffer;
+      File.prototype.arrayBuffer = async function () {
+        if (this.name === "manifest.json") {
+          File.prototype.arrayBuffer = read;
+          await new Promise<void>(resolve => document.addEventListener("release-read", () => resolve(), { once: true }));
+          throw new Error("Superseded fixture read");
+        }
+        return read.call(this);
+      };
+    });
+    await select(first);
+    await expect(baselineSlot).toContainText("Reading field evidence");
+    await select(second);
+    await expect(pair).toContainText("same manifest");
+    await page.evaluate(async () => {
+      document.dispatchEvent(new Event("release-read"));
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    await expect(pair).toContainText("same manifest");
+    await page.getByRole("button", { name: "Clear comparison" }).click();
+    await expect(otherInput).toHaveValue("");
+    await expect(pair).toHaveCount(0);
+    await expect(baselineSlot).toContainText("SERVER-COMPLETE");
+    await page.getByRole("button", { name: "Clear baseline" }).click();
+    await expect(findings).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length]), [0, 0]);
     assert.deepEqual(unexpectedRequests, []);
   } finally {
     await browser.close();

@@ -5,7 +5,7 @@ import path from "node:path";
 import { canaryCounts, deriveExternalAccounting } from "../../lab/defense/external-accounting";
 import { buildSelftestBundle } from "../../lab/defense/field-selftest";
 import { writeFieldEvidence } from "../../lab/defense/field-evidence";
-import { EvidenceRun, EVIDENCE_ROOT } from "../../lab/evidence/manifest";
+import { EvidenceRun, EVIDENCE_ROOT, type EvidenceManifest } from "../../lab/evidence/manifest";
 import { fieldReviewFiles } from "../../src/lib/read-field-health";
 
 export const now = Date.parse("2026-01-01T12:00:00.000Z");
@@ -40,7 +40,8 @@ function publishedFiles() {
 export const originals = publishedFiles();
 
 export type EditableFixture = {
-  manifest: { result: string; resultReasons: string[]; metrics: { serverSide: string; externalAccepted: number; networkActivity?: boolean }; artifacts: { name: string; bytes: number; sha256: string }[] };
+  manifest: Pick<EvidenceManifest, "runId" | "startedAt" | "endedAt" | "target" | "workload" | "thresholds" | "ceilings" | "artifacts" | "git" | "environment"> &
+    { result: string; resultReasons: string[]; metrics: { serverSide: string; externalAccepted: number; networkActivity?: boolean; artifactsRefused: number } };
   external: { counters: typeof c; accounting: NonNullable<typeof bundle.accounting> };
   canary: typeof bundle.canary;
 };
@@ -63,4 +64,21 @@ export async function changed(edit: (data: EditableFixture) => void) {
   const text = JSON.stringify(manifest);
   const sums = [...manifest.artifacts.map(row => `${row.sha256}  ${row.name}`), `${digest(text)}  manifest.json`].join("\n");
   return [new File([sums], "SHA256SUMS"), new File([text], "manifest.json"), ...evidence];
+}
+
+export const later = now + 48 * 60 * 60 * 1000;
+
+export function comparisonFiles(side: "baseline" | "comparison", edit?: (data: EditableFixture) => void) {
+  return changed(data => {
+    const { manifest } = data;
+    const end = side === "baseline" ? now : later;
+    manifest.startedAt = new Date(end - 1000).toISOString();
+    manifest.endedAt = new Date(end).toISOString();
+    manifest.runId = side === "baseline" ? "20260101T115959Z-offline-aaaaaa" : "20260103T115959Z-offline-bbbbbb";
+    manifest.target = { id: "private-fixture-target", class: "fixture", scheme: "https", port: 443, ownership: "operator-asserted" };
+    manifest.workload = { id: "private-fixture-workload", phases: [{ name: "window", durationSeconds: 1, ratePerSecond: 1, concurrency: 1, timeoutMs: 500 }] };
+    manifest.ceilings = { level: "fixture", workers: 1, maxTotalRequests: 1, maxRequestsPerSecond: 1, durationSeconds: 1 };
+    manifest.git = { gitSha: "a".repeat(40), dirty: false, dirtyFileCount: 0, untrackedFileCount: 0 };
+    edit?.(data);
+  });
 }

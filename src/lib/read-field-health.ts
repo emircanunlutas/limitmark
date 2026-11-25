@@ -1,9 +1,14 @@
 import { assessFieldRun, reviewManifestSchema, type Artifact, type FieldHealthReview } from "./field-health";
+import { readComparisonContext, sha256 } from "./field-comparison-context";
 
 export const fieldReviewFiles = ["SHA256SUMS", "manifest.json", "external.json", "canary.json"] as const;
 type Name = typeof fieldReviewFiles[number];
 type InputFile = Pick<File, "name" | "size" | "arrayBuffer">;
-export type ReviewResult = { state: "Reviewed"; review: FieldHealthReview } | { state: "Unknown" | "Unavailable"; detail: string };
+export type RecordedRun = FieldHealthReview & Awaited<ReturnType<typeof readComparisonContext>> & {
+  manifestDigest: string;
+  files: Record<"external.json" | "canary.json", Artifact["kind"]>;
+};
+export type ReviewResult = { state: "Reviewed"; review: RecordedRun } | { state: "Unknown" | "Unavailable"; detail: string };
 const limits: Record<Name, number> = { SHA256SUMS: 16_384, "manifest.json": 128 * 1024, "external.json": 1024 * 1024, "canary.json": 128 * 1024 };
 
 function decode(bytes: ArrayBuffer): string {
@@ -18,11 +23,6 @@ function checksumList(bytes: ArrayBuffer): Map<string, string> {
     hashes.set(match[2], match[1]);
   }
   return hashes;
-}
-
-async function sha256(bytes: ArrayBuffer): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** Only the four named files are opened. Paths, manifest-supplied names and raw values never reach the view. */
@@ -47,8 +47,10 @@ export async function readFieldHealth(files: readonly InputFile[], now: number):
     const [sumBytes, manifestBytes] = await Promise.all([read(sums), read(manifestFile)]);
     if (!sumBytes || !manifestBytes) return { state: "Unavailable", detail: "The manifest or checksum list could not be read. Select the files again." };
     const hashes = checksumList(sumBytes);
-    if (hashes.get("manifest.json") !== await sha256(manifestBytes)) return { state: "Unknown", detail: "The manifest checksum disagrees. Select files from the same finalized run." };
-    const manifest = reviewManifestSchema.safeParse(JSON.parse(decode(manifestBytes)));
+    const manifestDigest = await sha256(manifestBytes);
+    if (hashes.get("manifest.json") !== manifestDigest) return { state: "Unknown", detail: "The manifest checksum disagrees. Select files from the same finalized run." };
+    const record = JSON.parse(decode(manifestBytes));
+    const manifest = reviewManifestSchema.safeParse(record);
     if (!manifest.success) return { state: "Unknown", detail: "This manifest is incomplete or uses an unsupported field-run format." };
     const index = new Map(manifest.data.artifacts.map(entry => [entry.name, entry]));
     if (index.size !== manifest.data.artifacts.length || index.size + 1 !== hashes.size || index.has("manifest.json") ||
@@ -69,7 +71,11 @@ export async function readFieldHealth(files: readonly InputFile[], now: number):
 
     const [external, canary] = await Promise.all([artifact("external.json"), artifact("canary.json")]);
     const review = assessFieldRun(manifest.data, external, canary, now);
-    return review ? { state: "Reviewed", review } : { state: "Unknown", detail: "The run dates, server outcome, or supplied observations conflict. Verify the original run and the review clock." };
+    if (!review) return { state: "Unknown", detail: "The run dates, server outcome, or supplied observations conflict. Verify the original run and the review clock." };
+    return { state: "Reviewed", review: {
+      ...review, ...await readComparisonContext(record, canary.kind === "present" ? canary.value : null), manifestDigest,
+      files: { "external.json": external.kind, "canary.json": canary.kind },
+    } };
   } catch {
     return { state: "Unknown", detail: "The evidence could not be verified. Check the file format and use a browser with secure SHA-256 support." };
   }

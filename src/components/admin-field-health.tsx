@@ -1,13 +1,15 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { readFieldHealth, fieldReviewFiles, type ReviewResult } from "../lib/read-field-health";
 import type { FieldHealthReview } from "../lib/field-health";
+import { FieldRunComparison } from "./field-run-comparison";
 
 export function FieldHealthResults({ review }: { review: FieldHealthReview }) {
+  const id = useId();
   return <>
-    <section className="admin-panel" aria-labelledby="run-heading">
-      <h2 id="run-heading">Recorded run</h2>
+    <section className="admin-panel" aria-labelledby={id + "-run"}>
+      <h2 id={id + "-run"}>Recorded run</h2>
       <dl className="admin-definition-list">
         <div><dt>Run ended (UTC)</dt><dd><time dateTime={review.endedAt}>{review.endedAt}</time></dd></div>
         <div><dt>Server-side result</dt><dd>{review.result}</dd></div>
@@ -21,8 +23,8 @@ export function FieldHealthResults({ review }: { review: FieldHealthReview }) {
         <ul>{review.diagnostics.map(message => <li key={message}>{message}</li>)}</ul>
       </>}
     </section>
-    <section className="admin-panel" aria-labelledby="incident-heading">
-      <h2 id="incident-heading">Incident diagnostics</h2>
+    <section className="admin-panel" aria-labelledby={id + "-incident"}>
+      <h2 id={id + "-incident"}>Incident diagnostics</h2>
       {review.findings.length ? <div className="admin-long-fields">{review.findings.map(finding => <article key={finding.title}>
         <h3>{finding.title}</h3>
         <dl className="admin-incident-evidence">
@@ -33,8 +35,8 @@ export function FieldHealthResults({ review }: { review: FieldHealthReview }) {
         </dl>
       </article>)}</div> : <p>No incident finding was identified by the reviewed checks.</p>}
     </section>
-    <section className="admin-panel" aria-labelledby="component-heading">
-      <h2 id="component-heading">Component observations</h2>
+    <section className="admin-panel" aria-labelledby={id + "-components"}>
+      <h2 id={id + "-components"}>Component observations</h2>
       <ul className="admin-delivery-list">{review.components.map(component => <li key={component.name}>
         <div><h3>{component.name}</h3><span className="admin-status">{component.state}</span></div>
         {component.observations !== undefined && <p>External requests observed at this stage · {component.observations}</p>}
@@ -44,8 +46,16 @@ export function FieldHealthResults({ review }: { review: FieldHealthReview }) {
   </>;
 }
 
-export function AdminFieldHealth() {
-  const [result, setResult] = useState<ReviewResult | "reading" | null>(null);
+type Selection = ReviewResult | "reading" | null;
+
+function reviewedRun(result: Selection) {
+  return result && result !== "reading" && result.state === "Reviewed" ? result.review : null;
+}
+
+function RunSelection({ side, result, setResult }: {
+  side: "Baseline" | "Comparison"; result: Selection; setResult: (next: Selection) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
   const selection = useRef(0);
   async function review(files: File[]) {
     const current = ++selection.current;
@@ -54,14 +64,44 @@ export function AdminFieldHealth() {
     const next = await readFieldHealth(files, Date.now());
     if (selection.current === current) setResult(next);
   }
-  return <>
-    <div className="admin-filters"><label><span>Field-run evidence files</span>
-      <input type="file" multiple aria-describedby="evidence-instructions"
+  const run = reviewedRun(result);
+  return <section className="admin-panel field-selection" aria-label={side + " selection"}>
+    <h2>{side} run</h2>
+    <div className="admin-filters"><label><span>{side === "Baseline" ? "Field-run evidence files (baseline)" : "Comparison evidence files"}</span>
+      <input ref={input} type="file" multiple aria-describedby="evidence-instructions"
         onChange={event => void review(Array.from(event.currentTarget.files ?? []))} />
-      <span id="evidence-instructions">Select {fieldReviewFiles.join(", ")} together from one trusted run. Files stay in this browser.</span>
-    </label></div>
+    </label><button type="button" className="button" disabled={!result} onClick={() => {
+      if (input.current) input.current.value = "";
+      void review([]);
+    }}>Clear {side.toLowerCase()}</button></div>
     <div role="status">{!result ? "Unknown · select evidence to review a run." : result === "reading" ? "Reading field evidence…"
       : result.state === "Reviewed" ? "Field evidence reviewed." : `${result.state} · ${result.detail}`}</div>
-    {result && result !== "reading" && result.state === "Reviewed" && <FieldHealthResults review={result.review} />}
+    {run && <dl className="admin-definition-list">
+      <div><dt>Run reference</dt><dd>{run.runKey?.slice(0, 16) ?? "Unavailable"}<br />
+        <small>Manifest SHA-256 · {run.manifestDigest.slice(0, 16)}…</small></dd></div>
+      <div><dt>Recorded interval (UTC)</dt><dd><time dateTime={run.startedAt}>{run.startedAt}</time><br />
+        <time dateTime={run.endedAt}>{run.endedAt}</time></dd></div>
+      <div><dt>Historical result</dt><dd>{run.result}<br />{run.stale ? "Stale · older than 24 hours" : "Within 24 hours"} at review<br />
+        <small>Reviewed <time dateTime={run.reviewedAt}>{run.reviewedAt}</time></small></dd></div>
+    </dl>}
+  </section>;
+}
+
+export function AdminFieldHealth() {
+  const [baseline, setBaseline] = useState<Selection>(null);
+  const [comparison, setComparison] = useState<Selection>(null);
+  const first = reviewedRun(baseline), second = reviewedRun(comparison);
+  const single = first ?? second;
+  return <>
+    <p id="evidence-instructions">Select {fieldReviewFiles.join(", ")} together from one trusted run per selection.
+      Add a later run to compare observations. Files stay in this browser. Matching checksums establish file consistency.
+      Evidence provenance requires a trusted source.</p>
+    <RunSelection side="Baseline" result={baseline} setResult={setBaseline} />
+    <RunSelection side="Comparison" result={comparison} setResult={setComparison} />
+    {first && second ? <>
+      <FieldRunComparison baseline={first} comparison={second} />
+      <details><summary>Baseline run diagnostics</summary><FieldHealthResults review={first} /></details>
+      <details><summary>Comparison run diagnostics</summary><FieldHealthResults review={second} /></details>
+    </> : single && <FieldHealthResults review={single} />}
   </>;
 }
