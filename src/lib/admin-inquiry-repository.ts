@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, desc, eq, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   ADMIN_INQUIRY_MAX_PAGE,
@@ -32,6 +32,7 @@ export type AdminInquiryDetail = {
 
 export interface AdminInquiryReadRepository {
   listInquiries(query: AdminInquiryQuery): Promise<AdminInquiryListResult>;
+  getReceivedInquiryCount(): Promise<number>;
   getInquiryDetail(id: string, lookup?: AdminMutationLookup): Promise<AdminInquiryDetail | null>;
 }
 
@@ -66,6 +67,12 @@ export class PostgresAdminInquiryReadRepository implements AdminInquiryReadRepos
       .orderBy(desc(inquiries.createdAt), desc(inquiries.id)).limit(ADMIN_INQUIRY_PAGE_SIZE + 1)
       .offset((page - 1) * ADMIN_INQUIRY_PAGE_SIZE);
     return { items: rows.slice(0, ADMIN_INQUIRY_PAGE_SIZE), hasNextPage: rows.length > ADMIN_INQUIRY_PAGE_SIZE };
+  }
+
+  async getReceivedInquiryCount(): Promise<number> {
+    const [result] = await this.database.select({ total: count() })
+      .from(inquiries).where(eq(inquiries.status, "received"));
+    return result.total;
   }
 
   async getInquiryDetail(id: string, lookup?: AdminMutationLookup): Promise<AdminInquiryDetail | null> {

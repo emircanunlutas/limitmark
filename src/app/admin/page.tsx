@@ -73,28 +73,42 @@ export async function renderAdminInquiryList(
   const invalidMutation = mutationValue === "invalid";
   const repository = await getRepository();
   let content: React.ReactNode;
+  let receivedCount: number | null = null;
+  const inquiryOutage = <div className="admin-outage" role="status"><h2>Inquiry data unavailable</h2><p>The inquiry store is not configured or cannot be reached. Try again later.</p></div>;
   // Delivery health is loaded only after authorization and only when the inquiry store is configured.
   // The loader never rejects and is bounded by its deadline, so a
   // failing or stalled delivery query renders "unavailable" without affecting or blocking the list.
   let deliveryHealth: NotificationDeliveryHealthView | null = null;
   let deliveryConfiguration: NotificationDeliveryConfigurationEvidence = { state: "unknown" };
   if (!repository) {
-    content = <div className="admin-outage" role="status"><h2>Inquiry data unavailable</h2><p>The inquiry store is not configured or cannot be reached. Try again later.</p></div>;
+    content = inquiryOutage;
   } else {
     const deliveryHealthPromise = loadNotificationDeliveryHealth(getDeliveryRepository, now());
     deliveryConfiguration = getDeliveryConfiguration();
-    try { content = await InquiryList({ query, repository }); }
-    catch { content = <div className="admin-outage" role="status"><h2>Inquiry data unavailable</h2><p>The inquiry store is not configured or cannot be reached. Try again later.</p></div>; }
+    const [list, count] = await Promise.allSettled([
+      InquiryList({ query, repository }),
+      repository.getReceivedInquiryCount(),
+    ]);
+    content = list.status === "fulfilled" ? list.value : inquiryOutage;
+    if (list.status === "fulfilled" && count.status === "fulfilled") receivedCount = count.value;
     deliveryHealth = await deliveryHealthPromise;
   }
 
   return (
     <div className="page-shell admin-shell"><Container>
-      <header className="admin-heading"><p className="admin-eyebrow">Limitmark Admin</p><h1>Inquiries</h1><p>Controlled inquiry administration.</p></header>
+      <header className="admin-heading">
+        <p className="admin-eyebrow">Limitmark Admin</p>
+        <h1>Inquiries</h1>
+        <p>{receivedCount === null ? "Received inquiry count unavailable." : (
+          <Link className="text-link" href={buildAdminInquiryHref({ status: "received", search: "" })} prefetch={false}>
+            View all received inquiries ({receivedCount.toLocaleString("en-GB")})
+          </Link>
+        )}</p>
+      </header>
       <nav className="admin-heading" aria-label="Operational views"><Link className="text-link" href="/admin/field-health" prefetch={false}>Defense field health</Link></nav>
       {invalidMutation && <p className="admin-notice admin-notice-warning" role="status">Nothing changed because that operation is not valid.</p>}
       {deliveryHealth && <NotificationDeliveryHealthPanel view={deliveryHealth} configuration={deliveryConfiguration} />}
-      <form className="admin-filters" action="/admin" method="get" role="search">
+      <form key={buildAdminInquiryHref({ search: query.search, status: query.status })} className="admin-filters" action="/admin" method="get" role="search">
         <label><span>Search</span><input type="search" name="q" defaultValue={query.search} maxLength={254} placeholder="ID, name, email, or company" /></label>
         <label><span>Status</span><select name="status" defaultValue={query.status ?? ""}><option value="">All statuses</option>{adminInquiryStatuses.map((status) => <option value={status} key={status}>{displayLabel(status)}</option>)}</select></label>
         <button className="button button-primary" type="submit">Apply</button>

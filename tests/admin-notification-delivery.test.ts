@@ -357,10 +357,11 @@ test("admin routes authorize first, read deliveries only through the bounded loa
     readFile(new URL("../src/components/admin-notification-delivery.tsx", import.meta.url), "utf8"),
   ]);
   const listLoad = listSource.indexOf("loadNotificationDeliveryHealth(getDeliveryRepository, now())");
+  const inquiryLoad = listSource.indexOf("InquiryList({ query, repository })");
   assert.ok(listSource.indexOf("await authorize();") < listLoad);
   assert.ok(listSource.indexOf("if (!repository)") < listLoad);
-  assert.ok(listLoad < listSource.indexOf("await InquiryList("), "the delivery read runs concurrently with, not before, the list");
-  assert.ok(listSource.indexOf("await InquiryList(") < listSource.indexOf("deliveryHealth = await deliveryHealthPromise;"));
+  assert.ok(listLoad < inquiryLoad, "the delivery read runs concurrently with, not before, the list");
+  assert.ok(inquiryLoad < listSource.indexOf("deliveryHealth = await deliveryHealthPromise;"));
   const detailLoad = detailSource.indexOf("await loadInquiryNotificationDeliveries(getDeliveryRepository, detail.inquiry.id, now())");
   assert.ok(detailSource.indexOf("await authorize();") < detailLoad);
   assert.ok(detailSource.indexOf("if (!detail) notFound();") < detailLoad);
