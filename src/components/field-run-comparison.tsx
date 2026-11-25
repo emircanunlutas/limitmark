@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { compareFieldRuns } from "../lib/compare-field-runs";
-import { requiredFieldChecks, type ComponentHealth } from "../lib/field-health";
+import { coverageRows } from "../lib/field-evidence-coverage";
+import type { ComponentHealth } from "../lib/field-health";
 import type { RecordedRun } from "../lib/read-field-health";
 
 function ComparisonTable({ name, headings, rows }: { name: string; headings: string[]; rows: [string, ...ReactNode[]][] }) {
@@ -14,19 +15,6 @@ function ComparisonTable({ name, headings, rows }: { name: string; headings: str
   </div>;
 }
 
-const fileState = { present: "Checksum matched · JSON readable", unknown: "Unverified", unavailable: "Unavailable" };
-const coverageRows: [string, (r: RecordedRun) => string | number][] = [
-  ["External observations", r => fileState[r.files["external.json"]]],
-  ["Canary observations", r => fileState[r.files["canary.json"]]],
-  ["Cross-record accounting", r => r.accounting],
-  ["Stages with accounting discrepancies", r => r.accounting === "Reviewed" ? r.findings.filter(f => f.id.startsWith("accounting/")).length : "Unknown"],
-  ["Required accounting and telemetry checks present", r => r.requiredChecksPresent === null ? "Unknown" : `${r.requiredChecksPresent} of ${requiredFieldChecks.length}`],
-  ["Telemetry consistency", r => r.telemetry],
-  ["Protected window attempts", r => r.protectedAttempts ?? "Unknown"],
-  ["Client abort count available", r => r.clientAbortsReported ? "Reported" : "Unavailable"],
-  ["Artifacts refused by writer", r => r.artifactsRefused ?? "Unknown"],
-];
-
 function condition(stage: ComponentHealth) {
   return <>{stage.state}<br /><small>{stage.observations === undefined ? "Exercise unknown" : `${stage.observations} external observations`}</small></>;
 }
@@ -35,8 +23,8 @@ function contextMatch(first: string | null, second: string | null) {
   return !first || !second ? "Unconfirmed" : first === second ? "Matching" : "Different";
 }
 
-export function FieldRunComparison({ baseline, comparison }: { baseline: RecordedRun; comparison: RecordedRun }) {
-  const result = compareFieldRuns(baseline, comparison);
+export function FieldRunComparison({ baseline, comparison, identityLimits }: { baseline: RecordedRun; comparison: RecordedRun; identityLimits?: string[] }) {
+  const result = compareFieldRuns(baseline, comparison, identityLimits);
   return <section className="admin-panel field-comparison" aria-labelledby="comparison-heading">
     <h2 id="comparison-heading">Defensive run comparison</h2>
     {result.limits.length ? <><h3>Runs cannot be meaningfully compared</h3>

@@ -2,7 +2,7 @@ import { contextLabels, type ContextDimension } from "./field-comparison-context
 import { requiredFieldChecks, type ComponentHealth, type IncidentFinding } from "./field-health";
 import type { RecordedRun } from "./read-field-health";
 
-function comparisonLimits(baseline: RecordedRun, comparison: RecordedRun) {
+export function comparisonLimits(baseline: RecordedRun, comparison: RecordedRun, identityLimits: readonly string[] = []) {
   const limits: string[] = [];
   if (baseline.manifestDigest === comparison.manifestDigest) limits.push("Both selections contain the same manifest.");
   else if (!baseline.runKey || !comparison.runKey) limits.push("A recorded run identifier is missing or unsupported.");
@@ -19,7 +19,7 @@ function comparisonLimits(baseline: RecordedRun, comparison: RecordedRun) {
   }
   if (!baseline.canaryProtocol || !comparison.canaryProtocol) limits.push("Canary journey or phase coverage is unavailable.");
   else if (baseline.canaryProtocol !== comparison.canaryProtocol) limits.push("The recorded canary journey or exercised phase coverage differs.");
-  return limits;
+  return [...new Set([...limits, ...identityLimits])];
 }
 
 function observed(component: ComponentHealth, run: RecordedRun) {
@@ -43,8 +43,8 @@ type FindingChange = {
   status: "Newly observed" | "Persistent" | "No longer observed" | "Cannot assess";
 };
 
-export function compareFieldRuns(baseline: RecordedRun, comparison: RecordedRun) {
-  const limits = comparisonLimits(baseline, comparison);
+export function compareFieldRuns(baseline: RecordedRun, comparison: RecordedRun, identityLimits: readonly string[] = []) {
+  const limits = comparisonLimits(baseline, comparison, identityLimits);
   const components = baseline.components.map(before => {
     const after = comparison.components.find(c => c.name === before.name)!;
     const comparable = !limits.length && observed(before, baseline) && observed(after, comparison);

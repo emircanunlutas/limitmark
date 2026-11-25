@@ -12,7 +12,7 @@ export default async function FieldHealthPage() {
   return <div className="page-shell admin-shell"><Container>
     <Link className="text-link" href="/admin" prefetch={false}>Back to inquiries</Link>
     <header className="admin-detail-heading"><h1>Defense field health</h1>
-      <p>Review how the defense plane, origin boundary, and synthetic protected app handled requests in a recorded field run.</p>
+      <p>Review historical observations of the defense plane, origin boundary, and synthetic protected app. Select recorded runs to inspect their diagnostics and compare evidence.</p>
     </header>
     <AdminFieldHealth />
   </Container></div>;

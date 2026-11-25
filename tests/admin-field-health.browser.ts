@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { build } from "esbuild";
 import { chromium, expect } from "@playwright/test";
+import { verifyObservationHistory } from "./support/field-history-browser";
 import { changed, comparisonFiles, later, now, originals } from "./support/field-health-fixture";
 
 async function verify() {
@@ -35,6 +36,8 @@ async function verify() {
     const select = async (files: File[], picker = input) => picker.setInputFiles(await Promise.all(files.map(async file => ({
       name: file.name, mimeType: "application/octet-stream", buffer: Buffer.from(await file.arrayBuffer()),
     }))));
+
+    await verifyObservationHistory(page, select);
 
     const incident = await changed(({ manifest, canary }) => {
       manifest.result = "INVALID"; manifest.metrics.serverSide = "invalid";
@@ -125,7 +128,13 @@ async function verify() {
     await expect(baselineSlot).toContainText("SERVER-COMPLETE");
     await page.getByRole("button", { name: "Clear baseline" }).click();
     await expect(findings).toHaveCount(0);
-    assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length]), [0, 0]);
+    await select(first);
+    await expect(baselineSlot).toContainText("INVALID");
+    assert.deepEqual(await page.evaluate(async () => [localStorage.length, sessionStorage.length,
+      (await indexedDB.databases()).length, (await caches.keys()).length, document.cookie]), [0, 0, 0, 0, ""]);
+    await page.reload();
+    await page.addScriptTag({ content: bundle.outputFiles[0].text });
+    await expect(page.getByText(/0 of 8 observations/)).toBeVisible();
     assert.deepEqual(unexpectedRequests, []);
   } finally {
     await browser.close();
