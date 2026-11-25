@@ -27,7 +27,7 @@ function dependencies(options: { pre?: "allowed" | "limited" | "unavailable" | "
 
 test("verified flow orders PRE, Turnstile, POST and repository", async () => {
   const deps = dependencies();
-  assert.deepEqual(await executeVerifiedPublicInquiry({ form: form(), ingress, ...deps }), { kind: "redirect", location: "/test-talep-et/tesekkurler" });
+  assert.deepEqual(await executeVerifiedPublicInquiry({ form: form(), ingress, ...deps }), { kind: "persisted" });
   assert.deepEqual(deps.calls, ["pre", "turnstile", "post", "db"]);
 });
 

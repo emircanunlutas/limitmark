@@ -87,8 +87,23 @@ test("Production raw route verifies origin and signed bytes before PRE, then pre
     repository: { async create() { calls.push("db"); return { status: "created" as const }; } },
   };
   const response = await handlePublicInquiry(new Request("https://limitmark.com/api/public-inquiries", { method: "POST", body: bodyText, headers }), dependencies);
-  assert.deepEqual(await response.json(), { kind: "redirect", location: "/test-talep-et/tesekkurler" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { kind: "persisted" });
   assert.deepEqual(calls, ["pre", "turnstile", "post", "db"]);
+
+  for (const mode of ["idempotent", "interrupted"] as const) {
+    const response = await handlePublicInquiry(new Request("https://limitmark.com/api/public-inquiries", {
+      method: "POST", body: bodyText, headers,
+    }), { ...dependencies, repository: {
+      async create() {
+        if (mode === "interrupted") throw new Error("internal database details");
+        return { status: mode, inquiryId: "private-inquiry-id" };
+      },
+    } });
+    assert.equal(response.status, mode === "idempotent" ? 200 : 503);
+    assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+    assert.deepEqual(await response.json(), { kind: mode === "idempotent" ? "persisted" : "unconfirmed" });
+  }
 
   calls.length = 0;
   const wrongOrigin = await handlePublicInquiry(new Request("https://limitmark.com/api/public-inquiries", { method: "POST", body: bodyText, headers: { ...headers, origin: "https://attacker.test" } }), dependencies);

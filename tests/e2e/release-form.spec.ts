@@ -40,7 +40,7 @@ test("a failed submission transport preserves the form and permits retry", async
     else await route.continue();
   });
   await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
-  await expect(page.getByRole("main").getByRole("alert")).toBeVisible();
+  await expect(page.getByRole("main").getByRole("alert")).toContainText("Gönderim sonucu belirsiz.");
   await expect(page.getByLabel("Adınız", { exact: true })).toHaveValue("Çağrı Öztürk");
   await expect(page.locator('input[name="submissionToken"]')).toHaveValue(submissionToken);
   await page.unroute("**/api/public-inquiries");

@@ -1,16 +1,20 @@
 import "server-only";
 
 import type { AdmissionClient } from "./admission-client.server";
+import type { CreateInquiryInput, CreateInquiryResult } from "./inquiry-repository";
 import { createPayloadFingerprint } from "./payload-fingerprint";
-import { getFieldErrors, getRequestValues, readRequestFormData, requestSchema, type RequestState, type TestRequest } from "./request-schema";
+import { getFieldErrors, getRequestValues, readRequestFormData, requestSchema, type RequestState } from "./request-schema";
 import { readSubmissionToken } from "./submission-token";
 import { createTurnstileIdempotencyKey, readTurnstileToken, type TurnstileVerifier } from "./turnstile";
 import type { VerifiedMutationIngress } from "./ingress-verifier.server";
 
 export interface PublicInquiryRepository {
-  create(input: { request: TestRequest; submissionToken: string; payloadFingerprint: string }): Promise<{ status: "created" | "existing" | "conflict" }>;
+  create(input: CreateInquiryInput): Promise<Pick<CreateInquiryResult, "status">>;
 }
-export type PublicInquiryFlowResult = { kind: "redirect"; location: string } | { kind: "state"; state: RequestState };
+export type PublicInquiryFlowResult =
+  | { kind: "persisted" }
+  | { kind: "unconfirmed" }
+  | { kind: "state"; state: RequestState };
 const unavailableMessage = "Talep gönderimi şu anda kullanılamıyor. Bilgileriniz iletilmedi. Lütfen daha sonra tekrar deneyin.";
 
 export async function executeVerifiedPublicInquiry(input: {
@@ -37,8 +41,10 @@ export async function executeVerifiedPublicInquiry(input: {
   try {
     const stored = await input.repository.create({ request: parsed.data, submissionToken, payloadFingerprint: createPayloadFingerprint(parsed.data) });
     if (stored.status === "conflict") return { kind: "state", state: { errors: {}, values, submissionToken, message: "Talebiniz iletilemedi. Lütfen sayfayı yenileyip bilgilerinizi yeniden gönderin." } };
-    return { kind: "redirect", location: "/test-talep-et/tesekkurler" };
+    if (stored.status === "created" || stored.status === "idempotent") return { kind: "persisted" };
   } catch {
-    return { kind: "state", state: { errors: {}, values, submissionToken, message: "Talebiniz iletilemedi. Bilgileriniz bu sayfada duruyor; lütfen tekrar deneyin." } };
+    // The database may have committed before the connection was interrupted.
+    return { kind: "unconfirmed" };
   }
+  return { kind: "unconfirmed" };
 }
