@@ -247,6 +247,13 @@ fieldset.form-field { padding: 0; margin: 0; border: 0; }
 .field-comparison > h3 { margin: var(--space-6) 0 var(--space-2); }
 .field-comparison-table { min-width: 36rem; }
 .field-comparison .admin-delivery-list li li { padding: 0; border: 0; }
+.field-history > h3 { margin-top: var(--space-6); }
+.field-history-records { list-style: none; padding: 0; }
+.field-history-records > li { padding: var(--space-4) 0; border-top: 1px solid var(--border-subtle); }
+.field-history-records article > * + * { margin-top: var(--space-2); }
+.field-history-conditions, .field-history-actions { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
+.field-history-conditions { list-style: none; padding: 0; }
+.field-history summary { cursor: pointer; }
 .field-selection .admin-filters { margin: var(--space-3) 0; padding: 0; border: 0; }
 .admin-definition-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); margin: var(--space-6) 0 0; }
 .admin-definition-list div { min-width: 0; padding-bottom: var(--space-3); border-bottom: 1px solid var(--border-subtle); }
