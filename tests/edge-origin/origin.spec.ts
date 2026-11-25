@@ -27,8 +27,8 @@ test("enabled origin boundary denies direct and spoofed requests on the built se
     { ...trusted, host: "deployment.vercel.app", "x-forwarded-host": "deployment.vercel.app" },
     { "x-middleware-subrequest": "src/proxy:src/proxy:src/proxy:src/proxy:src/proxy" },
   ];
-  for (const headers of cases) {
-    const response = await request.get("/test-talep-et", { headers });
+  for (const path of ["/test-talep-et", "/"]) for (const headers of cases) {
+    const response = await request.get(path, { headers });
     expect(response.status()).toBe(404);
     expect(response.headers()["cache-control"]).toContain("no-store");
     expect(response.headers()["cdn-cache-control"]).toBe("no-store");

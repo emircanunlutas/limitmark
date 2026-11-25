@@ -10,9 +10,14 @@ test("direct-origin admin requests fail closed without leaking inquiry content",
   }
 });
 
-test("service links preselect an editable service; unknown query safely defaults", async ({ page }) => {
+test("demo is disclosed before service selection; service prefill remains editable", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("link", { name: "Web Uygulaması Dayanıklılık Testi — Bu Testi Görüşelim", exact: true }).click();
+  const notice = "Demo formu bilgileri kaydetmez ve gerçek bir talep oluşturmaz.";
+  await expect(page.locator(".hero").getByText(notice)).toBeVisible();
+  await expect(page.locator(".hero").getByRole("link", { name: "Demo Formunu Aç" })).toBeVisible();
+  const services = page.locator("#hizmetler");
+  await expect(services.getByText(notice)).toBeVisible();
+  await services.getByRole("link", { name: "Web Uygulaması Dayanıklılık Testi — Bu Hizmeti Demoda Seç", exact: true }).press("Enter");
   await expect(page.getByLabel("İlgilendiğiniz hizmet")).toHaveValue("web");
   await page.getByLabel("İlgilendiğiniz hizmet").selectOption("network");
   await expect(page.getByLabel("İlgilendiğiniz hizmet")).toHaveValue("network");

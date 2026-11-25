@@ -13,7 +13,7 @@ test("expanded layout and mobile menu fit all target sizes", async ({ page }) =>
       const box = await menu.boundingBox();
       expect(box).not.toBeNull();
       expect(box!.y + box!.height).toBeLessThanOrEqual(height + 1);
-      await menu.getByRole("link", { name: "Test Talep Et", exact: true }).click();
+      await menu.getByRole("link", { name: "Test Talebi", exact: true }).click();
     } else await page.goto("/test-talep-et");
     await page.getByRole("button", { name: "Talebi Gönder", exact: true }).click();
     await page.locator(".form-extras summary").click();
@@ -29,7 +29,7 @@ test("200 percent text at the narrowest width keeps controls and menu usable", a
   await page.getByRole("button", { name: "Menü", exact: true }).click();
   const overflowing = await page.locator("body *").evaluateAll((elements) => elements.filter((element) => element.getBoundingClientRect().right > window.innerWidth).map((element) => `${element.tagName}.${element.className}: ${element.getBoundingClientRect().right}`));
   expect(await page.evaluate(() => document.documentElement.scrollWidth), overflowing.join("\n")).toBeLessThanOrEqual(320);
-  await page.getByRole("navigation", { name: "Ana gezinme" }).getByRole("link", { name: "Test Talep Et", exact: true }).click();
+  await page.getByRole("navigation", { name: "Ana gezinme" }).getByRole("link", { name: "Test Talebi", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Test Talep Et", exact: true })).toBeVisible();
   await page.addStyleTag({ content: "html { font-size: 200% !important; }" });
   await page.locator(".form-extras summary").press("Enter");

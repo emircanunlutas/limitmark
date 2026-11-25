@@ -90,6 +90,7 @@ a.text-link:active { color: var(--accent-active); }
 .hero-copy { grid-column: span 7; max-width: 690px; }
 .hero-intro { margin-top: var(--space-6); max-width: 640px; font-size: 1.1875rem; line-height: 1.57895; }
 .hero-manual { max-width: 620px; margin-top: var(--space-4); }
+.hero-copy .inquiry-availability, .section-intro .inquiry-availability { margin-top: var(--space-4); }
 .hero-actions { display: flex; gap: var(--space-3); margin-top: var(--space-8); }
 .hero-authorization { max-width: 620px; margin-top: var(--space-4); }
 .methodology-diagram { grid-column: span 5; width: 100%; max-width: 440px; justify-self: end; padding: 0 var(--space-6); }
@@ -105,7 +106,8 @@ a.text-link:active { color: var(--accent-active); }
 .methodology-diagram figcaption { margin-top: var(--space-4); color: var(--text-secondary); font-size: 0.8125rem; line-height: 1.53847; font-weight: 500; text-align: center; }
 
 .services-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--grid-gap); }
-.service-card { display: grid; grid-template-rows: subgrid; grid-row: span 5; gap: var(--space-6); padding: 28px; background: var(--surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); }
+.services-grid-closed { --service-card-rows: 4; }
+.service-card { display: grid; grid-template-rows: subgrid; grid-row: span var(--service-card-rows, 5); gap: var(--space-6); padding: 28px; background: var(--surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); }
 .service-card h3 { font-size: 1.375rem; line-height: 1.36364; }
 .service-question { color: var(--text-primary); }
 .service-result h4 { margin-bottom: var(--space-2); }

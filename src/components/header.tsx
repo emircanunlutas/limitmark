@@ -64,7 +64,7 @@ export function Header({ name }: { name: string }) {
         </button>
         <nav id="main-navigation" className={`main-navigation ${open ? "is-open" : ""}`} aria-label="Ana gezinme">
           {links.map((link) => <Link key={link.href} href={link.href} onClick={() => setOpen(false)}>{link.label}</Link>)}
-          <Link className="button button-primary nav-cta" href="/test-talep-et" onClick={() => setOpen(false)}>Test Talep Et</Link>
+          <Link className="button button-primary nav-cta" href="/test-talep-et" onClick={() => setOpen(false)}>Test Talebi</Link>
         </nav>
       </Container>
     </header>

@@ -14,6 +14,12 @@ test("security headers and sensitive-route cache policies survive the production
     if (path !== "/") {
       expect(headers["cache-control"]).toContain("no-store");
       expect(headers["cdn-cache-control"]).toBe("no-store");
+    } else {
+      // Request-time rendering must not make the visitor-independent homepage uncacheable at the
+      // platform CDN, while browsers and other shared caches stay uncached.
+      expect(headers["cache-control"]).toContain("no-store");
+      expect(headers["cdn-cache-control"]).toBeUndefined();
+      expect(headers["vercel-cdn-cache-control"]).toBe("max-age=60, stale-while-revalidate=120");
     }
     if (path.startsWith("/admin")) expect(response.status()).toBe(404);
   }

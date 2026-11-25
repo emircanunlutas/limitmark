@@ -40,7 +40,7 @@ test("routes, history, refresh, all CTA targets and anchors remain consistent", 
     const target = new URL(href, baseURL);
     expect((await request.get(target.pathname + target.search)).status()).toBe(200);
   }
-  await page.getByRole("link", { name: "Web Uygulaması Dayanıklılık Testi — Bu Testi Görüşelim", exact: true }).click();
+  await page.getByRole("link", { name: "Web Uygulaması Dayanıklılık Testi — Bu Hizmeti Demoda Seç", exact: true }).click();
   await expect(page.getByLabel("İlgilendiğiniz hizmet")).toHaveValue("web");
   await page.waitForLoadState("networkidle");
   await page.getByRole("link", { name: "Gizlilik sayfasını", exact: true }).click();
@@ -91,13 +91,13 @@ test("keyboard skip link, menu exit, focus restoration and error links are usabl
   const toggle = page.getByRole("button", { name: "Menü", exact: true });
   await toggle.press("Enter");
   const navigation = page.getByRole("navigation", { name: "Ana gezinme" });
-  await navigation.getByRole("link", { name: "Test Talep Et", exact: true }).press("Tab");
+  await navigation.getByRole("link", { name: "Test Talebi", exact: true }).press("Tab");
   await expect(navigation).toBeHidden();
   await toggle.press("Enter");
   await page.keyboard.press("Escape");
   await expect(toggle).toBeFocused();
   await toggle.press("Enter");
-  await navigation.getByRole("link", { name: "Test Talep Et", exact: true }).press("Enter");
+  await navigation.getByRole("link", { name: "Test Talebi", exact: true }).press("Enter");
   await page.getByRole("button", { name: "Talebi Gönder", exact: true }).press("Enter");
   await expect(page.getByRole("main").getByRole("alert")).toBeFocused();
   await page.getByRole("main").getByRole("alert").getByRole("link", { name: /^Adınız:/ }).press("Enter");

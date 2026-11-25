@@ -1,6 +1,21 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
+test("the homepage shows closure and the configured email before an inquiry click", async ({ page }) => {
+  await page.goto("/#hizmetler");
+  const main = page.getByRole("main");
+  const notice = "Çevrim içi talepler şu anda kullanılamıyor.";
+  for (const section of [page.locator(".hero"), page.locator("#hizmetler"), page.locator("#iletisim")]) {
+    await expect(section.getByText(notice, { exact: false })).toBeVisible();
+    await expect(section.getByRole("link", { name: "E-posta ile İletişime Geç" })).toHaveAttribute("href", "mailto:inquiries@example.test");
+  }
+  await expect(main.locator('a[href^="/test-talep-et"]')).toHaveCount(0);
+  const faq = page.locator("#sss details").first();
+  await faq.locator("summary").press("Enter");
+  await expect(faq.getByText("e-postayla paylaşabilirsiniz.", { exact: false })).toBeVisible();
+  await expect(faq.getByText("Talep formunda", { exact: false })).toHaveCount(0);
+});
+
 test("configured contact destinations remain usable", async ({ page }) => {
   const expected = "inquiries@example.test";
   await page.goto("/test-talep-et");

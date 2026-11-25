@@ -170,7 +170,7 @@ for (const { profile, width, optional } of scenarios) {
       await assertLayout(page);
       await settle(page);
 
-      await page.getByRole("link", { name: "Web Uygulaması Dayanıklılık Testi — Bu Testi Görüşelim", exact: true }).click();
+      await page.getByRole("link", { name: "Web Uygulaması Dayanıklılık Testi — Bu Hizmeti Demoda Seç", exact: true }).click();
       await expect(page.locator("#service")).toHaveValue("web");
       await page.locator("#service").selectOption("network");
       await settle(page);
