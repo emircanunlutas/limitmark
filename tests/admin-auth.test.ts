@@ -285,6 +285,7 @@ test("the admin list route retains the real application-side boundary", async ()
   assert.match(enforcementSource, /if \(!identity\) notFound\(\)/);
   assert.doesNotMatch(enforcementSource, /forbidden/);
   assert.match(pageSource, /Limitmark Admin/);
-  assert.match(pageSource, /Controlled inquiry administration/);
+  const countAccess = pageSource.indexOf("repository.getReceivedInquiryCount()");
+  assert.ok(countAccess > pageSource.indexOf("await authorize();"));
   assert.doesNotMatch(pageSource, /submissionToken|payloadFingerprint|notificationOutbox/);
 });

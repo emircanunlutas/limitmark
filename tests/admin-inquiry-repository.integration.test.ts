@@ -89,6 +89,17 @@ test("status and conservative search return only intended fields", integration, 
   assert.equal(invalidStatus.items.length, 3);
 });
 
+test("received inquiry count covers all pages and excludes every other current status", integration, async () => {
+  assert.equal(await repository!.getReceivedInquiryCount(), 0);
+  const received = Array.from({ length: ADMIN_INQUIRY_PAGE_SIZE + 2 }, (_, index) => row(index + 1));
+  const otherStatuses = schema.inquiryStatusValues.filter((status) => status !== "received");
+  await database!.insert(inquiries).values([
+    ...received,
+    ...otherStatuses.map((status, index) => row(received.length + index + 1, { status })),
+  ]);
+  assert.equal(await repository!.getReceivedInquiryCount(), received.length);
+});
+
 test("detail returns one revision with its own bounded history and notes across a concurrent commit", integration, async () => {
   const selected = row(10);
   const other = row(11);
