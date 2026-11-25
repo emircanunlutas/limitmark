@@ -15,6 +15,13 @@ const nextConfig: NextConfig = {
         { key: "Vercel-CDN-Cache-Control", value: "no-store" },
       ],
     }, {
+      // The homepage renders at request time so its intake notice matches the runtime configuration,
+      // but its output is identical for every visitor. This short window applies to Vercel's CDN only
+      // (the header is not forwarded); browsers and Cloudflare still receive Next's private no-store.
+      // The Proxy sets no-store on every origin-denied response, overriding this rule (see tests/edge-origin).
+      source: "/",
+      headers: [{ key: "Vercel-CDN-Cache-Control", value: "max-age=60, stale-while-revalidate=120" }],
+    }, {
       source: "/:path*",
       headers: [
         // Limited CSP: nonce/hash and Access form-redirect review are deferred.
