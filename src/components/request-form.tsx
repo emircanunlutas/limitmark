@@ -19,7 +19,7 @@ const authorityOptions = [
 const initialState: RequestState = { errors: {} };
 const unconfirmedMessage = "Talebinizin alınıp alınmadığını doğrulayamadık. Bu sayfayı açık tutun ve bilgilerinizi değiştirmeden tekrar gönderin.";
 
-export function RequestForm({ initialService, submissionToken, turnstile }: {
+export function RequestForm({ initialService, submissionToken: issuedSubmissionToken, turnstile }: {
   initialService: string;
   submissionToken: string;
   turnstile: null | { siteKey: string; action: string };
@@ -28,7 +28,8 @@ export function RequestForm({ initialService, submissionToken, turnstile }: {
   const [serverState, formAction, serverPending] = useActionState(submitTestRequest, initialState);
   const [clientState, setClientState] = useState<RequestState | null>(null);
   const state = clientState ?? serverState;
-  const [formToken] = useState(submissionToken);
+  // The submission identity is fixed for the lifetime of this form, so every retry reuses it.
+  const [submissionToken] = useState(issuedSubmissionToken);
   const [outcome, setOutcome] = useState<"unconfirmed" | "persisted" | null>(null);
   const unconfirmed = outcome === "unconfirmed";
   const [values, setValues] = useState(() => ({ name: "", email: "", company: "", service: initialService, system: "", objective: "", environment: "", authority: "", protection: "unknown", provider: "", notes: "", ...serverState.values }));
@@ -137,7 +138,7 @@ export function RequestForm({ initialService, submissionToken, turnstile }: {
         }
       });
     }}>
-      <input type="hidden" name={submissionTokenField} value={serverState.submissionToken ?? formToken} />
+      <input type="hidden" name={submissionTokenField} value={state.submissionToken ?? submissionToken} />
       {(unconfirmed || hasErrors || state.message) && <div className="error-summary" tabIndex={-1} ref={summaryRef} role="alert">
         <h2>{unconfirmed ? "Gönderim sonucu belirsiz." : hasErrors ? "Lütfen işaretli alanları kontrol edin." : "Talep gönderilemedi."}</h2>
         {unconfirmed ? <p>{unconfirmedMessage}</p> : state.message && <p>{state.message}</p>}
