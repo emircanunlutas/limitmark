@@ -20,6 +20,7 @@ import type { Collector } from "./collector";
 
 const BOUNDARY_FIELD_ENTRY = path.join(REPOSITORY_ROOT, "defense", "boundary", "main-field.ts");
 const APP_FIELD_ENTRY = path.join(REPOSITORY_ROOT, "defense", "origin", "app-main-field.ts");
+const NEXT_APP_ENTRY = path.join(REPOSITORY_ROOT, "lab", "defense", "next-app-main.ts");
 
 type Hooks<Frame, Fin, Tick> = { frame: (frame: Frame) => number; fin: (fin: Fin) => void; exited: (detail: string) => void; tick: (tick: Tick) => void };
 
@@ -40,10 +41,10 @@ class FieldChild<Frame extends EventFrame<BoundaryEvent> | EventFrame<AppEvent>,
   }
 
   static spawn<Frame extends EventFrame<BoundaryEvent> | EventFrame<AppEvent>, Fin, Tick, Self>(
-    entry: string, init: object, name: string, hooks: Hooks<Frame, Fin, Tick>, make: (child: ChildProcess, port: number, spawnedAtMs: number) => Self, timeoutMs: number,
+    entry: string, init: object, name: string, hooks: Hooks<Frame, Fin, Tick>, make: (child: ChildProcess, port: number, spawnedAtMs: number) => Self, timeoutMs: number, env?: NodeJS.ProcessEnv,
   ): Promise<Self> {
     const spawnedAtMs = Date.now();
-    const child = fork(entry, [], { execArgv: process.execArgv, cwd: REPOSITORY_ROOT, stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json" });
+    const child = fork(entry, [], { execArgv: process.execArgv, cwd: REPOSITORY_ROOT, stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json", env });
     return new Promise<Self>((resolve, reject) => {
       let instance: Self | null = null;
       const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`the ${name} did not become ready`)); }, timeoutMs);
@@ -128,6 +129,22 @@ export class FieldAppProcess extends FieldChild<EventFrame<AppEvent>, AppFinMess
     return FieldChild.spawn<EventFrame<AppEvent>, AppFinMessage, AppTick, FieldAppProcess>(
       APP_FIELD_ENTRY, { type: "init", ...init } satisfies AppFieldInit, "protected app", hooks,
       (child, port, spawnedAtMs) => new FieldAppProcess(child, port, spawnedAtMs, hooks, "protected app"), timeoutMs,
+    );
+  }
+}
+
+export class NextAppProcess extends FieldChild<EventFrame<AppEvent>, AppFinMessage, never> {
+  static start(collector: Collector, init: Omit<AppInit, "type">): Promise<NextAppProcess> {
+    const hooks: Hooks<EventFrame<AppEvent>, AppFinMessage, never> = {
+      frame: (frame) => collector.ingestAppFrame(frame),
+      fin: (fin) => collector.appFinished({ drained: fin.drained, channel: fin.channel, stats: fin.stats }),
+      exited: (detail) => collector.appExited(detail),
+      tick: () => undefined,
+    };
+    return FieldChild.spawn<EventFrame<AppEvent>, AppFinMessage, never, NextAppProcess>(
+      NEXT_APP_ENTRY, { type: "init", ...init } satisfies AppInit, "protected Next app", hooks,
+      (child, port, spawnedAtMs) => new NextAppProcess(child, port, spawnedAtMs, hooks, "protected Next app"),
+      20_000, { NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1", SystemRoot: process.env.SystemRoot },
     );
   }
 }
