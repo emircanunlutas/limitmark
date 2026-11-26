@@ -7,7 +7,7 @@ import { reconcileLevel, parseReconcileArguments } from "../lab/defense/ba0-fiel
 import { BA0_FIELD_V1 } from "../lab/defense/field-thresholds";
 import { GENERATOR_REPORT_SCHEMA, parseGeneratorReport, type GeneratorReport } from "../lab/defense/generator-report";
 import { SERVER_LEVEL_SCHEMA, finalFrom, reconcile, type ServerLevelEvidence } from "../lab/defense/reconcile";
-import { EvidenceRun, collectEnvironment, collectGitState, REPOSITORY_ROOT } from "../lab/evidence/manifest";
+import { EvidenceRun, collectEnvironment, collectGitState, REPOSITORY_ROOT, sha256Hex, verifyEvidenceDirectory } from "../lab/evidence/manifest";
 
 const LIMITS = BA0_FIELD_V1.generator;
 const summary = (p99 = 5) => ({ count: 100, min: 1, mean: 3, p50: 3, p90: 4, p95: 5, p99, max: p99 });
@@ -295,12 +295,18 @@ test("the offline reconcile verifies the server evidence's checksums, compares i
     assert.equal(valid.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
     assert.equal(valid.exit, 0);
     const finalDir = path.join(root, valid.evidenceId!);
-    const finalJson = JSON.parse(fs.readFileSync(path.join(finalDir, "final.json"), "utf8")) as { validScopedTo: Record<string, unknown>; claims: { notClaimed: string[] }; inputs: { server: Record<string, string>; generator: Record<string, string> } };
+    const finalText = fs.readFileSync(path.join(finalDir, "final.json"), "utf8");
+    const finalJson = JSON.parse(finalText) as { validScopedTo: Record<string, unknown>; claims: { notClaimed: string[] }; inputs: { server: Record<string, string>; generator: Record<string, string> } };
     assert.deepEqual(Object.keys(finalJson.validScopedTo).sort(), ["campaignId", "gitSha", "levelId", "paramsFingerprintSha256", "workers", "workloadFingerprintSha256"]);
     assert.ok(finalJson.claims.notClaimed.some((entry) => /DDoS resistance/.test(entry)));
     assert.ok(finalJson.claims.notClaimed.some((entry) => /network, transport, TLS or origin-network isolation/.test(entry)));
     assert.match(finalJson.inputs.generator.reportSha256, /^[0-9a-f]{64}$/);
-    assert.match(finalJson.inputs.server.levelSha256, /^[0-9a-f]{64}$/);
+    assert.equal(finalJson.inputs.server.levelSha256, sha256Hex(fs.readFileSync(path.join(root, id, "server-level.json"))));
+    assert.deepEqual(verifyEvidenceDirectory(finalDir), []);
+
+    const replay = reconcileLevel({ serverId: id, reportPath }, root, new Date("2026-10-07T00:00:00.000Z"));
+    assert.deepEqual([replay.verdict, replay.exit, replay.reasons, replay.result], [valid.verdict, valid.exit, valid.reasons, valid.result]);
+    assert.equal(fs.readFileSync(path.join(root, replay.evidenceId!, "final.json"), "utf8"), finalText);
 
     const broken = { ...report, attempted: 101 };
     fs.writeFileSync(reportPath, JSON.stringify(broken));
@@ -376,6 +382,36 @@ test("a server evidence that fails its checksums, is unfinalized or is not a lev
     fs.writeFileSync(reportPath, JSON.stringify(report));
     assert.equal(reconcileLevel({ serverId: wrongSchema, reportPath }, root).verdict, "REFUSED");
   } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("offline reconcile refuses server-level evidence without its checksum entry", () => {
+  const root = testRoot();
+  try {
+    const { server, report } = consistent();
+    const serverId = serverEvidence(root, server);
+    const reportPath = path.join(root, "generator-report.json");
+    fs.writeFileSync(reportPath, JSON.stringify(report));
+    const sumsPath = path.join(root, serverId, "SHA256SUMS");
+    const sums = fs.readFileSync(sumsPath, "utf8");
+    const serverEntry = sums.split("\n").find((entry) => entry.endsWith("  server-level.json"));
+    assert.ok(serverEntry);
+    const cases = [
+      { sums: sums.replace(`${serverEntry}\n`, ""), issue: "server-level.json" },
+      { sums: sums + `${serverEntry}\n`, issue: "server-level.json" },
+      { sums: sums.replace(serverEntry, `${serverEntry}  extra`), issue: "SHA256SUMS" },
+    ];
+    for (const input of cases) {
+      fs.writeFileSync(sumsPath, input.sums);
+      const outcome = reconcileLevel({ serverId, reportPath }, root);
+      assert.deepEqual([outcome.verdict, outcome.exit, outcome.evidenceId, outcome.result], ["REFUSED", 2, null, null]);
+      assert.ok(outcome.reasons[0].startsWith(`server evidence failed its checksums: ${input.issue}`));
+    }
+
+    fs.unlinkSync(sumsPath);
+    const unfinalized = reconcileLevel({ serverId, reportPath }, root);
+    assert.equal(unfinalized.verdict, "REFUSED");
+    assert.match(unfinalized.reasons[0], /checksums are missing/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test("the reconcile command line accepts exactly --server and --report (a run id and a generator-report.json); no URL, host or other path", () => {
