@@ -66,6 +66,12 @@ A layer PASS is not delivery. `EGRESS_ATTEMPTED`, `ORIGIN_RECEIVED`, `ORIGIN_COM
 what the origin independently observed (`delivery.l1PassedNotReceivedByOrigin`). Egress `refused` / `reset` / `timeout` / `error` are separately
 attributed (`EGRESS_FAILED` with a kind, answered 502 or 504). An origin receipt with no plane pass behind it is a bypass and is INVALID.
 
+A plane `EGRESS_RESPONDED` normally requires `ORIGIN_RECEIVED`. The one exception is the Origin Boundary's own failure response: when the
+boundary's recorded evidence shows `BOUNDARY_FORWARD_FAILED` with `refused` (the application was never reached), no forward response, a 502
+that the plane relayed unchanged, the hop and proof the plane issued, and the application stream is empty for that request, the missing receipt is
+explained and no application event is fabricated. `reset`, `timeout` and `error` forward failures, a relayed 502, any application event and any
+missing or contradictory boundary record leave it an anomaly.
+
 ## Ledger crash survivability (property: measurement outside the plane's failure domain)
 
 Design chosen (smallest that satisfies the property, no shared memory): the plane is its **own process**; the authoritative collector

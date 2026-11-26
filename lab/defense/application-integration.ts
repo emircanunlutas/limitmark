@@ -63,12 +63,8 @@ async function run(synthetic: boolean): Promise<void> {
       assert.equal(direct.status, 403);
       assert.equal(direct.body.length, 0);
     }
-    const [boundaryFin, appFin] = await Promise.all([boundary.finish(5_000), app.finish(5_000)]);
-    assert(boundaryFin?.drained);
+    const appFin = await app.finish(5_000);
     assert(appFin?.drained);
-    assert.equal(boundaryFin.stats.admitted, 2);
-    assert.equal(boundaryFin.stats.forwardResponded, 2);
-    assert.equal(boundaryFin.stats.rejectedByReason["ob.proof_missing"], 1);
     assert.equal(appFin.stats.counters.admitted, 2);
     assert.equal(appFin.stats.counters.executed, 2);
     assert.equal(appFin.stats.counters.stateMutations, 0);
@@ -76,6 +72,21 @@ async function run(synthetic: boolean): Promise<void> {
     assert.equal(appFin.stats.served.completed, 2);
     assert.equal(appFin.stats.served.aborted, 0);
     assert.equal(appFin.stats.guard.contentReadsStarted, 0);
+
+    // Stop the actual application after draining it. The live boundary must refuse the forward itself and answer 502 without any application
+    // event; the plane relays that response, and the collector must reconcile it from the boundary's evidence (no fabricated origin receipt).
+    await app.stop();
+    const appStopped = await read(plane.port, "protected", "app-stopped");
+    assert.equal(appStopped.status, 502);
+    assert.equal(appStopped.body.length, 0);
+    assert.match(String(appStopped.headers["cache-control"]), /no-store/u);
+    // The boundary drains only after its last event so the collector's emitted-versus-received identity covers the refused forward.
+    const boundaryFin = await boundary.finish(5_000);
+    assert(boundaryFin?.drained);
+    assert.equal(boundaryFin.stats.admitted, 3);
+    assert.equal(boundaryFin.stats.forwardResponded, 2);
+    assert.equal(boundaryFin.stats.forwardFailed, 1);
+    assert.equal(boundaryFin.stats.rejectedByReason["ob.proof_missing"], 1);
 
     // Remove the actual upstream after draining it. The plane must return
     // its own bounded failure and emit no successful downstream lifecycle.
@@ -99,6 +110,11 @@ async function run(synthetic: boolean): Promise<void> {
     }
     const refusedApp = collector.recordFor(directApp.nonce);
     assert.deepEqual(refusedApp?.app.map(({ kind, reason }) => [kind, reason]), [["APP_REFUSED", "ob.proof_missing"]]);
+    const appDown = collector.recordFor(appStopped.nonce);
+    assert(appDown);
+    assert.deepEqual(appDown.boundary.map(({ kind, forwardError }) => [kind, forwardError]).filter(([kind]) => kind === "BOUNDARY_FORWARD_FAILED"), [["BOUNDARY_FORWARD_FAILED", "refused"]]);
+    assert.deepEqual(appDown.app, []);
+    assert.deepEqual(appDown.origin, []);
     const failed = collector.recordFor(unavailable.nonce);
     assert(failed);
     assert(failed.plane.some((event) => event.kind === "EGRESS_FAILED" && event.egressError === "refused"));
@@ -112,6 +128,7 @@ async function run(synthetic: boolean): Promise<void> {
       intakeState: synthetic ? "synthetic-form" : "closed",
       directBoundary: directBoundary.status,
       directApp: directApp.status,
+      appStopped: appStopped.status,
       boundaryStopped: unavailable.status,
       completedLineages: 2,
       events: { plane: planeFin.channel.emitted, boundary: boundaryFin.channel.emitted, app: appFin.channel.emitted },

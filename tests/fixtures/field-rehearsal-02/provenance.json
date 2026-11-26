@@ -1,0 +1,61 @@
+{
+  "description": "Verbatim ledger records from GCP Rehearsal 02 (accepted master 4f55df59a48ba0d6e9010916674fb8b9ee0c2bc5). Each row is the retained LedgerRecord, unmodified, wrapped with its round name. The original field verdict is preserved below and is NOT changed by the corrected replay.",
+  "source": {
+    "evidenceManifestSha256": "2e596a43f00acbffdfade74a0c21187db13ad9d3a208974c4c1b17c09676e336",
+    "file": "r02-results/ledger.jsonl",
+    "fileSha256": "3ef4e3f628a742a87b3a903f1f6e4d18e5cc5d06ce5d0c4cfe2076b215c733d1",
+    "reconciliationSha256": "7dbaa28971c44dcb5d25118b9a713c9499562a5f9363912b556e8401137d00e7"
+  },
+  "rounds": [
+    "app-1",
+    "app-2",
+    "boundary-2",
+    "restored",
+    "control"
+  ],
+  "rowCount": 32,
+  "originalFieldVerdict": {
+    "app-1": {
+      "anomalyTotal": 2,
+      "anomalies": [
+        {
+          "code": "missing_transition",
+          "nonce": "r7",
+          "detail": "ORIGIN_RECEIVED"
+        },
+        {
+          "code": "missing_transition",
+          "nonce": "r8",
+          "detail": "ORIGIN_RECEIVED"
+        }
+      ]
+    },
+    "app-2": {
+      "anomalyTotal": 2,
+      "anomalies": [
+        {
+          "code": "missing_transition",
+          "nonce": "r7",
+          "detail": "ORIGIN_RECEIVED"
+        },
+        {
+          "code": "missing_transition",
+          "nonce": "r8",
+          "detail": "ORIGIN_RECEIVED"
+        }
+      ]
+    },
+    "boundary-2": {
+      "anomalyTotal": 0,
+      "anomalies": []
+    },
+    "restored": {
+      "anomalyTotal": 0,
+      "anomalies": []
+    },
+    "control": {
+      "anomalyTotal": 0,
+      "anomalies": []
+    }
+  }
+}

@@ -350,6 +350,30 @@ const OUTCOME_HEADER_VALUE: Readonly<Record<TerminalOutcome, string>> = {
 };
 
 /**
+ * True only when the plane's EGRESS_RESPONDED was the Origin Boundary's OWN failure response, so the application was provably never
+ * reached and no ORIGIN_RECEIVED can exist. This is decided from the boundary's recorded evidence, never from the HTTP status alone:
+ *   - both hop-gate streams are present and the application stream holds nothing at all for this request;
+ *   - the boundary admitted exactly the hop and proof the plane issued, and forwarded it;
+ *   - the boundary's forward failed with `refused` (the connection was never established, so no request byte reached the application;
+ *     `reset`, `timeout` and `error` can follow an admission and stay anomalous) and it never recorded a forward response;
+ *   - the boundary answered 502, which is what it sends for a refused forward, and the plane relayed that same status.
+ * Anything else, including a missing or contradictory boundary record, leaves the missing origin receipt an anomaly.
+ */
+function boundaryRefusedBeforeApp(view: LifecycleView, attempted: PlaneEvent | undefined, responded: PlaneEvent): boolean {
+  const { boundary, app } = view;
+  if (boundary === undefined || app === undefined || app.length > 0 || view.origin.length > 0 || attempted === undefined) return false;
+  const issued = view.plane.find((event) => event.kind === "PROOF_ISSUED");
+  const count = (kind: BoundaryEventKind) => boundary.filter((event) => event.kind === kind).length;
+  const admitted = boundary.find((event) => event.kind === "BOUNDARY_ADMITTED");
+  const failed = boundary.find((event) => event.kind === "BOUNDARY_FORWARD_FAILED");
+  const boundaryResponded = boundary.find((event) => event.kind === "BOUNDARY_RESPONDED");
+  return issued?.pbTag !== undefined && admitted !== undefined && admitted.hop === attempted.seq && admitted.pbTag === issued.pbTag
+    && count("BOUNDARY_ADMITTED") === 1 && count("BOUNDARY_FORWARDED") === 1 && count("BOUNDARY_FORWARD_FAILED") === 1 && count("BOUNDARY_FORWARD_RESPONDED") === 0
+    && failed?.forwardError === "refused" && count("BOUNDARY_RESPONDED") === 1 && count("BOUNDARY_ABORTED") === 0
+    && boundaryResponded?.status === 502 && responded.status === 502;
+}
+
+/**
  * Validates one request's lifecycle. Per-source ordering rules are always checked; rules that relate two sources (plane vs origin
  * vs client), which arrive on different channels and so in no fixed order, are checked only when `final` is true.
  */
@@ -425,7 +449,7 @@ export function validateLifecycle(view: LifecycleView, final: boolean): Anomaly[
   if (protectedLike) {
     const responded = view.plane.find((event) => event.kind === "EGRESS_RESPONDED");
     if (responded) {
-      if (received.length === 0) add("missing_transition", "ORIGIN_RECEIVED");
+      if (received.length === 0) { if (!boundaryRefusedBeforeApp(view, attempted, responded)) add("missing_transition", "ORIGIN_RECEIVED"); }
       else if (finished.length === 0) add("missing_transition", "ORIGIN_COMPLETED");
       else if (finished[0].kind === "ORIGIN_COMPLETED" && finished[0].status !== responded.status) add("origin_status_mismatch", `${finished[0].status}>${responded.status}`);
     }
