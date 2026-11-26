@@ -289,6 +289,41 @@ test("F6: teardown --dry-run lists every step without executing and says the mar
   assert.doesNotMatch(result.stdout + result.stderr, /FAILED/);
 });
 
+test("teardown records unreadable ufw state, continues cleanup, and retains recovery state", { skip: bashSkip }, () => {
+  const folder = mkdtempSync(path.join(os.tmpdir(), "lab-teardown-"));
+  try {
+    const originalScript = text("sut-teardown.sh");
+    const script = originalScript.replace("STATE_DIR=/etc/limitmark-lab", 'STATE_DIR="$TEST_STATE_DIR"');
+    assert.notEqual(script, originalScript, "the test must use only its temporary state directory");
+    writeText(path.join(folder, "sut-teardown.sh"), script);
+    writeText(path.join(folder, "lib-net.sh"), text("lib-net.sh"));
+    const marker = path.join(folder, "DISPOSABLE");
+    writeText(marker, "limitmark-lab-disposable-v1\n");
+
+    const commands = [
+      'id() { if [ "$1" = -u ]; then echo 0; else return 1; fi; }',
+      'systemctl() { return 0; }',
+      'docker() { return 0; }',
+      'ufw() { echo "ufw $*"; return 42; }',
+      'rm() { local IFS=" "; printf "rm %s\\n" "$*"; }',
+      ". ./sut-teardown.sh --i-am-a-disposable-lab-vm",
+    ].join("\n");
+    const result = spawnSync("bash", ["-c", commands], {
+      cwd: folder, encoding: "utf8", env: { ...process.env, TEST_STATE_DIR: toBashPath(folder) },
+    });
+
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /FAILED: could not read ufw status\. Lab firewall rules were left in place/);
+    assert.match(result.stderr, /recovery marker .* was KEPT/);
+    assert.match(result.stdout, /rm -rf \/opt\/limitmark-lab/);
+    assert.doesNotMatch(result.stdout, /ufw --force delete/);
+    assert.ok(!result.stdout.includes(toBashPath(folder)), "the state directory must not be passed to rm");
+    assert.equal(readFileSync(marker, "utf8"), "limitmark-lab-disposable-v1\n");
+  } finally {
+    removeTree(folder, { recursive: true, force: true });
+  }
+});
+
 test("F6: on Linux the bootstrap dry run validates CIDRs before any action and prints the new order, restart and stale-rule steps", { skip: process.platform === "linux" ? false : "the bootstrap refuses to run anywhere but Linux; exercised in the Linux parity container" }, () => {
   const environment = { PATH: process.env.PATH ?? "", LAB_REPO_URL: "https://example.invalid/repo", LAB_REPO_COMMIT: "a".repeat(40), LAB_APP_ORIGIN: "http://203.0.113.10:3000", LAB_SSH_ALLOW_CIDRS: "198.51.100.0/24", LAB_LOADGEN_CIDRS: "203.0.113.0/24" };
   const run = (override: Record<string, string>) => spawnSync("bash", [toBashPath(path.join(directory, "sut-bootstrap.sh")), "--i-am-a-disposable-lab-vm", "--dry-run"], { encoding: "utf8", env: { ...environment, ...override } as unknown as NodeJS.ProcessEnv });

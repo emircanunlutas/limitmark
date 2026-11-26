@@ -60,10 +60,13 @@ fi
 log "removing only the firewall rules this lab added"
 if [ "$DRY_RUN" = 1 ]; then printf '[dry-run] delete every ufw rule carrying the limitmark-lab comment, highest number first\n'
 elif command -v ufw >/dev/null 2>&1; then
-  ufw_status="$(ufw status numbered)"
-  for rule_number in $(printf '%s\n' "$ufw_status" | ufw_lab_rule_numbers); do
-    run ufw --force delete "$rule_number"
-  done
+  if ufw_status="$(ufw status numbered)"; then
+    for rule_number in $(printf '%s\n' "$ufw_status" | ufw_lab_rule_numbers); do
+      run ufw --force delete "$rule_number"
+    done
+  else
+    record_failure "could not read ufw status. Lab firewall rules were left in place."
+  fi
 fi
 
 log "removing the lab directories, the Node install and the user"
