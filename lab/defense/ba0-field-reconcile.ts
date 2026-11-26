@@ -3,9 +3,11 @@
  *
  *   npm run lab:ba0:field:reconcile -- --server <server evidence run id> --report <path to generator-report.json>
  *
- * It reads (a) the server-side evidence of one level (verified against its SHA256SUMS) and (b) the generator report, compares them
+ * It reads (a) the server-side evidence of one level (requires a SHA256SUMS entry for the exact server-level.json bytes read) and
+ * (b) the generator report, compares them
  * (G1..G6, see reconcile.ts) and writes a small final evidence run. It performs no network activity, starts no process and changes nothing
  * the server enforced: the generator's numbers are evidence about the generator and can only ADD reasons.
+ * The checksum check establishes consistency with the supplied list. Provenance requires independent evidence.
  *
  * Final verdicts: EXTERNAL-L7-QUALIFICATION-VALID | INVALID | ABORTED.
  *
@@ -19,18 +21,15 @@
  *
  * Exit codes: 0 VALID, 1 INVALID, 2 REFUSED (bad input), 3 ABORTED, 4 error.
  */
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
-import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory, verifyEvidenceDirectory } from "../evidence/manifest";
+import { EVIDENCE_ROOT, EvidenceRun, collectEnvironment, collectGitState, resolveEvidenceDirectory, sha256Hex, verifyEvidenceDirectory } from "../evidence/manifest";
 import { evidenceSafeError } from "../evidence/redact";
 import { NOT_CLAIMED_FIELD, SCOPE_STATEMENT_FIELD } from "./field-evidence";
 import { BA0_FIELD_V1, ba0FieldFingerprint } from "./field-thresholds";
 import { FIELD_EXIT, type FinalVerdict } from "./field-verdict";
 import { parseGeneratorReport, type GeneratorReport } from "./generator-report";
 import { SERVER_LEVEL_SCHEMA, finalFrom, type ReconcileResult, type ServerLevelEvidence } from "./reconcile";
-
-const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 
 export type ReconcileOutcome = {
   exit: number;
@@ -64,12 +63,15 @@ export function reconcileLevel(cli: ReconcileCli, root: string = EVIDENCE_ROOT, 
   const refuse = (reason: string): ReconcileOutcome => ({ exit: FIELD_EXIT.refused, verdict: "REFUSED", reasons: [reason], evidenceId: null, result: null });
   let directory: string;
   try { directory = resolveEvidenceDirectory(cli.serverId, root); } catch { return refuse("server evidence id is not a plain run id"); }
-  const serverFile = path.join(directory, "server-level.json");
-  if (!existsSync(serverFile) || !existsSync(path.join(directory, "SHA256SUMS"))) return refuse("server evidence is missing or not finalized");
-  const tampered = verifyEvidenceDirectory(directory);
-  if (tampered.length > 0) return refuse(`server evidence failed its checksums: ${tampered.slice(0, 3).join(",")}`);
+  const serverName = "server-level.json";
+  let serverBytes: Buffer;
+  try { serverBytes = readFileSync(path.join(directory, serverName)); } catch { return refuse("server evidence is missing or unreadable"); }
+  let checksumProblems: string[];
+  try { checksumProblems = verifyEvidenceDirectory(directory, { name: serverName, bytes: serverBytes }); }
+  catch { return refuse("server evidence checksums are missing or unreadable"); }
+  if (checksumProblems.length > 0) return refuse(`server evidence failed its checksums: ${checksumProblems.slice(0, 3).join(",")}`);
   let server: ServerLevelEvidence;
-  try { server = JSON.parse(readFileSync(serverFile, "utf8")) as ServerLevelEvidence; } catch { return refuse("server-level.json is not JSON"); }
+  try { server = JSON.parse(serverBytes.toString("utf8")) as ServerLevelEvidence; } catch { return refuse("server-level.json is not JSON"); }
   if (server.schema !== SERVER_LEVEL_SCHEMA || server.reconcileInput === null || server.reconcileInput === undefined) return refuse("server-level.json is not a level evidence this reconcile understands");
 
   let report: GeneratorReport | null = null;
@@ -78,7 +80,7 @@ export function reconcileLevel(cli: ReconcileCli, root: string = EVIDENCE_ROOT, 
   if (cli.reportPath !== null) {
     try {
       const text = readFileSync(cli.reportPath, "utf8");
-      reportSha = sha256(text);
+      reportSha = sha256Hex(text);
       report = parseGeneratorReport(text);
     } catch (error) { return refuse(`generator report unusable: ${evidenceSafeError(error)}`.slice(0, 160)); }
   }
@@ -94,7 +96,7 @@ export function reconcileLevel(cli: ReconcileCli, root: string = EVIDENCE_ROOT, 
       paramsFingerprintSha256: server.paramsFingerprintSha256, workloadFingerprintSha256: server.workloadFingerprintSha256,
     },
     // The run id key is the one long identifier the evidence scanner permits, under exactly this name.
-    inputs: { server: { runId: cli.serverId, levelSha256: sha256(readFileSync(serverFile)) }, generator: { reportSha256: reportSha ?? "not_supplied" } },
+    inputs: { server: { runId: cli.serverId, levelSha256: sha256Hex(serverBytes) }, generator: { reportSha256: reportSha ?? "not_supplied" } },
     serverSide: { status: server.serverSide.status, failureClass: server.serverSide.failureClass },
     identities: result.identities, informational: result.informational,
     claims: { defenseQualification: "not_claimed", networkNonBypass: "not_measured", originNetworkIsolation: "not_measured", notClaimed: [...NOT_CLAIMED_FIELD] },

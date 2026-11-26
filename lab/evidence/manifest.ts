@@ -188,17 +188,24 @@ export function writeSanitizedLog(directory: string, name: string, raw: string):
   return sanitized;
 }
 
-/** Re-computes every recorded hash; returns mismatching file names. */
-export function verifyEvidenceDirectory(directory: string): string[] {
-  const problems: string[] = [];
-  const sums = readFileSync(path.join(directory, "SHA256SUMS"), "utf8").trim().split("\n");
+/** Verifies recorded hashes and, if supplied, requires coverage of the exact artifact bytes the caller will use. */
+export function verifyEvidenceDirectory(directory: string, requiredArtifact?: { name: string; bytes: Buffer }): string[] {
+  const checked = new Set<string>();
+  const problems = new Set<string>();
+  const sums = readFileSync(path.join(directory, "SHA256SUMS"), "utf8").trimEnd().split(/\r?\n/);
   for (const line of sums) {
-    const [hash, name] = line.split("  ");
-    let actual = "";
-    try { actual = sha256Hex(readFileSync(path.join(directory, name))); } catch { /* missing */ }
-    if (actual !== hash) problems.push(name);
+    const entry = /^([a-f0-9]{64})  ([a-z0-9][a-z0-9.-]{0,60}\.json)$/.exec(line);
+    if (!entry) { problems.add("SHA256SUMS"); continue; }
+    const [, hash, name] = entry;
+    if (checked.has(name)) { problems.add(name); continue; }
+    checked.add(name);
+    try {
+      const bytes = requiredArtifact?.name === name ? requiredArtifact.bytes : readFileSync(path.join(directory, name));
+      if (sha256Hex(bytes) !== hash) problems.add(name);
+    } catch { problems.add(name); }
   }
-  return problems;
+  if (requiredArtifact && !checked.has(requiredArtifact.name)) problems.add(requiredArtifact.name);
+  return [...problems];
 }
 
 export { canonicalJson };
