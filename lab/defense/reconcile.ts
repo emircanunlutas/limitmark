@@ -12,6 +12,7 @@
  *   G4  the generator's new connections = the server's remote connections accepted plus dropped
  *   G5  the generator's logical in-flight never exceeded N (nor did the server's external in-flight); no retries, no pipelining; the
  *       generator itself was not saturated (schedule lag and event-loop delay under their pinned ceilings)
+ *       and the generator completed its observation (by duration or the reviewed request ceiling)
  *   G6  campaign id, level id, commit, parameter and workload fingerprints and N match; window time consistency is informational only
  */
 import type { Identity } from "./accounting";
@@ -78,9 +79,30 @@ export function reconcile(server: ServerLevelEvidence, report: GeneratorReport |
   identities.push(identity("g6.binding_matches", "campaign, level, commit, parameter and workload fingerprints and N are identical in both inputs", binding.filter(Boolean).length, binding.length));
   if (binding.some((ok) => !ok)) reasons.push({ code: "identity_binding_mismatch" });
 
+  // The two views may agree on every request even if the generator stopped early.
+  switch (report.stop.kind) {
+    case "completed":
+    case "total_ceiling": // The generator records either of these as normal completion.
+    case "transport_failure": // Classified with transport ambiguity below.
+    case "in_flight_exceeded": // Classified with the in-flight checks below.
+      break;
+    case "operator_abort":
+      reasons.push({ code: "operator_abort", detail: "generator interrupted" });
+      break;
+    case "authorization_expired":
+      reasons.push({ code: "target_expired", detail: "generator authorization expired" });
+      break;
+    case "deadline":
+      reasons.push({ code: "level_incomplete", detail: "generator dispatch deadline reached" });
+      break;
+    default:
+      reasons.push({ code: "generator_report_mismatch", detail: "unrecognized generator stop" });
+  }
+
   // ---- generator ambiguity: requests whose server-side fate the generator cannot know
   const ambiguity = report.transportFailures;
   if (ambiguity > 0) reasons.push({ code: "generator_ambiguity", detail: `${ambiguity} transport failure(s)` });
+  else if (report.stop.kind === "transport_failure") reasons.push({ code: "generator_ambiguity", detail: "generator stopped on a transport failure" });
 
   // ---- G1
   // A clientError raised while a request was in flight belongs to that request (it is INGRESS_ABORTED); only the ones with no request in flight are losses before ingress.
@@ -121,7 +143,7 @@ export function reconcile(server: ServerLevelEvidence, report: GeneratorReport |
   // ---- G5
   identities.push(identity("g5.generator_in_flight_within_n", "the generator's logical in-flight never exceeded N", report.concurrency.maxInFlightObserved, Math.min(report.concurrency.maxInFlightObserved, server.workers), report.concurrency.maxInFlightObserved <= server.workers));
   identities.push(identity("g5.server_external_in_flight_within_n", "the server's external in-flight never exceeded N", input.externalInFlightMax, Math.min(input.externalInFlightMax, server.workers), input.externalInFlightMax <= server.workers));
-  if (report.concurrency.maxInFlightObserved > server.workers || input.externalInFlightMax > server.workers) reasons.push({ code: "generator_in_flight_exceeded" });
+  if (report.concurrency.maxInFlightObserved > server.workers || input.externalInFlightMax > server.workers || report.stop.kind === "in_flight_exceeded") reasons.push({ code: "generator_in_flight_exceeded" });
   identities.push(identity("g5.no_retries_no_pipelining", "the generator used no retries and no pipelining", report.retries === 0 && !report.pipelining ? 0 : 1, 0));
   const saturated = report.schedule.lagMs.p99 > limits.scheduleLagP99Ms || report.generatorHealth.eldP99Ms > limits.eldP99Ms;
   identities.push(identity("g5.generator_not_saturated", "the generator's schedule lag and event-loop delay stayed under their ceilings", saturated ? 1 : 0, 0));

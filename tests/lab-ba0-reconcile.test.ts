@@ -48,6 +48,38 @@ test("two views that agree produce no reasons, every identity holds, and the fin
   assert.equal(finalFrom(server, report, LIMITS).decision.verdict, "EXTERNAL-L7-QUALIFICATION-VALID");
 });
 
+test("generator stop reasons preserve normal completion and distinguish interruptions from measurement failures", () => {
+  const cases = [
+    { kind: "total_ceiling", verdict: "EXTERNAL-L7-QUALIFICATION-VALID", failureClass: null, reason: undefined },
+    { kind: "authorization_expired", verdict: "ABORTED", failureClass: "operational", reason: "target_expired" },
+    { kind: "deadline", verdict: "ABORTED", failureClass: "operational", reason: "level_incomplete" },
+    { kind: "transport_failure", verdict: "INVALID", failureClass: "measurement", reason: "generator_ambiguity" },
+    { kind: "in_flight_exceeded", verdict: "INVALID", failureClass: "measurement", reason: "generator_in_flight_exceeded" },
+    { kind: "unknown", verdict: "INVALID", failureClass: "measurement", reason: "generator_report_mismatch" },
+  ];
+  for (const { kind, verdict, failureClass, reason } of cases) {
+    const { server, report } = consistent();
+    report.stop = { kind, detail: null };
+    const { decision } = finalFrom(server, report, LIMITS);
+    assert.deepEqual([decision.verdict, decision.failureClass], [verdict, failureClass], kind);
+    assert.deepEqual(decision.reasons.map((entry) => entry.code), reason ? [reason] : [], kind);
+  }
+});
+
+test("a generator interruption does not hide a defense failure or an accounting disagreement", () => {
+  const { server, report } = consistent();
+  report.stop = { kind: "operator_abort", detail: null };
+  server.serverSide = { status: "invalid", failureClass: "defense", reasons: [{ code: "mutation_over_budget" }] };
+  const defense = finalFrom(server, report, LIMITS).decision;
+  assert.deepEqual([defense.verdict, defense.failureClass], ["INVALID", "defense"]);
+  assert.deepEqual(defense.reasons.map((entry) => entry.code), ["mutation_over_budget", "operator_abort"]);
+
+  report.attempted++;
+  const measurement = finalFrom(server, report, LIMITS).decision;
+  assert.deepEqual([measurement.verdict, measurement.failureClass], ["INVALID", "measurement"]);
+  assert.deepEqual(measurement.reasons.map((entry) => entry.code).sort(), ["mutation_over_budget", "operator_abort", "unexplained_traffic"]);
+});
+
 test("no generator report can only be INVALID (a measurement failure), never VALID", () => {
   const { server } = consistent();
   assert.deepEqual(codes(server, null), ["generator_report_missing"]);
@@ -280,6 +312,29 @@ test("the offline reconcile verifies the server evidence's checksums, compares i
     assert.equal(withoutReport.verdict, "INVALID");
     assert.match(withoutReport.reasons.join(" "), /generator_report_missing/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("offline reconcile records an interrupted generator as aborted even when the observations agree", () => {
+  const root = testRoot();
+  try {
+    const { server, report } = consistent();
+    const serverId = serverEvidence(root, server);
+    const reportPath = path.join(root, "generator-report.json");
+    report.endedAt = "2026-10-06T10:00:15.000Z";
+    report.wallClockSeconds = 10;
+    report.rate.achievedPerSecond = 10;
+    report.stop = { kind: "operator_abort", detail: null };
+    fs.writeFileSync(reportPath, JSON.stringify(report));
+
+    const outcome = reconcileLevel({ serverId, reportPath }, root);
+    assert.deepEqual([outcome.verdict, outcome.exit], ["ABORTED", 3]);
+    assert.deepEqual(outcome.result?.identities.filter((entry) => !entry.ok), []);
+    assert.ok(outcome.evidenceId);
+    const final = JSON.parse(fs.readFileSync(path.join(root, outcome.evidenceId, "final.json"), "utf8"));
+    assert.equal(final.finalVerdict, "ABORTED");
+    assert.equal(final.failureClass, "operational");
+    assert.ok(final.reasons.some((reason: { code: string }) => reason.code === "operator_abort"));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test("offline reconcile refuses a report missing the event-loop measurement used by the saturation gate", () => {
