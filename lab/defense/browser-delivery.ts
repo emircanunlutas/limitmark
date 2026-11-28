@@ -22,6 +22,7 @@ import { protectedLineageComplete } from "../../defense/core/lineage";
 import { REPOSITORY_ROOT } from "../evidence/manifest";
 import { assertModeMatchesEnvironment, referenceLinkMode } from "./browser-link-mode";
 import { BrowserRelay } from "./browser-relay";
+import { AUTHORIZATION_PAGE_TARGET } from "../../defense/core/types";
 import { READ_ONLY_PAGE_TARGETS, staticAssetTargets } from "./browser-scope";
 import { Collector, type LedgerRecord } from "./collector";
 import { BA0_COLLAPSE_LOCAL_V1 } from "./collapse-thresholds";
@@ -177,7 +178,7 @@ async function journey(run: BrowserRun, mode: string, base: string, outDir: stri
     const response = await page.goto(base + target, { waitUntil: "load" });
     pages.push(await observe(page, "direct", response?.status() ?? null, pick(response ? await response.allHeaders() : {}, SECURITY_HEADERS)));
   };
-  const click = async (selector: string, expected: RegExp) => {
+  const click = async (selector: string, expected: RegExp, measure = true) => {
     await page.evaluate(() => { (window as unknown as { __lmMarker?: number }).__lmMarker = 1; });
     const started = performance.now();
     const reachedUrl = page.waitForURL(expected, { waitUntil: "commit" }).then(() => performance.now() - started);
@@ -186,7 +187,7 @@ async function journey(run: BrowserRun, mode: string, base: string, outDir: stri
     const kept = await page.evaluate(() => (window as unknown as { __lmMarker?: number }).__lmMarker === 1);
     const pathname = new URL(page.url()).pathname + new URL(page.url()).search;
     const doc = docSecurity(pathname);
-    pages.push({ ...await observe(page, kept ? "client" : "document", kept ? null : doc.status, kept ? {} : doc.security), clickToUrlMs });
+    pages.push({ ...await observe(page, kept ? "client" : "document", kept ? null : doc.status, kept ? {} : doc.security), ...(measure ? { clickToUrlMs } : {}) });
   };
 
   await load("/");
@@ -219,6 +220,7 @@ async function journey(run: BrowserRun, mode: string, base: string, outDir: stri
   await step("forward", /\/test-talep-et$/);
   await load("/test-talep-et?hizmet=web");
   await load("/test-talep-et/tesekkurler");
+  await click(`footer a[href="${AUTHORIZATION_PAGE_TARGET}"]`, /\/test-yetkilendirmesi$/, false);
   await page.close();
   await context.close();
   return { pages, menu, history };
@@ -244,10 +246,8 @@ async function main(): Promise<void> {
   // ---- 1. Isolated reference: the same build served directly.
   const reference = await startReference();
   let referenceJourney: Awaited<ReturnType<typeof journey>>;
-  let referenceUnsupported: number | null;
   try {
     referenceJourney = await journey(run, "reference", `http://127.0.0.1:${reference.port}`, outDir);
-    referenceUnsupported = await httpStatus(reference.port, "/test-yetkilendirmesi");
   } finally { reference.child.kill(); }
 
   // ---- 2. The guarded chain.
@@ -263,7 +263,7 @@ async function main(): Promise<void> {
   let relay: BrowserRelay | undefined;
   try {
     boundary = await BoundaryProcess.start(collector, trust.boundaryInit(app.port, { ...limits, forwardTimeoutMs: 5_000, baLifetimeMs: hop.baLifetimeMs }));
-    plane = await PlaneProcess.start(collector, { upstreamPort: boundary.port, hop: trust.planeInit(hop.pbLifetimeMs), l2, egressTimeoutMs: 6_000, assets }, 20_000, PLANE_L2_ENTRY);
+    plane = await PlaneProcess.start(collector, { upstreamPort: boundary.port, hop: trust.planeInit(hop.pbLifetimeMs), l2, egressTimeoutMs: 6_000, assets, authorizationPage: true }, 20_000, PLANE_L2_ENTRY);
     relay = new BrowserRelay(collector, plane.port, scenarioOf);
     const base = `http://127.0.0.1:${await relay.listen()}`;
 
@@ -275,7 +275,7 @@ async function main(): Promise<void> {
     const context = await run.context("chain-unsupported");
     const page = await context.newPage();
     const navigations: Record<string, number | null> = {};
-    for (const target of ["/test-yetkilendirmesi", "/admin", "/_next/static/chunks/not-in-build.js", "/api/cron/process-notifications"]) {
+    for (const target of ["/admin", "/_next/static/chunks/not-in-build.js", "/api/cron/process-notifications"]) {
       navigations[target] = (await navigate(page, base + target)).status;
     }
     const css = assets.find((asset) => asset.endsWith(".css"))!;
@@ -334,6 +334,7 @@ async function main(): Promise<void> {
     if (documentLinks) {
       for (const journey of [chainJourney, referenceJourney]) {
         assert.deepEqual(journey.pages.slice(1, 4).map((page) => page.navigation), ["document", "document", "document"]);
+        assert.equal(journey.pages.at(-1)?.navigation, "document", "footer authorization link");
       }
       assert.deepEqual(journeyRsc, [], "native links emitted an RSC request through the chain");
       assert.deepEqual(run.responses.filter((row) => row.mode === "reference" && isRscTarget(row.path)), [], "native links emitted an RSC request to the reference");
@@ -432,7 +433,7 @@ async function main(): Promise<void> {
       history: { chain: chainJourney.history.map(({ path: p, h1 }) => ({ path: p, h1 })), reference: referenceJourney.history.map(({ path: p, h1 }) => ({ path: p, h1 })) },
       exchanges: exchanges.length,
       byScenario: Object.fromEntries(["page", "asset", "unsupported"].map((s) => [s, exchanges.filter((e) => e.scenario === s).length])),
-      proxiedSupported, navigations, requests, direct: { browser: directViews, raw: directRaw }, outage: stopped, referenceUnsupported,
+      proxiedSupported, navigations, requests, direct: { browser: directViews, raw: directRaw }, outage: stopped,
       securityHeaders: { reference: referenceSecurity, chain: chainJourney.pages[0].security },
       blockedExternalHosts: blocked("chain"),
       console: Object.fromEntries(["reference", "chain"].map((mode) => [mode, run.consoleRows.filter((row) => row.mode === mode).map((row) => `${row.type}: ${row.text}`)])),

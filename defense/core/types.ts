@@ -229,3 +229,6 @@ export const OB_REASONS = [
   "ob.replayed", "ob.replay_cache_full", "ob.digest_mismatch", "ob.content_incomplete", "ob.expect_refused", "ob.canon_error",
 ] as const;
 export type ObReason = (typeof OB_REASONS)[number];
+
+/** The single extra public document supported by the opt-in browser composition. */
+export const AUTHORIZATION_PAGE_TARGET = "/test-yetkilendirmesi";

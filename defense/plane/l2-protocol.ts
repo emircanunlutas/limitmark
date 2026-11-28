@@ -42,6 +42,8 @@ export type PlaneL2Init = PlaneInit & {
    * query-free exact matches and classified by L2 as open reads. An invalid list fails the init closed. Absent in every other composition.
    */
   assets?: readonly string[];
+  /** Browser delivery only: opt in to the exact public authorization document. */
+  authorizationPage?: true;
 };
 
 /** One 1-second plane tick: exact monotonic counters and bounded gauges. Observation only; no layer or lane ever reads any of it. */
