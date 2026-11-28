@@ -63,3 +63,33 @@ test("admin remains independently denied and its immutable assets remain reachab
   const assetResponse = await request.get(asset!, { headers: { host: "admin.limitmark.com" } });
   expect(assetResponse.status()).toBe(200);
 });
+
+test("homepage caching is scoped to admitted Vercel responses", async ({ request }) => {
+  const denied = await request.get("/");
+  expect(denied.status()).toBe(404);
+  expect(denied.headers()["cache-control"]).toContain("no-store");
+  expect(denied.headers()["cdn-cache-control"]).toBe("no-store");
+  expect(denied.headers()["vercel-cdn-cache-control"]).toBe("no-store");
+
+  const allowed = await request.get("/", { headers: trusted });
+  const withCookie = await request.get("/", {
+    headers: { ...trusted, cookie: "cache_isolation_probe=synthetic" },
+  });
+  for (const response of [allowed, withCookie]) {
+    expect(response.status()).toBe(200);
+    const headers = response.headers();
+    expect(headers["cache-control"]).toContain("private");
+    expect(headers["cache-control"]).toContain("no-store");
+    expect(headers["cdn-cache-control"]).toBeUndefined();
+    expect(headers["vercel-cdn-cache-control"]).toBe("max-age=60, stale-while-revalidate=120");
+    expect(headers["set-cookie"]).toBeUndefined();
+    expect(JSON.stringify(headers)).not.toContain(secret);
+    expect(await response.text()).not.toContain(secret);
+    expect(await response.text()).not.toContain("cache_isolation_probe");
+  }
+
+  const intake = await request.get("/test-talep-et", { headers: trusted });
+  expect(intake.headers()["cache-control"]).toContain("no-store");
+  expect(intake.headers()["cdn-cache-control"]).toBe("no-store");
+  expect(intake.headers()["vercel-cdn-cache-control"]).toBe("no-store");
+});
