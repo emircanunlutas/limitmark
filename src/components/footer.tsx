@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { PublicLink } from "./public-link";
 import { Container } from "./container";
 
 export function Footer() {
@@ -6,14 +6,14 @@ export function Footer() {
     <footer className="site-footer">
       <Container>
         <nav className="footer-primary" aria-label="Alt gezinme">
-          <Link href="/#hizmetler">Hizmetler</Link>
-          <Link href="/#surec">Nasıl Çalışır</Link>
-          <Link href="/#metodoloji">Yöntem ve Sonuçlar</Link>
-          <Link href="/#iletisim">İletişim</Link>
+          <PublicLink href="/#hizmetler">Hizmetler</PublicLink>
+          <PublicLink href="/#surec">Nasıl Çalışır</PublicLink>
+          <PublicLink href="/#metodoloji">Yöntem ve Sonuçlar</PublicLink>
+          <PublicLink href="/#iletisim">İletişim</PublicLink>
         </nav>
         <nav className="footer-secondary" aria-label="Bilgilendirme">
-          <Link href="/gizlilik">Gizlilik</Link>
-          <Link href="/test-yetkilendirmesi">Test Yetkilendirmesi ve Koşulları</Link>
+          <PublicLink href="/gizlilik">Gizlilik</PublicLink>
+          <PublicLink href="/test-yetkilendirmesi">Test Yetkilendirmesi ve Koşulları</PublicLink>
         </nav>
         <p className="helper copy-width">Testler yalnızca talep sahibine ait veya test için açıkça yetkilendirildiği sistemlerde, kapsam ve izinler belgelendikten sonra yürütülür.</p>
       </Container>

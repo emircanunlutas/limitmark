@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { PublicLink } from "./public-link";
 import { useEffect, useRef, useState } from "react";
 import { Container } from "./container";
 
@@ -58,13 +58,13 @@ export function Header({ name }: { name: string }) {
       if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
     }}>
       <Container className="header-inner">
-        <Link className="brand" href="/" onClick={() => setOpen(false)} aria-label={`${name} — Ana sayfa`}>{name}</Link>
+        <PublicLink className="brand" href="/" onClick={() => setOpen(false)} aria-label={`${name} — Ana sayfa`}>{name}</PublicLink>
         <button ref={toggleRef} className="menu-toggle" type="button" aria-expanded={open} aria-controls="main-navigation" onClick={() => setOpen(!open)}>
           <span className="menu-label">{open ? "Menüyü kapat" : "Menü"}</span><span className="menu-symbol" aria-hidden="true">{open ? "−" : "+"}</span>
         </button>
         <nav id="main-navigation" className={`main-navigation ${open ? "is-open" : ""}`} aria-label="Ana gezinme">
-          {links.map((link) => <Link key={link.href} href={link.href} onClick={() => setOpen(false)}>{link.label}</Link>)}
-          <Link className="button button-primary nav-cta" href="/test-talep-et" onClick={() => setOpen(false)}>Test Talebi</Link>
+          {links.map((link) => <PublicLink key={link.href} href={link.href} onClick={() => setOpen(false)}>{link.label}</PublicLink>)}
+          <PublicLink className="button button-primary nav-cta" href="/test-talep-et" onClick={() => setOpen(false)}>Test Talebi</PublicLink>
         </nav>
       </Container>
     </header>

@@ -251,6 +251,11 @@ export type LanesConfig = {
   mono: () => number;
   /** Test seam: a fixed filter key. */
   key?: Buffer;
+  /**
+   * Browser delivery: the exact immutable static asset targets L1 admits (validated by the static asset gate). A GET of exactly one of
+   * them is an `open` read like a page; absent, the class map is exactly `operationClassOf`.
+   */
+  openAssets?: ReadonlySet<string>;
 };
 
 export type LanesSnapshot = {
@@ -276,6 +281,12 @@ export class JourneyLanes {
   private readonly decisionCounts = new Map<string, number>();
   private readonly spent = { credited: 0, unverified: 0 };
 
+  /** The closed class map plus the configured exact static assets (open reads). Pure over the configuration; rejects nothing. */
+  classOf(method: string, target: string): OperationClass {
+    const cls = operationClassOf(method, target);
+    return cls === "unknown" && method === "GET" && this.config.openAssets?.has(target) === true ? "open" : cls;
+  }
+
   constructor(readonly config: LanesConfig) {
     const needed = requiredLedgerCapacity(config.credited.capacity, config.credited.refillPerSecond, config.epochMs);
     if (config.ledgerCapacity < needed) throw new Error(`ledger capacity ${config.ledgerCapacity} is below the credited-admission bound ${needed}`);
@@ -290,7 +301,7 @@ export class JourneyLanes {
    * Never throws for a well-formed request; the stage still guards it.
    */
   decide(request: LayerRequest): LaneDecision {
-    const cls = operationClassOf(request.method, request.target);
+    const cls = this.classOf(request.method, request.target);
     if (cls === "open") return { class: "open", lane: "open", outcome: "admitted" };
 
     // --- classify: credited only for a mutation whose token is a genuine-looking member with uses left

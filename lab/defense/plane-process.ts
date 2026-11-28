@@ -19,8 +19,9 @@ export const PLANE_L2_ENTRY = path.join(REPOSITORY_ROOT, "defense", "plane", "ma
 /**
  * `l2` is meaningful only to an entry whose composition has L2. `ingress` (the one reviewed fixed public bind) and `telemetry` (one tick per
  * interval) are field-qualification options: absent, the plane binds 127.0.0.1 on an ephemeral port and emits no ticks, exactly as before.
+ * `assets` (browser delivery) is the protected build's exact static asset list; absent, no asset is admitted.
  */
-export type PlaneStartOptions = Omit<PlaneInit, "type"> & { l2?: L2Params; ingress?: { ip: string; port: number }; telemetry?: { tickMs: number } };
+export type PlaneStartOptions = Omit<PlaneInit, "type"> & { l2?: L2Params; ingress?: { ip: string; port: number }; telemetry?: { tickMs: number }; assets?: readonly string[] };
 
 export class PlaneProcess {
   private exited = false;

@@ -197,6 +197,21 @@ export function isSpoofableHeader(lowerCaseName: string): boolean {
   return SPOOFABLE_HEADER_PATTERNS.some((pattern) => pattern.test(lowerCaseName));
 }
 
+/**
+ * The closed set of upstream RESPONSE headers the Defense Plane passes on. Everything else is dropped. It holds the representation and
+ * cache headers the plane always relayed plus the browser security policies the protected application emits (CSP, frame, referrer and
+ * permissions policy), passed unchanged: the plane never adds, merges or rewrites a policy. Content-Length is always re-derived from the
+ * relayed body. Cookies, server identity, Vary and every encoding/transfer header stay out: the plane forwards no Accept-Encoding, cookie
+ * or router header, so the application never varies or encodes on them.
+ *
+ * The Origin Boundary keeps its own accepted (pinned) relay set, which does NOT include the four security policies: through the full
+ * chain they are dropped at the boundary until that accepted file is amended.
+ */
+export const RESPONSE_RELAY_HEADERS: ReadonlySet<string> = new Set([
+  "content-type", "cache-control", "x-content-type-options", "etag", "last-modified", "location", "content-language",
+  "content-security-policy", "x-frame-options", "referrer-policy", "permissions-policy",
+]);
+
 /** Opaque per-request correlation nonce: 16 random bytes, base64url (22 chars). */
 export const NONCE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
