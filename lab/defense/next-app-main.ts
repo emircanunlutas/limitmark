@@ -9,12 +9,10 @@ import { readMeasurementTag } from "../../defense/core/semantic-request";
 import { OUTCOME_HEADER, type ObReason } from "../../defense/core/types";
 import { createAppGuard } from "../../defense/origin/app-guard";
 import type { AppControl, AppFinStats, AppInit, AppMessage } from "../../defense/origin/app-protocol";
+import { READ_ONLY_PAGE_TARGETS, staticAssetTargets } from "./browser-scope";
 
 type Control = Exclude<AppControl, { type: "fault" }>;
 
-// A private HTTP probe of two existing pages. Static assets, RSC navigation,
-// inquiry writes and authenticated routes are outside this composition.
-const targets = new Set(["/", "/test-talep-et?hizmet=web"]);
 
 function empty(res: http.ServerResponse, status: number, refused = false): void {
   if (res.destroyed || res.writableEnded) return;
@@ -28,6 +26,10 @@ function empty(res: http.ServerResponse, status: number, refused = false): void 
 }
 
 async function start(init: AppInit, send: (message: AppMessage) => void) {
+  // Read-only browser delivery: the declared GET pages and the build's own exact
+  // static assets. RSC navigation, inquiry writes and authenticated routes are
+  // outside this composition and are answered 404 without executing anything.
+  const targets = new Set([...READ_ONLY_PAGE_TARGETS, ...staticAssetTargets(process.cwd())]);
   const { guard, stats } = createAppGuard({
     keyB: importPublicKey(init.publicKeyB), kidB: init.kidB,
     keyP: importPublicKey(init.publicKeyP), kidP: init.kidP,

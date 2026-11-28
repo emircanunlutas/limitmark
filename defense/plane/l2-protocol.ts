@@ -37,6 +37,11 @@ export type PlaneL2Init = PlaneInit & {
   ingress?: { ip: string; port: number };
   /** Field qualification: emit one small observation-only tick per interval. Absent means no ticks and no timer. */
   telemetry?: { tickMs: number };
+  /**
+   * Browser delivery: the exact immutable static asset targets of the protected build (`/_next/static/...`), admitted by L1 as GET-only,
+   * query-free exact matches and classified by L2 as open reads. An invalid list fails the init closed. Absent in every other composition.
+   */
+  assets?: readonly string[];
 };
 
 /** One 1-second plane tick: exact monotonic counters and bounded gauges. Observation only; no layer or lane ever reads any of it. */

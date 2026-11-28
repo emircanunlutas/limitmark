@@ -17,7 +17,7 @@ import { randomBytes } from "node:crypto";
 import { LayerComposer, type ComposerOptions, type ComposerStats } from "../core/composer";
 import type { EgressErrorKind, PlaneEvent } from "../core/ledger";
 import {
-  HOP_HEADER, L1_LIMITS, NONCE_HEADER, NONCE_PATTERN, OUTCOME_HEADER, REJECT_STAGE, REJECT_STATUS, isSpoofableHeader,
+  HOP_HEADER, L1_LIMITS, NONCE_HEADER, NONCE_PATTERN, OUTCOME_HEADER, REJECT_STAGE, REJECT_STATUS, RESPONSE_RELAY_HEADERS, isSpoofableHeader,
   type BodyStatus, type Layer, type LayerOutcome, type LayerRequest,
 } from "../core/types";
 import { peerClassOf, validateIngressBind, type IngressBind, type PeerClass } from "../core/ingress-class";
@@ -119,7 +119,6 @@ const FORWARD_REQUEST_HEADERS: ReadonlySet<string> = new Set([
   "host", "accept", "accept-language", "user-agent", "content-type", "content-length", "origin", "referer", "cookie", "cache-control",
   "pragma", "upgrade-insecure-requests", "if-none-match", "if-modified-since", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-fetch-user",
 ]);
-const FORWARD_RESPONSE_HEADERS: ReadonlySet<string> = new Set(["content-type", "cache-control", "x-content-type-options", "etag", "last-modified", "location", "content-language"]);
 const PARSER_CODES: ReadonlySet<string> = new Set([
   "HPE_HEADER_OVERFLOW", "HPE_INVALID_METHOD", "HPE_INVALID_HEADER_TOKEN", "HPE_UNEXPECTED_CONTENT_LENGTH", "HPE_INVALID_CONTENT_LENGTH",
   "HPE_INVALID_TRANSFER_ENCODING", "HPE_INVALID_CONSTANT", "HPE_INVALID_URL", "HPE_INVALID_VERSION", "HPE_CR_EXPECTED", "HPE_LF_EXPECTED",
@@ -483,7 +482,7 @@ export function createFront(options: FrontOptions): Front {
           try { observation?.onUpstream({ status, rawHeaders: upstreamResponse.rawHeaders, payload }); } catch { /* an observer fault never changes a response */ }
           const responseHeaders: Record<string, string | number> = {};
           for (const [name, value] of Object.entries(upstreamResponse.headers)) {
-            if (FORWARD_RESPONSE_HEADERS.has(name) && typeof value === "string") responseHeaders[name] = value;
+            if (RESPONSE_RELAY_HEADERS.has(name) && typeof value === "string") responseHeaders[name] = value;
           }
           responseHeaders["content-length"] = payload.length;
           if (!remote) responseHeaders[OUTCOME_HEADER] = "proxied";

@@ -12,7 +12,7 @@
 import { LayerComposer, type ComposerOptions, type ComposerStats } from "../core/composer";
 import { evaluateObservation, isFormRoute, type EnrollSkipReason, type ObservationVerdict } from "../core/enrollment";
 import type { EnrollmentEvent, EnrollmentObservation, L2Port } from "../core/l2-port";
-import { failureDecision, operationClassOf, type JourneyLanes, type LaneDecision, type LanesSnapshot, type OperationClass } from "../core/lanes";
+import { failureDecision, type JourneyLanes, type LaneDecision, type LanesSnapshot, type OperationClass } from "../core/lanes";
 import type { Layer, LayerRequest } from "../core/types";
 import { JourneyLanesLayer } from "../layers/a7-journey-lanes";
 
@@ -76,7 +76,7 @@ export class L2Stage implements L2Port {
 
   async decide(request: LayerRequest): Promise<LaneDecision> {
     let cls: OperationClass;
-    try { cls = operationClassOf(request.method, request.target); } catch { cls = "unknown"; }
+    try { cls = this.lanes.classOf(request.method, request.target); } catch { cls = "unknown"; }
     let decision: LaneDecision;
     try {
       const outcome = await this.composer.run(request);

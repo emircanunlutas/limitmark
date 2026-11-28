@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { PublicLink } from "./public-link";
 import Script from "next/script";
 import { useActionState, useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { submitTestRequest } from "@/app/test-talep-et/actions";
@@ -208,8 +208,8 @@ export function RequestForm({ initialService, submissionToken: issuedSubmissionT
       </Disclosure>
 
       <div className="form-privacy">
-        <p className="helper">Paylaştığınız bilgiler, talebinizi değerlendirmek ve sizinle iletişime geçmek için kullanılır. Ayrıntılar için <Link href="/gizlilik">Gizlilik sayfasını</Link> inceleyin.</p>
-        <p className="helper">Talep göndermek test başlatmaz ve test yürütme yetkisi vermez. Nihai hedefler, kapsam, kapsam dışı alanlar, takvim, sınırlar, durdurma koşulları ve açık yetkilendirme testten önce manuel olarak belgelenir. <Link href="/test-yetkilendirmesi">Test Yetkilendirmesi ve Koşulları</Link>.</p>
+        <p className="helper">Paylaştığınız bilgiler, talebinizi değerlendirmek ve sizinle iletişime geçmek için kullanılır. Ayrıntılar için <PublicLink href="/gizlilik">Gizlilik sayfasını</PublicLink> inceleyin.</p>
+        <p className="helper">Talep göndermek test başlatmaz ve test yürütme yetkisi vermez. Nihai hedefler, kapsam, kapsam dışı alanlar, takvim, sınırlar, durdurma koşulları ve açık yetkilendirme testten önce manuel olarak belgelenir. <PublicLink href="/test-yetkilendirmesi">Test Yetkilendirmesi ve Koşulları</PublicLink>.</p>
       </div>
       {turnstile && <>
         <div className="cf-turnstile" data-sitekey={turnstile.siteKey} data-action={turnstile.action} data-appearance="interaction-only" />

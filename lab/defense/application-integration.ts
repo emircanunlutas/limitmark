@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { statSync } from "node:fs";
+import path from "node:path";
 import type { ExpectedLane } from "../../defense/core/ledger";
+import { REPOSITORY_ROOT } from "../evidence/manifest";
+import { staticAssetTargets } from "./browser-scope";
 import { protectedLineageComplete } from "../../defense/core/lineage";
 import { trackedHttp } from "./client";
 import { Collector } from "./collector";
@@ -8,6 +12,13 @@ import { NextAppProcess } from "./field-processes";
 import { HopTrustRoot } from "./hop-keys";
 import { AppProcess, BoundaryProcess } from "./origin-processes";
 import { PLANE_L2_ENTRY, PlaneProcess } from "./plane-process";
+
+/**
+ * The built application emits five browser security headers (next.config.ts). The plane relays all five, but the accepted (pinned) Origin
+ * Boundary relays only X-Content-Type-Options: the other four are the known, reported blocker and must be ABSENT, not silently assumed.
+ */
+const RELAYED_SECURITY = { "x-content-type-options": "nosniff" } as const;
+const BOUNDARY_DROPPED_POLICIES = ["content-security-policy", "x-frame-options", "referrer-policy", "permissions-policy"] as const;
 
 async function run(synthetic: boolean): Promise<void> {
   const collector = new Collector(null);
@@ -29,8 +40,10 @@ async function run(synthetic: boolean): Promise<void> {
     boundary = await BoundaryProcess.start(collector, trust.boundaryInit(app.port, {
       ...limits, forwardTimeoutMs: 5_000, baLifetimeMs: hop.baLifetimeMs,
     }));
+    // The built application's exact static assets are admitted; the synthetic origin has none, so its plane admits none.
+    const assets = synthetic ? undefined : staticAssetTargets(REPOSITORY_ROOT);
     plane = await PlaneProcess.start(collector, {
-      upstreamPort: boundary.port, hop: trust.planeInit(hop.pbLifetimeMs), l2, egressTimeoutMs: 6_000,
+      upstreamPort: boundary.port, hop: trust.planeInit(hop.pbLifetimeMs), l2, egressTimeoutMs: 6_000, ...(assets ? { assets } : {}),
     }, 20_000, PLANE_L2_ENTRY);
 
     const home = await read(plane.port, "protected", "homepage");
@@ -55,6 +68,31 @@ async function run(synthetic: boolean): Promise<void> {
       assert(!/<form\b/u.test(intakeHtml), "Closed intake rendered a form");
     }
 
+    // Browser delivery (built mode): one exact immutable stylesheet through the whole chain, the application's own security policies on
+    // every relayed response, and a cache-busting variant of the same asset refused by L1.
+    let staticAsset: { status: number | null; refusedVariant: number | null } | null = null;
+    const lineages = [home, intake];
+    if (assets) {
+      const css = assets.find((asset) => asset.endsWith(".css"));
+      assert(css, "the build has no stylesheet");
+      const asset = await read(plane.port, "protected", "static-asset", css);
+      assert.equal(asset.status, 200);
+      assert.equal(asset.outcomeHeader, "proxied");
+      assert.match(String(asset.headers["content-type"]), /^text\/css/u);
+      assert.equal(asset.headers["cache-control"], "public, max-age=31536000, immutable");
+      assert.equal(asset.body.length, statSync(path.join(REPOSITORY_ROOT, ".next", css.slice("/_next/".length))).size);
+      for (const response of [home, intake, asset]) {
+        for (const [name, value] of Object.entries(RELAYED_SECURITY)) assert.equal(response.headers[name], value, name);
+        for (const name of BOUNDARY_DROPPED_POLICIES) assert.equal(response.headers[name], undefined, name);
+      }
+      const variant = await read(plane.port, "protected", "static-asset-variant", `${css}?v=1`);
+      assert.equal(variant.status, 404);
+      assert.equal(variant.outcomeHeader, "rejected");
+      staticAsset = { status: asset.status, refusedVariant: variant.status };
+      lineages.push(asset);
+    }
+    const served = synthetic ? 2 : 3;
+
     // An ordinary GET sent directly to either protected listener has no
     // lineage. The app guard must refuse it before the Next handler runs.
     const directBoundary = await read(boundary.port, "direct_boundary_rejected", "direct-boundary");
@@ -65,11 +103,11 @@ async function run(synthetic: boolean): Promise<void> {
     }
     const appFin = await app.finish(5_000);
     assert(appFin?.drained);
-    assert.equal(appFin.stats.counters.admitted, 2);
-    assert.equal(appFin.stats.counters.executed, 2);
+    assert.equal(appFin.stats.counters.admitted, served);
+    assert.equal(appFin.stats.counters.executed, served);
     assert.equal(appFin.stats.counters.stateMutations, 0);
     assert.equal(appFin.stats.counters.refusedByReason["ob.proof_missing"], 1);
-    assert.equal(appFin.stats.served.completed, 2);
+    assert.equal(appFin.stats.served.completed, served);
     assert.equal(appFin.stats.served.aborted, 0);
     assert.equal(appFin.stats.guard.contentReadsStarted, 0);
 
@@ -83,8 +121,8 @@ async function run(synthetic: boolean): Promise<void> {
     // The boundary drains only after its last event so the collector's emitted-versus-received identity covers the refused forward.
     const boundaryFin = await boundary.finish(5_000);
     assert(boundaryFin?.drained);
-    assert.equal(boundaryFin.stats.admitted, 3);
-    assert.equal(boundaryFin.stats.forwardResponded, 2);
+    assert.equal(boundaryFin.stats.admitted, served + 1);
+    assert.equal(boundaryFin.stats.forwardResponded, served);
     assert.equal(boundaryFin.stats.forwardFailed, 1);
     assert.equal(boundaryFin.stats.rejectedByReason["ob.proof_missing"], 1);
 
@@ -101,7 +139,8 @@ async function run(synthetic: boolean): Promise<void> {
     collector.freeze();
     const final = collector.finalize();
     assert.deepEqual(final, { anomalies: [], anomalyTotal: 0 });
-    for (const page of [home, intake]) {
+    assert.equal(lineages.length, served);
+    for (const page of lineages) {
       const record = collector.recordFor(page.nonce);
       assert(record);
       assert(protectedLineageComplete({ ...record, expected: "protected" }));
@@ -130,7 +169,9 @@ async function run(synthetic: boolean): Promise<void> {
       directApp: directApp.status,
       appStopped: appStopped.status,
       boundaryStopped: unavailable.status,
-      completedLineages: 2,
+      completedLineages: served,
+      staticAsset,
+      securityHeaders: synthetic ? null : { relayed: Object.keys(RELAYED_SECURITY), droppedAtBoundary: BOUNDARY_DROPPED_POLICIES },
       events: { plane: planeFin.channel.emitted, boundary: boundaryFin.channel.emitted, app: appFin.channel.emitted },
       collectorAnomalies: final.anomalyTotal,
     }));
