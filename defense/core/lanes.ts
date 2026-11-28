@@ -21,7 +21,7 @@
  *       ever returned, whatever happens downstream. There is no refund, rollback or decrement anywhere in this file (a static test pins it).
  */
 import { createHash } from "node:crypto";
-import type { LayerRequest } from "./types";
+import { AUTHORIZATION_PAGE_TARGET, type LayerRequest } from "./types";
 import { CreditFilter, type FilterStats } from "./credit-filter";
 import { FORM_ROUTE_TARGETS } from "./enrollment";
 
@@ -256,6 +256,8 @@ export type LanesConfig = {
    * them is an `open` read like a page; absent, the class map is exactly `operationClassOf`.
    */
   openAssets?: ReadonlySet<string>;
+  /** Opt-in browser composition: classify the exact public authorization GET as open. */
+  authorizationPage?: true;
 };
 
 export type LanesSnapshot = {
@@ -281,10 +283,12 @@ export class JourneyLanes {
   private readonly decisionCounts = new Map<string, number>();
   private readonly spent = { credited: 0, unverified: 0 };
 
-  /** The closed class map plus the configured exact static assets (open reads). Pure over the configuration; rejects nothing. */
+  /** The closed class map plus the browser composition’s exact additional reads. */
   classOf(method: string, target: string): OperationClass {
     const cls = operationClassOf(method, target);
-    return cls === "unknown" && method === "GET" && this.config.openAssets?.has(target) === true ? "open" : cls;
+    if (cls !== "unknown" || method !== "GET") return cls;
+    const extraDocument = this.config.authorizationPage === true && target === AUTHORIZATION_PAGE_TARGET;
+    return extraDocument || this.config.openAssets?.has(target) === true ? "open" : cls;
   }
 
   constructor(readonly config: LanesConfig) {

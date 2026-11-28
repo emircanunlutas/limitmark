@@ -1,7 +1,7 @@
 /**
  * The declared read-only browser scope of the built application behind the defense chain.
  *
- * Pages: exactly the GET page targets the L1 route table and the L2 open class already admit; nothing is added here.
+ * Pages: exactly the GET page targets the browser L1 and L2 composition admit, including one opt-in authorization document.
  * Assets: exactly the files of the build's own immutable `.next/static` output, read from disk, as `/_next/static/...` targets. The list
  * is closed (no prefix or pattern), bounded, and every file must fit the relays' response bound, otherwise it fails closed at startup
  * instead of being cut off at runtime. The harness gives this list to the Defense Plane; the application wrapper derives it again from
@@ -9,10 +9,11 @@
  */
 import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { AUTHORIZATION_PAGE_TARGET } from "../../defense/core/types";
 import { FORM_ROUTE_TARGETS } from "../../defense/core/enrollment";
 import { validateStaticAssets } from "../../defense/layers/a7-static-assets";
 
-export const READ_ONLY_PAGE_TARGETS: readonly string[] = Object.freeze(["/", "/gizlilik", "/test-talep-et/tesekkurler", ...FORM_ROUTE_TARGETS]);
+export const READ_ONLY_PAGE_TARGETS: readonly string[] = Object.freeze(["/", "/gizlilik", "/test-talep-et/tesekkurler", ...FORM_ROUTE_TARGETS, AUTHORIZATION_PAGE_TARGET]);
 
 /** Equals the plane's and the boundary's relayed response bound (pinned by a test). */
 export const MAX_RELAYED_ASSET_BYTES = 1_048_576;

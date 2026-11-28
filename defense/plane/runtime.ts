@@ -17,6 +17,7 @@ import type { VerdictOverridePort } from "../core/override-port";
 import type { Layer } from "../core/types";
 import { PB_MAX_LIFETIME_MS, importPrivateKey, issuePb } from "../core/hop-proof";
 import { ProcessSampler, TickSource } from "../core/telemetry";
+import { AuthorizationPageGate } from "../layers/a7-authorization-page";
 import { ShapeGate } from "../layers/a7-shape-gate";
 import { StaticAssetGate, validateStaticAssets } from "../layers/a7-static-assets";
 import { createFront, type Front, type HopIssuer } from "./front";
@@ -72,13 +73,16 @@ export function startPlane(deps: PlaneRuntimeDeps = {}): PlaneRuntimeHandle {
         // when the list is not an exact, valid set. Absent, the composition is exactly the shape gate under the semantic gate.
         const assets = raw.assets ?? [];
         const openAssets = validateStaticAssets(assets);
-        const semantic = new SemanticGate(assets.length > 0 ? new StaticAssetGate(gate, assets) : gate);
+        if (raw.authorizationPage !== undefined && raw.authorizationPage !== true) throw new Error("invalid authorization page opt-in");
+        const assetGate = assets.length > 0 ? new StaticAssetGate(gate, assets) : gate;
+        const browserGate = raw.authorizationPage === true ? new AuthorizationPageGate(assetGate) : assetGate;
+        const semantic = new SemanticGate(browserGate);
         const l1: Layer = deps.wrapL1 ? deps.wrapL1(semantic) : semantic;
         const config = { kid: raw.hop.kid, privateKey: importPrivateKey(raw.hop.privateKey), boundaryId: raw.hop.boundaryId, lifetimeMs: Math.min(raw.hop.lifetimeMs, PB_MAX_LIFETIME_MS), now: () => Date.now() };
         const hop: HopIssuer = { issue: (approved, context) => issuePb(config, approved, context) };
         const lanes = new JourneyLanes({
           filterBits: raw.l2.filterBits, filterHashes: raw.l2.filterHashes, epochMs: raw.l2.epochMs, credited: raw.l2.credited, unverified: raw.l2.unverified,
-          maxUses: raw.l2.maxUses, ledgerCapacity: raw.l2.ledgerCapacity, mono: () => performance.now(), key: randomBytes(32), openAssets,
+          maxUses: raw.l2.maxUses, ledgerCapacity: raw.l2.ledgerCapacity, mono: () => performance.now(), key: randomBytes(32), openAssets, authorizationPage: raw.authorizationPage,
         });
         stage = new L2Stage(lanes, { composer: raw.l2.stage, wrapLayer: deps.wrapL2, maxResponseBytes: MAX_RESPONSE_BYTES });
         front = createFront({

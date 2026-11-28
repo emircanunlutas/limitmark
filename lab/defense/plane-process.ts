@@ -21,7 +21,7 @@ export const PLANE_L2_ENTRY = path.join(REPOSITORY_ROOT, "defense", "plane", "ma
  * interval) are field-qualification options: absent, the plane binds 127.0.0.1 on an ephemeral port and emits no ticks, exactly as before.
  * `assets` (browser delivery) is the protected build's exact static asset list; absent, no asset is admitted.
  */
-export type PlaneStartOptions = Omit<PlaneInit, "type"> & { l2?: L2Params; ingress?: { ip: string; port: number }; telemetry?: { tickMs: number }; assets?: readonly string[] };
+export type PlaneStartOptions = Omit<PlaneInit, "type"> & { l2?: L2Params; ingress?: { ip: string; port: number }; telemetry?: { tickMs: number }; assets?: readonly string[]; authorizationPage?: true };
 
 export class PlaneProcess {
   private exited = false;

@@ -5,10 +5,12 @@ import type net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { AUTHORIZATION_PAGE_TARGET } from "../defense/core/types";
 import { createBoundary } from "../defense/boundary/boundary";
 import { importPrivateKey, importPublicKey, issuePb } from "../defense/core/hop-proof";
 import { JourneyLanes, operationClassOf } from "../defense/core/lanes";
 import { RESPONSE_RELAY_HEADERS, type LayerRequest } from "../defense/core/types";
+import { AuthorizationPageGate } from "../defense/layers/a7-authorization-page";
 import { ShapeGate } from "../defense/layers/a7-shape-gate";
 import { MAX_STATIC_ASSETS, StaticAssetGate, validateStaticAssets } from "../defense/layers/a7-static-assets";
 import { createAppGuard } from "../defense/origin/app-guard";
@@ -94,12 +96,30 @@ test("L2 classifies only a configured asset GET as an open read; the pure class 
   assert.equal(new JourneyLanes(config).classOf("GET", CSS), "unknown");
 });
 
-test("the declared page scope is exactly what L1 and L2 already admit as open GET reads", () => {
-  const gate = new ShapeGate();
+test("browser scope admits only the exact authorization document as an extra open GET", () => {
+  const shape = new ShapeGate();
+  const gate = new AuthorizationPageGate(shape);
+  const config = {
+    filterBits: 1_024, filterHashes: 3, epochMs: 60_000, credited: { capacity: 2, refillPerSecond: 1 }, unverified: { capacity: 1, refillPerSecond: 0.001 },
+    maxUses: 2, ledgerCapacity: 4_096, mono: () => 0,
+  };
+  const lanes = new JourneyLanes({ ...config, authorizationPage: true });
   for (const target of READ_ONLY_PAGE_TARGETS) {
     assert.deepEqual(gate.evaluate(get(target)), { kind: "pass" }, target);
-    assert.equal(operationClassOf("GET", target), "open", target);
+    assert.equal(lanes.classOf("GET", target), "open", target);
   }
+  assert(READ_ONLY_PAGE_TARGETS.includes(AUTHORIZATION_PAGE_TARGET));
+  assert.deepEqual(shape.evaluate(get(AUTHORIZATION_PAGE_TARGET)), { kind: "reject", reason: "a7.path_not_allowed" });
+  assert.equal(new JourneyLanes(config).classOf("GET", AUTHORIZATION_PAGE_TARGET), "unknown");
+  for (const request of [
+    get(AUTHORIZATION_PAGE_TARGET, "POST"), get(AUTHORIZATION_PAGE_TARGET, "HEAD"),
+    get(`${AUTHORIZATION_PAGE_TARGET}?x=1`), get(`${AUTHORIZATION_PAGE_TARGET}/`), get("/admin"),
+    { ...get(AUTHORIZATION_PAGE_TARGET), headers: [] },
+  ]) assert.notDeepEqual(gate.evaluate(request), { kind: "pass" }, request.target);
+  for (const request of [
+    get(AUTHORIZATION_PAGE_TARGET, "POST"), get(AUTHORIZATION_PAGE_TARGET, "HEAD"),
+    get(`${AUTHORIZATION_PAGE_TARGET}?x=1`), get(`${AUTHORIZATION_PAGE_TARGET}/`), get("/admin"),
+  ]) assert.equal(lanes.classOf(request.method, request.target), "unknown", request.target);
   assert.equal(new Set(READ_ONLY_PAGE_TARGETS).size, READ_ONLY_PAGE_TARGETS.length);
   assert.equal(MAX_RELAYED_ASSET_BYTES, MAX_RESPONSE_BYTES);
 });
